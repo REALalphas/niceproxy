@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "version": "0.4.9",
+  "createdAt": "2026-10-13T18:17:57.433Z",
+  "packages": {
+    "@alpha/core": {
+      "file": "alpha-core-0.4.9.tgz",
+      "integrity": "sha512-lPh+agpdZRMpeZuW/mDXoGfEz1ajjQHLbpKGPEYgorpMfq1cTcxyP96J8U36Z/uvVPWE5VPAhBp6+IrIWIfoYg==",
+      "size": 790728
+    },
+    "@alpha/react": {
+      "file": "alpha-react-0.4.9.tgz",
+      "integrity": "sha512-5uVtsv0nzaMkPwYuZu4l60D4MyPhq9ZPgQY51zGAb7q1vSXka+mrzUAZ/Edsl8Zh6Okxmx6gduXPk8bJuUiAVg==",
+      "size": 11442
+    },
+    "@alpha/qwik": {
+      "file": "alpha-qwik-0.4.9.tgz",
+      "integrity": "sha512-MKNv2qmMdbDVOpBZ9m+izbOOQMUF1ZwqT+6daVJfUK5M3fVFb64Dx19k2TVM1uODEXVnN6Ibceshh9RDUS1QBQ==",
+      "size": 12015
+    },
+    "@alpha/project-server": {
+      "file": "alpha-project-server-0.4.9.tgz",
+      "integrity": "sha512-1cjeQLqm6DKO2a/oxG9aGXlkKkOMvH0yE6sUnpObM9iap8eJYVIkeuBmklAETkGPgwLRp2h+9WDS9ybbjKEMkg==",
+      "size": 5851
+    }
+  }
+}

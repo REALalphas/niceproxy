@@ -1,0 +1,11 @@
+web/node_modules/
+web/dist/
+web/.alpha-builds/
+web/.alpha-active
+bin/
+data/
+.env
+*.log
+test-results/
+web/.alpha-state/
+__pycache__/

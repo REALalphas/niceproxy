@@ -1,0 +1,11 @@
+.git
+data
+web/node_modules
+web/dist
+web/.alpha-builds
+web/.alpha-active
+bin
+test-results
+*.log
+.env
+web/.alpha-state

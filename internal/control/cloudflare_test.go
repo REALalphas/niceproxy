@@ -1,0 +1,213 @@
+package control
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"niceproxy/internal/cloudflare"
+)
+
+func TestCloudflarePKCECallbackAndDNS(t *testing.T) {
+	a, s, session := fixture(t)
+	zone := strings.Repeat("a", 32)
+	var verifier string
+	var writes atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/token" {
+			_ = r.ParseForm()
+			verifier = r.Form.Get("code_verifier")
+			if r.Form.Get("client_secret") != "" || r.Form.Get("client_id") != "registered-public-test-client" {
+				t.Error("unexpected client authentication")
+			}
+			fmt.Fprint(w, `{"access_token":"test-only-access-token","refresh_token":"test-only-refresh-token","token_type":"Bearer","expires_in":3600}`)
+			return
+		}
+		if r.URL.Path == "/revoke" {
+			w.WriteHeader(503)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer test-only-access-token" {
+			t.Error("missing server-side bearer token")
+		}
+		switch r.URL.Path {
+		case "/zones":
+			fmt.Fprintf(w, `{"success":true,"result":[{"id":%q,"name":"example.test","status":"active","account":{"id":"account","name":"Test"}}],"result_info":{"total_pages":1}}`, zone)
+		case "/zones/" + zone:
+			fmt.Fprintf(w, `{"success":true,"result":{"id":%q,"name":"example.test"}}`, zone)
+		case "/zones/" + zone + "/dns_records":
+			if r.Method == "GET" {
+				fmt.Fprint(w, `{"success":true,"result":[],"result_info":{"total_pages":1}}`)
+				return
+			}
+			writes.Add(1)
+			var record cloudflare.Record
+			if err := json.NewDecoder(r.Body).Decode(&record); err != nil {
+				t.Error(err)
+			}
+			record.ID = strings.Repeat("b", 32)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": record})
+		default:
+			t.Errorf("unexpected endpoint %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer provider.Close()
+	options := cloudflare.Options{DataDir: t.TempDir(), RedirectURL: s.URL + "/api/cloudflare/callback", AuthURL: provider.URL + "/auth", TokenURL: provider.URL + "/token", RevokeURL: provider.URL + "/revoke", APIBase: provider.URL}
+	if err := a.ConfigureCloudflare(options); err != nil {
+		t.Fatal(err)
+	}
+	resp := call(t, s, "GET", "/api/cloudflare", "", session)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !bytes.Contains(body, []byte(`"scopes":[]`)) {
+		t.Fatalf("%s %s", resp.Status, body)
+	}
+	resp = call(t, s, "POST", "/api/cloudflare/settings", `{"clientId":"registered-public-test-client","scopes":["test.zone-read","test.dns-write"]}`, session)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatal(resp.Status)
+	}
+	if err := a.ConfigureCloudflare(options); err != nil {
+		t.Fatal(err)
+	}
+	resp = call(t, s, "POST", "/api/cloudflare/connect", "", session)
+	var auth struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&auth); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatal(resp.Status)
+	}
+	stateCookie := resp.Cookies()[0]
+	if stateCookie.SameSite != http.SameSiteLaxMode || !stateCookie.HttpOnly || stateCookie.Path != "/api/cloudflare/callback" {
+		t.Fatal("unsafe OAuth cookie", stateCookie)
+	}
+	parsed, _ := url.Parse(auth.URL)
+	state := parsed.Query().Get("state")
+	if parsed.Query().Get("code_challenge_method") != "S256" || parsed.Query().Get("code_challenge") == "" || state == "" {
+		t.Fatal("missing PKCE")
+	}
+	// A cross-site top-level callback has the Lax state cookie, but intentionally
+	// lacks the Strict niceproxy_session cookie.
+	callback := s.URL + "/api/cloudflare/callback?code=test-only-code&state=" + url.QueryEscape(state)
+	request, _ := http.NewRequest("GET", callback, nil)
+	request.AddCookie(stateCookie)
+	client := *s.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 303 || !strings.Contains(resp.Header.Get("Location"), "cloudflare=connected") {
+		t.Fatal(resp.Status, resp.Header.Get("Location"))
+	}
+	if verifier == "" {
+		t.Fatal("PKCE verifier not exchanged")
+	}
+	resp = call(t, s, "GET", "/api/cloudflare", "", session)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !bytes.Contains(body, []byte(`"connected":true`)) || bytes.Contains(body, []byte("test-only-access")) || bytes.Contains(body, []byte("test-only-refresh")) {
+		t.Fatal(string(body))
+	}
+	saved, err := a.db.Integration("cloudflare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved) == 0 || bytes.Contains(saved, []byte("test-only-access")) {
+		t.Fatal("unencrypted grant")
+	}
+	if writes.Load() != 0 {
+		t.Fatal("login unexpectedly changed DNS")
+	}
+	resp = call(t, s, "POST", "/api/cloudflare/zones/"+zone+"/records", `{"type":"A","name":"app.example.test","content":"192.0.2.10","proxied":false,"ttl":1}`, session)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || writes.Load() != 1 {
+		t.Fatalf("%s %s", resp.Status, body)
+	}
+	resp, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if strings.Contains(resp.Header.Get("Location"), "cloudflare=connected") {
+		t.Fatal("replayed callback accepted")
+	}
+	resp = call(t, s, "POST", "/api/cloudflare/settings", `{"clientId":"replacement-public-client","scopes":["test.zone-read"]}`, session)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !bytes.Contains(body, []byte("прежний OAuth-доступ")) {
+		t.Fatalf("revocation failure hidden: %s %s", resp.Status, body)
+	}
+}
+
+func TestCloudflareRequiresAuthAndRejectsForeignStart(t *testing.T) {
+	a, s, session := fixture(t)
+	if err := a.ConfigureCloudflare(cloudflare.Options{DataDir: t.TempDir(), RedirectURL: s.URL + "/api/cloudflare/callback"}); err != nil {
+		t.Fatal(err)
+	}
+	resp := call(t, s, "GET", "/api/cloudflare", "", nil)
+	resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatal(resp.Status)
+	}
+	req, _ := http.NewRequest("POST", s.URL+"/api/cloudflare/connect", nil)
+	req.AddCookie(session)
+	req.Header.Set("Origin", "https://evil.example")
+	resp, err := s.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatal(resp.Status)
+	}
+	resp = call(t, s, "POST", "/api/cloudflare/settings", `{"clientId":"test-client","scopes":["test.read"],"apiToken":"must-not-be-accepted"}`, session)
+	resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatal("API token accepted", resp.Status)
+	}
+}
+
+func TestExplicitHTTPSCallbackHostIsAllowed(t *testing.T) {
+	a, s, session := fixture(t)
+	if err := a.ConfigureCloudflare(cloudflare.Options{DataDir: t.TempDir(), RedirectURL: "https://panel.example/api/cloudflare/callback"}); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("GET", s.URL+"/api/cloudflare", nil)
+	req.Host = "panel.example"
+	req.AddCookie(session)
+	resp, err := s.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatal(resp.Status)
+	}
+	req, _ = http.NewRequest("GET", s.URL+"/api/cloudflare", nil)
+	req.Host = "untrusted.example"
+	req.AddCookie(session)
+	resp, err = s.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatal(resp.Status)
+	}
+}
