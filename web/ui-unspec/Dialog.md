@@ -2,7 +2,7 @@
 
 ## Task
 
-The account connection flow may need an in-panel modal for access details, setup, and feedback. Alpha UI 0.4.9 has no public modal component with focus management. Provider authorization opens in a separate browser window.
+The account connection flow may need an in-panel modal for access details, setup, and feedback. Alpha UI 0.4.11 has no public modal component with focus management. Provider authorization opens in a separate browser window.
 
 ## Universal behavior
 
