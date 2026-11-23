@@ -1,6 +1,6 @@
 # Niceproxy web
 
-React + TypeScript panel using Alpha UI 0.4.9. It provides password setup and login, CRUD for HTTP/HTTPS and TCP/UDP routes, and saved/applied revision status.
+React + TypeScript panel using Alpha UI 0.4.11. It provides password setup and login, CRUD for HTTP/HTTPS and TCP/UDP routes, and saved/applied revision status.
 
 ```sh
 cd web

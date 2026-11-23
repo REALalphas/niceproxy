@@ -120,7 +120,7 @@ export async function prepare({
     await fs.cp(join(root, "dist"), join(builds, directory, "dist"), {
       recursive: true,
     });
-    await activate(directory, bundled?.version || "0.4.9", digest);
+    await activate(directory, bundled?.version || "0.4.11", digest);
     previous = await active();
   }
   let selected = previous;
@@ -134,7 +134,7 @@ export async function prepare({
     if (!releaseRoot) {
       log(
         "NICEPROXY_ALPHA_RELEASE_URL is not set: using bundled local version " +
-          (previous?.version ?? "0.4.9"),
+          (previous?.version ?? "0.4.11"),
       );
     } else {
       const base = new URL(

@@ -160,12 +160,12 @@ test("available trusted release builds staged packages and activates completed d
     await cp(resolve(f), join(root, f), { recursive: true, force: true });
   const pkg = JSON.parse(await readFile("package.json", "utf8"));
   await writeFile(join(root, "package.json"), JSON.stringify(pkg));
-  const release = resolve("../assets/alpha/0.4.9");
+  const release = resolve("../assets/alpha/0.4.11");
   const url = await server(t, async (req, res) => {
     try {
       res.end(
         req.url === "/latest.json"
-          ? JSON.stringify({ version: "0.4.9" })
+          ? JSON.stringify({ version: "0.4.11" })
           : await readFile(join(release, req.url.split("/").at(-1))),
       );
     } catch {
@@ -175,8 +175,8 @@ test("available trusted release builds staged packages and activates completed d
   });
   const path = await prepare({ releaseRoot: url });
   const selected = JSON.parse(await readFile(marker, "utf8"));
-  assert.equal(selected.version, "0.4.9");
-  assert.match(selected.directory, /release-0.4.9/);
+  assert.equal(selected.version, "0.4.11");
+  assert.match(selected.directory, /release-0.4.11/);
   assert.ok(
     (await readFile(join(path, "index.html"), "utf8")).includes("assets/"),
   );
@@ -194,10 +194,10 @@ test("production 20 second deadline cancels a slow server", async (t) => {
 
 test("a new bundled app build replaces persisted UI even at the same Alpha version", async (t) => {
   const {root,prepare}=await fixture(t);
-  await writeFile(join(root,"dist/.app-build.json"),JSON.stringify({digest:"first",version:"0.4.9"}));
+  await writeFile(join(root,"dist/.app-build.json"),JSON.stringify({digest:"first",version:"0.4.11"}));
   const first=await prepare({releaseRoot:""});
   await writeFile(join(root,"dist/index.html"),"new application build");
-  await writeFile(join(root,"dist/.app-build.json"),JSON.stringify({digest:"second",version:"0.4.9"}));
+  await writeFile(join(root,"dist/.app-build.json"),JSON.stringify({digest:"second",version:"0.4.11"}));
   const second=await prepare({releaseRoot:""});
   assert.notEqual(first,second);
   assert.equal(await readFile(join(second,"index.html"),"utf8"),"new application build");

@@ -83,4 +83,4 @@ strace -f -e splice /tmp/niceproxy-proxy.test -test.run '^TestTCPMapping$'
 
 The verified set covers Go race tests and vet, Caddy 2.10.2, end-to-end HTTP/HTTPS with a local CA, TCP/UDP on separate ports, restart and port-conflict recovery, and browser checks at 1440 and 320 px. Public ACME needs a real domain. A TrueNAS SCALE 25.10.4 deployment confirmed Docker health checks, HTTP/HTTPS, path routing, TCP/UDP, and restart recovery.
 
-Alpha UI 0.4.9 is bundled as local archives. Startup updates use the trusted `NICEPROXY_ALPHA_RELEASE_URL`; without it or after an update error, the last working local build is used. See `web/README.md`.
+Alpha UI 0.4.11 is bundled as local archives. Startup updates use the trusted `NICEPROXY_ALPHA_RELEASE_URL`; without it or after an update error, the last working local build is used. See `web/README.md`.
