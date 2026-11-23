@@ -17,6 +17,7 @@ import "@alpha/core/fonts.css";
 import "@alpha/core/styles.css";
 import "./app.css";
 import { Cloudflare } from "./Cloudflare";
+import { CloudflareOAuthWindow, isCloudflareOAuthWindow, type CloudflareCallback } from "./CloudflareOAuth";
 import {
   api,
   type Auth,
@@ -388,19 +389,13 @@ function sectionFromHash() {
   const section = window.location.hash.slice(1);
   return ["overview", "routes", "cloudflare"].includes(section) ? section : "overview";
 }
-function App() {
+function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }) {
   const [auth, setAuth] = useState<Auth | null>(null);
   const [config, setConfig] = useState<ProxyConfig | null>(null);
   const [health, setHealth] = useState<ServiceHealth | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [section, setSection] = useState(sectionFromHash);
-  const [cloudflareCallback] = useState(() => {
-    const params = new URLSearchParams(window.location.search);
-    const value = params.get("cloudflare");
-    if (params.has("cloudflare")) window.history.replaceState(null, "", window.location.pathname + window.location.hash);
-    return value === "connected" || value === "error" ? value : undefined;
-  });
   useEffect(() => {
     const changed = () => setSection(sectionFromHash());
     window.addEventListener("hashchange", changed);
@@ -553,9 +548,9 @@ function App() {
                 ? "Обзор"
                 : section === "cloudflare" ? "Cloudflare" : "Маршруты"}
             </Text>
-            <Text tone="secondary">
+            {section !== "cloudflare" && <Text tone="secondary">
               Управление маршрутизацией и состоянием применения
-            </Text>
+            </Text>}
           </div>
           <div className="actions">
             <Button
@@ -708,7 +703,22 @@ function App() {
 }
 const root = createRoot(document.getElementById("root")!);
 const dispose = installControlMotion();
-root.render(<App />);
+const url = new URL(window.location.href);
+const cloudflareStage = url.searchParams.get("cloudflare");
+const isOAuthWindow = isCloudflareOAuthWindow();
+const callback: CloudflareCallback | undefined = cloudflareStage === "connected" || cloudflareStage === "error"
+  ? cloudflareStage
+  : undefined;
+const oauthStage = cloudflareStage === "authorizing" ? "authorizing" : callback;
+if (callback || cloudflareStage === "authorizing" && !isOAuthWindow) {
+  url.searchParams.delete("cloudflare");
+  window.history.replaceState(null, "", url);
+}
+root.render(
+  isOAuthWindow && oauthStage
+    ? <CloudflareOAuthWindow stage={oauthStage} />
+    : <App cloudflareCallback={callback} />,
+);
 if (import.meta.hot)
   import.meta.hot.dispose(() => {
     root.unmount();

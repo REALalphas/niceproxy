@@ -106,7 +106,23 @@ func TestCloudflarePKCECallbackAndDNS(t *testing.T) {
 	request.AddCookie(stateCookie)
 	client := *s.Client()
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := client.Do(request)
+	stale, _ := http.NewRequest("GET", s.URL+"/api/cloudflare/callback?error=access_denied&state=older-attempt", nil)
+	stale.AddCookie(stateCookie)
+	resp, err := client.Do(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 303 || !strings.Contains(resp.Header.Get("Location"), "cloudflare=error") || len(resp.Cookies()) != 0 {
+		t.Fatal("stale callback disturbed the current attempt", resp.Status, resp.Header)
+	}
+	resp = call(t, s, "GET", "/api/cloudflare", "", session)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if bytes.Contains(body, []byte(`"error":`)) {
+		t.Fatal("stale callback appeared in connection status", string(body))
+	}
+	resp, err = client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
