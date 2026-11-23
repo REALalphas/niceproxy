@@ -1,14 +1,14 @@
 # niceproxy
 
-Linux-хост с веб-панелью для публикации HTTP/HTTPS и отдельных TCP/UDP-портов. Один контейнер содержит niceproxy и собственный Caddy. Внешние туннели и промежуточные VPS не нужны.
+Linux self-hosted proxy with a web panel for HTTP/HTTPS and direct TCP/UDP forwarding. One container runs niceproxy and bundled Caddy. No tunnel or relay VPS is required.
 
-## Запуск
+## Run
 
 ```sh
 docker compose up -d --build
 ```
 
-После push в `master` GitHub Actions собирает multi-arch образ и публикует его в GHCR. Версия получает тег `0.1.N`, где `N` — номер запуска GitHub Actions. Для запуска опубликованного образа выполните:
+A push to `master` builds and publishes a multi-arch image to GHCR. Tags use `0.1.N`, where `N` is the GitHub Actions run number. GHCR keeps the numbered tag and moving `latest`; commit SHA tags are not published.
 
 ```sh
 export NICEPROXY_IMAGE=ghcr.io/realalphas/niceproxy:latest
@@ -16,44 +16,44 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
-Панель: `http://127.0.0.1:9080`. При первом входе задайте пароль длиной 12–72 байта. Пароль хранится как bcrypt-хеш, сессии — в SQLite. Сначала выполните настройку локально, затем при необходимости откройте панель в LAN.
+Open `http://127.0.0.1:9080`. On first login, set a 12–72 byte password. Passwords use bcrypt and sessions use SQLite. Complete setup locally before exposing the panel on a LAN.
 
-Для доступа с другой машины задайте в `.env` `NICEPROXY_PANEL_LISTEN=<LAN-IP>:9080` и пересоздайте контейнер. Не публикуйте HTTP-панель в интернет: используйте защищённую административную сеть. Порт 9080 и сокеты управления отделены от публикуемых сервисов.
+Set `NICEPROXY_PANEL_LISTEN=<LAN-IP>:9080` in `.env` to use another machine, then recreate the container. Keep the panel on a trusted admin network. Port 9080 and control sockets are separate from published services.
 
-`network_mode: host` позволяет добавлять порты из интерфейса без пересоздания контейнера. Контейнеру нужны только права привязки низких портов (`NET_BIND_SERVICE`); Docker socket, `privileged` и `NET_ADMIN` не используются. На rootless Docker/Podman доступ к портам ниже 1024 дополнительно зависит от политики Linux.
+`network_mode: host` lets the panel add listeners without recreating the container. Only `NET_BIND_SERVICE` is needed for low ports. Docker socket, `privileged`, and `NET_ADMIN` are not used. Rootless Docker/Podman still follows the host policy for ports below 1024.
 
-На TrueNAS SCALE используйте host networking и отдельный dataset для `/data`. Если 80/443 заняты панелью NAS, назначьте Caddy свободные высокие порты и при необходимости настройте соответствующее перенаправление на роутере. Проверенный вариант запуска описан в [docs/truenas.md](docs/truenas.md). TrueNAS CORE (FreeBSD) не поддерживается.
+For TrueNAS SCALE, use host networking and a dedicated `/data` dataset. If the NAS panel owns 80/443, assign free high ports to Caddy and forward them on the router. See [docs/truenas.md](docs/truenas.md). TrueNAS CORE is unsupported.
 
-## Маршруты
+## Routes
 
-- **HTTP/HTTPS:** домен, префикс пути и адрес приложения вида `http://192.168.1.20:3000`, TLS `auto`, `internal` или `off`. На одном домене можно направить `/api` в API, `/files` в файловый сервис, а `/` — в основное приложение. `/api` совпадает с `/api` и `/api/...`, но не с `/apix`; первым выбирается самый длинный подходящий путь. Пути чувствительны к регистру: `/API` и `/api` различаются. Без совпадения возвращается 404. Путь и query сохраняются; опция «Убирать префикс пути» превращает, например, `/api/users?q=1` в `/users?q=1`. Все пути одного домена используют одинаковый TLS. Старые записи автоматически получают `/`. Caddy завершает HTTPS и поддерживает WebSocket. Для публичного сертификата домен должен указывать на публичный адрес, а проверка домена должна доходить до Caddy. В локальном режиме `internal` корневой сертификат Caddy нужно установить на клиентские устройства.
-- **TCP/UDP:** протокол, IP привязки, входной порт, IP/имя назначения и отдельный целевой порт. Например `TCP 0.0.0.0:1234` перенаправляется на `192.168.1.20:3300`. TCP может передавать TLS насквозь; сертификат в таком случае обслуживает целевой сервис.
+- **HTTP/HTTPS** accepts a domain, path prefix, target such as `http://192.168.1.20:3000`, and TLS mode `auto`, `internal`, or `off`. `/api` matches `/api` and `/api/...`, but not `/apix`. The longest matching path wins and matching is case-sensitive. Paths and queries are preserved unless **Strip path prefix** is enabled. All paths on one domain share TLS. Old records default to `/`. Caddy terminates HTTPS and supports WebSocket. Public certificates require DNS and ACME checks to reach Caddy. Install Caddy's root certificate on clients when using `internal` TLS.
+- **TCP/UDP** accepts a protocol, listen address and port, target address, and target port. Example `TCP 0.0.0.0:1234` forwards to `192.168.1.20:3300`. TCP can pass TLS through to the target.
 
-TCP 80/443 и UDP 443 зарезервированы для Caddy (HTTP/3); фактические номера можно изменить переменными окружения. Адрес клиента в HTTP передаётся Caddy через proxy-заголовки. При прямом TCP/UDP целевой сервис видит адрес niceproxy. Это не прозрачный NAT; FTP active mode и другие протоколы со встроенными адресами могут требовать отдельной настройки.
+TCP 80/443 and UDP 443 are reserved for Caddy HTTP/3. Environment variables can change those ports. Caddy forwards the client address in HTTP headers. Direct TCP/UDP targets see the niceproxy address, not the original client address. Protocols that embed addresses, such as FTP active mode, need separate handling.
 
-В разделе «Маршруты» оба типа правил находятся в одном списке. Строка показывает входной домен и путь или TCP/UDP-порт → назначение, состояние и действия. Фильтр позволяет оставить только нужный тип.
+HTTP and direct rules share one list. Each row shows the incoming endpoint, target, status, and actions. Filter by HTTP, TCP, or UDP.
 
 ## Cloudflare
 
-Раздел Cloudflare подключает аккаунт через официальный OAuth PKCE без ручного ввода API-токена. Нужна однократная регистрация публичного OAuth client ID и прав для своей установки; после неё — кнопка входа через аккаунт. Доступны выбор домена и создание/изменение A, AAAA, CNAME с явным подтверждением. Подготовка клиента и ограничения описаны в [docs/cloudflare.md](docs/cloudflare.md).
+Cloudflare uses official OAuth PKCE. No API token is entered in the panel. Register one public OAuth client for the installation, then connect the account. The panel can list zones and create or edit A, AAAA, and CNAME records after explicit confirmation. See [docs/cloudflare.md](docs/cloudflare.md).
 
-Роутер направляет нужные внешние порты на машину niceproxy. При перенаправлении всего диапазона Linux firewall должен также закрывать посторонние службы хоста: host networking не скрывает SSH, панель NAS и другие уже слушающие порты. niceproxy сам слушает только явно включённые правила.
+Forward required external ports from the router to the niceproxy host. If forwarding a full range, the host firewall must protect unrelated services because host networking exposes existing listeners. niceproxy listens only on enabled rules.
 
-## Состояние и данные
+## State and data
 
-Том `/data` хранит SQLite, настройки, последнюю успешно применённую конфигурацию, сертификаты Caddy и готовые сборки UI. Сохранение создаёт желаемую ревизию, затем запускается применение. Занятый порт и ошибка Caddy показываются в правиле; успешное сохранение не означает успешное применение. При частичном применении нет единой активной ревизии (`appliedRevision: -1`). При перезапуске сохранённые правила восстанавливаются. Если публичный порт занят, панель запускается отдельно и позволяет исправить маршруты. Caddy принимает конфигурацию через закрытый Unix admin socket. Диагностика доступна через `docker compose logs`.
+`/data` stores SQLite, settings, the last applied configuration, Caddy certificates, and built UI assets. Saving creates a desired revision and then applies it. Port conflicts and Caddy errors are shown on the rule. A successful save does not prove that the revision was applied. Partial apply reports `appliedRevision: -1`. Rules recover after restart. If a public port is busy, the panel stays available on its separate listener. Caddy uses a private Unix admin socket. Use `docker compose logs` for diagnostics.
 
-Изменение назначения TCP действует на новые соединения; существующие продолжают работу с прежним назначением. При удалении/смене слушателя даётся ограниченное время на завершение, затем соединения закрываются. UDP-ассоциации при смене назначения сбрасываются. Число соединений/ассоциаций ограничивается на правило. Для TCP нет принудительного ограничения времени жизни потока.
+Changing a TCP target affects new connections. Existing connections keep their current target. Removing or changing a listener uses a short drain period, then closes connections. Changing a UDP target resets associations. Connection and association limits are per rule. TCP streams have no forced lifetime limit.
 
-## Производительность
+## Performance
 
-Прямой TCP использует `io.Copy` между конкретными `*net.TCPConn`, сохраняя доступ к Linux `splice`. SQLite и HTTP API не участвуют в передаче трафика. UDP сохраняет границы датаграмм, имеет idle timeout и ограничения ресурсов; пакетные `recvmmsg/sendmmsg` пока не реализованы.
+Direct TCP uses `io.Copy` between concrete `*net.TCPConn` values so Linux `splice` remains available. SQLite and the HTTP API are not on the traffic path. UDP preserves datagram boundaries, uses an idle timeout, and applies resource limits. `recvmmsg/sendmmsg` batching is not implemented.
 
-Предел 100k/s не заявляется без нагрузки на целевом железе. HTTP-запросы/с, новые TCP-соединения/с, одновременно открытые соединения и UDP-пакеты/с — разные измерения. Лимиты окружения описаны в `.env.example`.
+No 100k/s claim is made without target hardware measurements. HTTP requests/s, new TCP connections/s, open connections, and UDP packets/s are separate metrics. Environment limits are listed in `.env.example`.
 
-## Разработка и проверки
+## Development and checks
 
-GitHub Actions запускает эти проверки в Linux для pull request и push в `master`. Smoke-тест использует Caddy 2.10.2, а `strace` подтверждает, что `splice` передаёт данные через TCP-прокси.
+GitHub Actions runs these checks on Linux for pull requests and pushes to `master`. The smoke test uses Caddy 2.10.2. `strace` verifies `splice` on the TCP path.
 
 ```sh
 npm --prefix web ci
@@ -66,19 +66,19 @@ go build -o bin/niceproxy ./cmd/niceproxy
 python3 scripts/smoke.py --caddy /path/to/caddy
 ```
 
-Установите Caddy 2.10.2 или укажите путь `--caddy /path/to/caddy`. Запуск без низких портов:
+Install Caddy 2.10.2 or pass `--caddy /path/to/caddy`. Run without low ports:
 
 ```sh
 ./bin/niceproxy --http-port 8080 --https-port 8443
 ```
 
-Для проверки TCP splice:
+Check TCP splice:
 
 ```sh
 go test -c -o /tmp/niceproxy-proxy.test ./internal/proxy
 strace -f -e splice /tmp/niceproxy-proxy.test -test.run '^TestTCPMapping$'
 ```
 
-Проверенный набор: Go tests с race detector и vet, Caddy 2.10.2, end-to-end HTTP/HTTPS с проверкой локального CA, TCP/UDP с разными портами, восстановление после рестарта и занятого порта, браузерные действия на 1440 и 320 px. Публичный ACME требует проверки с реальным доменом. Образ собран и запущен на TrueNAS SCALE 25.10.4: подтверждены Docker healthcheck, HTTP/HTTPS, пути, TCP/UDP с разными портами и восстановление после перезапуска.
+The verified set covers Go race tests and vet, Caddy 2.10.2, end-to-end HTTP/HTTPS with a local CA, TCP/UDP on separate ports, restart and port-conflict recovery, and browser checks at 1440 and 320 px. Public ACME needs a real domain. A TrueNAS SCALE 25.10.4 deployment confirmed Docker health checks, HTTP/HTTPS, path routing, TCP/UDP, and restart recovery.
 
-Alpha UI 0.4.9 поставляется локальными архивами внутри репозитория. Обновления при запуске используют настраиваемый доверенный `NICEPROXY_ALPHA_RELEASE_URL`; без адреса или при ошибке запускается последняя готовая локальная сборка. Подробнее — `web/README.md`.
+Alpha UI 0.4.9 is bundled as local archives. Startup updates use the trusted `NICEPROXY_ALPHA_RELEASE_URL`; without it or after an update error, the last working local build is used. See `web/README.md`.

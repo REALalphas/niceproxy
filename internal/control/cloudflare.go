@@ -82,13 +82,13 @@ func (a *App) ConfigureCloudflare(options cloudflare.Options) error {
 	a.setCloudflareCallback(options.RedirectURL)
 	body, err := a.db.Integration(cfSettingsName)
 	if err != nil {
-		a.cfInitError = "Не удалось прочитать настройки Cloudflare из хранилища."
+		a.cfInitError = "Could not read Cloudflare settings from storage."
 		return err
 	}
 	if len(body) > 0 {
 		var settings cloudflareSettings
 		if err := json.Unmarshal(body, &settings); err != nil {
-			a.cfInitError = "Сохранённые настройки Cloudflare повреждены. Настройте OAuth-приложение заново."
+			a.cfInitError = "Saved Cloudflare settings are invalid. Set up the OAuth app again."
 			return fmt.Errorf("invalid Cloudflare settings")
 		}
 		options.ClientID = settings.ClientID
@@ -107,7 +107,7 @@ func (a *App) ConfigureCloudflare(options cloudflare.Options) error {
 	a.setCloudflareCallback(options.RedirectURL)
 	a.cf, err = cloudflare.New(options, a.db)
 	if err != nil {
-		a.cfInitError = "Не удалось загрузить подключение Cloudflare. Проверьте настройки приложения и сохранённый ключ шифрования."
+		a.cfInitError = "Could not load the Cloudflare connection. Check the app settings and encryption key."
 	}
 	return err
 }
@@ -143,7 +143,7 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		settings.ClientID = strings.TrimSpace(settings.ClientID)
 		settings.CallbackDomain = strings.TrimSuffix(strings.TrimSpace(settings.CallbackDomain), ".")
 		if settings.ClientID == "" || len(settings.ClientID) > 256 || strings.ContainsAny(settings.ClientID, " \t\r\n") || len(settings.Scopes) < 1 || len(settings.Scopes) > 32 {
-			fail(w, 400, "Укажите публичный Client ID и разрешённые OAuth scope ID.")
+			fail(w, 400, "Enter a public client ID and allowed OAuth scope IDs.")
 			return
 		}
 		if len(settings.CallbackDomain) > 253 {
@@ -154,11 +154,11 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		for i, scope := range settings.Scopes {
 			scope = strings.TrimSpace(scope)
 			if scope == "" || len(scope) > 128 || strings.ContainsAny(scope, " \t\r\n,:/\\") {
-				fail(w, 400, "Каждый OAuth scope ID должен быть отдельной строкой без пробелов.")
+				fail(w, 400, "Each OAuth scope ID must be a single value without spaces.")
 				return
 			}
 			if unique[scope] {
-				fail(w, 400, "OAuth scope ID не должны повторяться.")
+				fail(w, 400, "OAuth scope IDs must be unique.")
 				return
 			}
 			unique[scope] = true
@@ -188,7 +188,7 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 			oldClient := a.cf.Status().ClientID
 			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 			if err := a.cf.Disconnect(ctx); err != nil {
-				revokeWarning = "Настройки сохранены, но прежний OAuth-доступ не удалось отозвать. Проверьте авторизации niceproxy в Cloudflare (Client ID: " + oldClient + ")."
+				revokeWarning = "Settings saved, but the previous OAuth grant could not be revoked. Check niceproxy authorizations in Cloudflare (client ID: " + oldClient + ")."
 			}
 			cancel()
 		}
@@ -197,12 +197,12 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		manager, err := cloudflare.New(options, a.db)
 		if err != nil {
-			fail(w, 400, "Не удалось настроить OAuth Cloudflare. Проверьте Client ID, scope ID и callback URL.")
+			fail(w, 400, "Could not configure Cloudflare OAuth. Check the client ID, scope IDs, and callback URL.")
 			return
 		}
 		body, _ := json.Marshal(settings)
 		if err := a.db.SetIntegration(cfSettingsName, body); err != nil {
-			fail(w, 500, "Не удалось сохранить настройки Cloudflare.")
+			fail(w, 500, "Could not save Cloudflare settings.")
 			return
 		}
 		a.cf = manager
@@ -223,7 +223,7 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 			err := a.cf.Disconnect(ctx)
 			cancel()
 			if err != nil {
-				response["warning"] = "Локальное подключение удалено. Проверьте отзыв доступа в Cloudflare."
+				response["warning"] = "The local connection was removed. Check access revocation in Cloudflare."
 			}
 		}
 		if !a.cloudflareCredentialsCleared(w) {
@@ -234,13 +234,13 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.cf == nil || !a.cf.Status().Configured {
-		fail(w, 409, "Сначала зарегистрируйте OAuth-приложение Cloudflare и сохраните публичные настройки.")
+		fail(w, 409, "Register a Cloudflare OAuth app and save its public settings first.")
 		return
 	}
 	if r.URL.Path == "/api/cloudflare/connect" && r.Method == "POST" {
 		redirect, _ := url.Parse(a.cf.Status().RedirectURL)
 		if redirect == nil || redirect.Host != r.Host {
-			fail(w, 400, "Откройте панель по адресу, указанному в callback URL OAuth-приложения.")
+			fail(w, 400, "Open the panel at the address configured in the OAuth app callback URL.")
 			return
 		}
 		cookie, err := r.Cookie("niceproxy_session")
@@ -250,7 +250,7 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		authorization, state, err := a.cf.Begin(hash(cookie.Value))
 		if err != nil {
-			fail(w, 400, "Не удалось начать подключение Cloudflare.")
+			fail(w, 400, "Could not start the Cloudflare connection.")
 			return
 		}
 		http.SetCookie(w, &http.Cookie{Name: "niceproxy_cf_oauth", Value: state, Path: "/api/cloudflare/callback", HttpOnly: true, Secure: redirect.Scheme == "https", SameSite: http.SameSiteLaxMode, MaxAge: 600})
@@ -312,7 +312,7 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 func (a *App) cloudflareCredentialsCleared(w http.ResponseWriter) bool {
 	body, err := a.db.Integration("cloudflare")
 	if err != nil || len(body) > 0 {
-		fail(w, 500, "Не удалось удалить сохранённое подключение Cloudflare. Проверьте доступ к хранилищу и повторите отключение.")
+		fail(w, 500, "Could not remove the saved Cloudflare connection. Check storage access and try disconnecting again.")
 		return false
 	}
 	return true
@@ -346,7 +346,7 @@ func (a *App) cloudflareCallback(w http.ResponseWriter, r *http.Request) {
 			}
 			a.cfInitError = ""
 			if result == "error" {
-				a.cfInitError = "Cloudflare не подключён: вход отменён, истёк или не прошёл проверку. Повторите подключение."
+				a.cfInitError = "Cloudflare is not connected. Sign-in was cancelled, expired, or failed validation. Try again."
 			}
 		}
 	}
@@ -356,12 +356,12 @@ func (a *App) cloudflareCallback(w http.ResponseWriter, r *http.Request) {
 func validateCloudflareRedirect(value string) error {
 	u, err := url.Parse(value)
 	if err != nil || u.Host == "" || u.Path != "/api/cloudflare/callback" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.RawPath != "" || u.Fragment != "" {
-		return errors.New("Задайте NICEPROXY_CF_REDIRECT_URL с адресом панели и путём /api/cloudflare/callback.")
+		return errors.New("Set NICEPROXY_CF_REDIRECT_URL to the panel address with the /api/cloudflare/callback path.")
 	}
 	host := u.Hostname()
 	ip := net.ParseIP(host)
 	if u.Scheme != "https" && !(u.Scheme == "http" && (host == "localhost" || ip != nil && ip.IsLoopback())) {
-		return errors.New("Для удалённого callback требуется HTTPS; HTTP допустим только на localhost.")
+		return errors.New("Remote callbacks require HTTPS. HTTP is allowed only on localhost.")
 	}
 	return nil
 }

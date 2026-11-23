@@ -71,17 +71,17 @@ export function CloudflareOAuthWindow({ stage }: {
     <main className="alpha-ui auth-page">
       <Card>
         <Stack gap={4}>
-          <Text as="h1" size="xl" font="heading">Вход через Cloudflare</Text>
+          <Text as="h1" size="xl" font="heading">Sign in with Cloudflare</Text>
           <div role="status">
             <Text>
-              {stage === "authorizing" ? "Открываем страницу Cloudflare…"
-                : stage === "connected" ? "Доступ подтверждён."
-                : "Не удалось подключить Cloudflare. Повторите вход из панели."}
+              {stage === "authorizing" ? "Opening Cloudflare…"
+                : stage === "connected" ? "Access approved."
+                : "Cloudflare connection failed. Sign in again from the panel."}
             </Text>
           </div>
           {stage === "authorizing"
-            ? <Button variant="simple" onPress={() => window.close()}>Закрыть окно</Button>
-            : <Button onPress={() => window.location.replace(panelPage)}>Открыть панель</Button>}
+            ? <Button variant="simple" onPress={() => window.close()}>Close window</Button>
+            : <Button onPress={() => window.location.replace(panelPage)}>Open panel</Button>}
         </Stack>
       </Card>
     </main>
