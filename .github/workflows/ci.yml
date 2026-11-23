@@ -18,19 +18,6 @@ defaults:
     shell: bash
 
 jobs:
-  version:
-    name: Calculate build version
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    outputs:
-      value: ${{ steps.version.outputs.value }}
-    steps:
-      - id: version
-        run: |
-          value="0.1.${GITHUB_RUN_NUMBER}"
-          echo "value=$value" >> "$GITHUB_OUTPUT"
-          echo "Building niceproxy $value"
-
   go-test:
     name: Go tests with race detector
     runs-on: ubuntu-24.04
@@ -102,7 +89,6 @@ jobs:
 
   web-test:
     name: Frontend ${{ matrix.task }}
-    needs: version
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
@@ -130,7 +116,6 @@ jobs:
 
   integration:
     name: Build and integration smoke tests
-    needs: version
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -158,7 +143,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Build niceproxy
-        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${{ needs.version.outputs.value }}" -o bin/niceproxy ./cmd/niceproxy
+        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/niceproxy ./cmd/niceproxy
 
       - name: Download pinned Caddy
         env:
@@ -180,153 +165,3 @@ jobs:
 
       - name: Run HTTP, HTTPS, TCP and UDP smoke test
         run: python3 scripts/smoke.py --caddy bin/caddy --binary bin/niceproxy
-
-  release-artifacts:
-    name: Build release ${{ matrix.name }} artifact
-    needs: version
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/master' &&
-      needs.version.result == 'success'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: backend-amd64
-            target: backend-artifact
-            goarch: amd64
-          - name: backend-arm64
-            target: backend-artifact
-            goarch: arm64
-          - name: frontend
-            target: frontend-artifact
-            goarch: amd64
-    steps:
-      - name: Check out source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Build ${{ matrix.name }} artifact
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          target: ${{ matrix.target }}
-          platforms: linux/amd64
-          build-args: |
-            APP_VERSION=${{ needs.version.outputs.value }}
-            GOARCH=${{ matrix.goarch }}
-          outputs: type=local,dest=${{ runner.temp }}/niceproxy-artifact
-          cache-from: |
-            type=gha,scope=niceproxy-${{ matrix.name }}
-            type=gha,scope=niceproxy
-          cache-to: type=gha,scope=niceproxy-${{ matrix.name }},mode=max,ignore-error=true
-
-      - name: Upload ${{ matrix.name }} artifact
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: niceproxy-${{ matrix.name }}-artifact
-          path: ${{ runner.temp }}/niceproxy-artifact/
-          if-no-files-found: error
-          compression-level: 0
-          overwrite: true
-
-  image:
-    name: Build and publish GHCR image
-    needs:
-      [
-        version,
-        go-test,
-        go-vet,
-        go-splice,
-        web-test,
-        integration,
-        release-artifacts,
-      ]
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/master' &&
-      needs.version.result == 'success' &&
-      needs.go-test.result == 'success' &&
-      needs.go-vet.result == 'success' &&
-      needs.go-splice.result == 'success' &&
-      needs.web-test.result == 'success' &&
-      needs.integration.result == 'success' &&
-      needs.release-artifacts.result == 'success'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Check out source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
-
-      - name: Download release artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: niceproxy-*-artifact
-          path: ${{ runner.temp }}/niceproxy-artifacts
-
-      - name: Assemble release build context
-        run: |
-          set -euo pipefail
-          release_root="$RUNNER_TEMP/niceproxy-release-context"
-          download_root="$RUNNER_TEMP/niceproxy-artifacts"
-          mkdir -p "$release_root"
-          cp "$download_root/niceproxy-backend-amd64-artifact/niceproxy" "$release_root/niceproxy-amd64"
-          cp "$download_root/niceproxy-backend-arm64-artifact/niceproxy" "$release_root/niceproxy-arm64"
-          cp -a "$download_root/niceproxy-frontend-artifact/web" "$release_root/web"
-          cp -a "$download_root/niceproxy-frontend-artifact/assets" "$release_root/assets"
-
-      - name: Log in to GHCR
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract image metadata
-        id: metadata
-        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=${{ needs.version.outputs.value }}
-            type=raw,value=latest
-          labels: |
-            org.opencontainers.image.title=niceproxy
-            org.opencontainers.image.description=Self-hosted Linux HTTP(S), TCP and UDP proxy
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-
-      - name: Build image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
-        with:
-          context: .
-          file: ./Dockerfile
-          target: release
-          build-contexts: |
-            release-artifacts=${{ runner.temp }}/niceproxy-release-context
-          build-args: |
-            APP_VERSION=${{ needs.version.outputs.value }}
-          push: true
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=gha,scope=niceproxy
-          cache-to: type=gha,mode=max,scope=niceproxy,ignore-error=true
-          provenance: mode=max
-          sbom: true
