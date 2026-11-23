@@ -115,8 +115,20 @@ body {
   justify-content: space-between;
 }
 
+.callback-field {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--as-space-3);
+}
+
+.callback-field > div {
+  flex: 1;
+  min-width: 0;
+}
+
 @media (max-width: 40rem) {
-  .oauth-connected {
+  .oauth-connected,
+  .callback-field {
     flex-direction: column;
     align-items: stretch;
   }

@@ -195,7 +195,8 @@ func run() error {
 	cfRedirect := os.Getenv("NICEPROXY_CF_REDIRECT_URL")
 	if cfRedirect == "" {
 		host, _, _ := net.SplitHostPort(*panel)
-		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		ip := net.ParseIP(host)
+		if host == "localhost" || ip != nil && ip.IsLoopback() {
 			cfRedirect = "http://" + *panel + "/api/cloudflare/callback"
 		}
 	}

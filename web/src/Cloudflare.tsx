@@ -53,6 +53,7 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
   const [setup, setSetup] = useState(false);
   const [clientId, setClientId] = useState("");
   const [scopes, setScopes] = useState("");
+  const [callbackDomain, setCallbackDomain] = useState("");
   const [zones, setZones] = useState<Zone[]>([]);
   const [zoneId, setZoneId] = useState("");
   const [records, setRecords] = useState<DNSRecord[]>([]);
@@ -66,7 +67,7 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
   const [oauthFailed, setOAuthFailed] = useState(callback === "error");
   const [oauthPending, setOAuthPending] = useState(false);
   const applyStatus = useCallback((s: CloudflareStatus) => {
-    setStatus(s); setClientId(s.clientId); setScopes(s.scopes.join(" "));
+    setStatus(s); setClientId(s.clientId); setScopes(s.scopes.join(" ")); setCallbackDomain(s.callbackDomain ?? "");
     setZones([]); setZoneId(""); setRecords([]); setEditor(null);
   }, []);
   const load = useCallback(async () => {
@@ -108,11 +109,36 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
   }
   function saveSettings(e: FormEvent) {
     e.preventDefault();
-    if (!clientId.trim() || !parseScopes(scopes).length) return;
+    if (!clientId.trim() || !parseScopes(scopes).length || (!status?.redirectUrl && !callbackDomain.trim())) return;
     void action(async () => {
-      applyStatus(await cloudflareApi.settings(clientId.trim(), parseScopes(scopes)));
+      applyStatus(await cloudflareApi.settings(clientId.trim(), parseScopes(scopes), callbackDomain.trim()));
       setSetup(false);
     });
+  }
+  async function copyCallback() {
+    if (!status?.redirectUrl) return;
+    try {
+      await navigator.clipboard.writeText(status.redirectUrl);
+    } catch {
+      let copied = false;
+      try {
+        const input = document.createElement("textarea");
+        input.value = status.redirectUrl;
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.focus(); input.select();
+        copied = document.execCommand("copy");
+        input.remove();
+      } catch {
+        // Fall through to the manual-copy message.
+      }
+      if (!copied) {
+        setError("Не удалось скопировать callback. Выделите URL вручную и скопируйте его.");
+        return;
+      }
+    }
+    setNotice("Callback URL скопирован.");
   }
   function closeOAuth() {
     oauthRef.current?.close();
@@ -208,16 +234,20 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
         {status.configured && <Button variant="simple" onPress={() => setSetup(!setup)} disabled={busy || loading || oauthPending || editor !== null}>{setup ? "Скрыть настройки" : "Изменить настройки"}</Button>}
       </div>
       {(setup || !status.configured) && <form onSubmit={saveSettings}><Stack gap={4}>
-        <Text><a href="https://dash.cloudflare.com/?to=/:account/oauth-clients" target="_blank" rel="noreferrer">Создайте OAuth-клиент в Cloudflare</a> с указанным ниже Redirect URI. Для личной установки подходит видимость Private.</Text>
-        <Text tone="secondary">Выберите Authorization Code с PKCE (S256), аутентификацию клиента None и grant types authorization_code и refresh_token. Для нужных зон укажите Zone Read, DNS Read, DNS Write и offline_access для обновления доступа.</Text>
-        <TextInput id="cf-callback" label="Redirect URI" value={status.redirectUrl} readOnly />
+        <Text><a href="https://dash.cloudflare.com/?to=/:account/oauth-clients" target="_blank" rel="noreferrer">Создайте OAuth-клиент в Cloudflare</a> и укажите Redirect URI из поля ниже. Для личной установки подходит видимость Private.</Text>
+        <Text tone="secondary">В Cloudflare выберите Response Type Code, Grant type Authorization Code и Token Authentication Method None. Для нужных зон укажите Zone Read, DNS Read, DNS Write и offline_access для обновления доступа.</Text>
+        {status.redirectUrl
+          ? <div className="callback-field"><TextInput id="cf-callback" label="Redirect URI" value={status.redirectUrl} readOnly /><Button type="button" variant="simple" onPress={() => void copyCallback()}>Скопировать</Button></div>
+          : <Alert>Redirect URI не определён. Для локальной панели используйте http://127.0.0.1:9080/api/cloudflare/callback. Для LAN или домена задайте NICEPROXY_CF_REDIRECT_URL с полным HTTPS-адресом callback и перезапустите niceproxy.</Alert>}
+        <TextInput id="cf-callback-domain" label="Домен для Cloudflare callback (необязательно)" value={callbackDomain} onValueChange={setCallbackDomain} disabled={busy} hint="Например, cf.example.com. niceproxy добавит https:// и /api/cloudflare/callback." />
+        {callbackDomain.trim() && <Text tone="secondary">После сохранения открывайте панель через https://{callbackDomain.trim()}. Этот домен должен вести на niceproxy.</Text>}
         <div className="form-grid">
           <TextInput id="cf-client-id" label="Публичный Client ID" value={clientId} onValueChange={setClientId} required disabled={busy} />
           <TextInput id="cf-scopes" label="Scope ID" value={scopes} onValueChange={setScopes} hint="ID из панели Cloudflare, через пробел или запятую." required disabled={busy} />
         </div>
         {status.connected && <Text tone="secondary">Сохранение новых настроек отключит текущий аккаунт.</Text>}
         <div className="actions">
-          <Button type="submit" loading={busy} disabled={busy || !clientId.trim() || !parseScopes(scopes).length}>Сохранить настройки</Button>
+          <Button type="submit" loading={busy} disabled={busy || !clientId.trim() || !parseScopes(scopes).length || (!status.redirectUrl && !callbackDomain.trim())}>Сохранить настройки</Button>
           <Text><a href="https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/" target="_blank" rel="noreferrer">Инструкция Cloudflare</a></Text>
         </div>
       </Stack></form>}
