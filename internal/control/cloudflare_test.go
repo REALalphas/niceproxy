@@ -166,7 +166,7 @@ func TestCloudflarePKCECallbackAndDNS(t *testing.T) {
 	resp = call(t, s, "POST", "/api/cloudflare/settings", `{"clientId":"replacement-public-client","scopes":["test.zone-read"]}`, session)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != 200 || !bytes.Contains(body, []byte("прежний OAuth-доступ")) {
+	if resp.StatusCode != 200 || !bytes.Contains(body, []byte("previous OAuth grant")) {
 		t.Fatalf("revocation failure hidden: %s %s", resp.Status, body)
 	}
 }

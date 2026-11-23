@@ -30,7 +30,7 @@ export const supportedRecord = (type: string): type is RecordInput["type"] => ["
 export function authorizationURL(value: string): string {
   const url = new URL(value);
   if (url.origin !== "https://dash.cloudflare.com" || url.username || url.password)
-    throw new Error("Сервер вернул недопустимый адрес авторизации Cloudflare.");
+    throw new Error("The server returned an invalid Cloudflare authorization URL.");
   return url.href;
 }
 const recordsPath = (id: string) => `/cloudflare/zones/${encodeURIComponent(id)}/records`;

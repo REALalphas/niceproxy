@@ -3,7 +3,7 @@ package model
 import "testing"
 
 func TestNormalizeRoutePath(t *testing.T) {
-	for input, want := range map[string]string{"": "/", "/": "/", "/api/": "/api", "/api/v1": "/api/v1", "/путь": "/путь"} {
+	for input, want := range map[string]string{"": "/", "/": "/", "/api/": "/api", "/api/v1": "/api/v1", "/café": "/café"} {
 		got, err := NormalizeRoutePath(input)
 		if err != nil || got != want {
 			t.Fatalf("%q -> %q %v", input, got, err)
