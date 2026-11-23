@@ -18,48 +18,8 @@ import (
 const cfSettingsName = "cloudflare.settings"
 
 type cloudflareSettings struct {
-	ClientID       string   `json:"clientId"`
-	Scopes         []string `json:"scopes"`
-	CallbackDomain string   `json:"callbackDomain,omitempty"`
-}
-
-const cloudflareCallbackPath = "/api/cloudflare/callback"
-
-func callbackURLForDomain(domain string) (string, error) {
-	domain = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(domain, ".")))
-	if domain == "" {
-		return "", nil
-	}
-	if len(domain) > 253 || strings.ContainsAny(domain, " \t\r\n/:?#@[]") || strings.Contains(domain, "..") {
-		return "", errors.New("укажите домен callback без схемы, пути и порта")
-	}
-	labels := strings.Split(domain, ".")
-	if len(labels) < 2 {
-		return "", errors.New("укажите домен с зоной, например cf.example.com")
-	}
-	for _, label := range labels {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return "", errors.New("укажите корректный домен callback")
-		}
-		for _, r := range label {
-			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' {
-				return "", errors.New("домен callback должен содержать только латинские буквы, цифры, дефисы и точки")
-			}
-		}
-	}
-	redirect := "https://" + domain + cloudflareCallbackPath
-	if err := validateCloudflareRedirect(redirect); err != nil {
-		return "", errors.New("укажите корректный HTTPS-домен callback")
-	}
-	return redirect, nil
-}
-
-func callbackDomainFromURL(redirectURL string) string {
-	u, err := url.Parse(redirectURL)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Port() != "" || net.ParseIP(u.Hostname()) != nil {
-		return ""
-	}
-	return strings.ToLower(u.Hostname())
+	ClientID string   `json:"clientId"`
+	Scopes   []string `json:"scopes"`
 }
 
 func (a *App) setCloudflareCallback(redirectURL string) {
@@ -78,7 +38,6 @@ func (a *App) ConfigureCloudflare(options cloudflare.Options) error {
 	a.cfMu.Lock()
 	defer a.cfMu.Unlock()
 	a.cfDefaultRedirect = options.RedirectURL
-	a.cfCallbackDomain = callbackDomainFromURL(options.RedirectURL)
 	a.setCloudflareCallback(options.RedirectURL)
 	body, err := a.db.Integration(cfSettingsName)
 	if err != nil {
@@ -93,15 +52,6 @@ func (a *App) ConfigureCloudflare(options cloudflare.Options) error {
 		}
 		options.ClientID = settings.ClientID
 		options.Scopes = settings.Scopes
-		if settings.CallbackDomain != "" {
-			a.cfCallbackDomain = settings.CallbackDomain
-			redirect, err := callbackURLForDomain(settings.CallbackDomain)
-			if err != nil {
-				a.cfInitError = "Сохранённый домен callback Cloudflare некорректен. Настройте OAuth-приложение заново."
-				return err
-			}
-			options.RedirectURL = redirect
-		}
 	}
 	a.cfOptions = options
 	a.setCloudflareCallback(options.RedirectURL)
@@ -120,7 +70,6 @@ func (a *App) cloudflareStatus() cloudflare.Status {
 	if status.Scopes == nil {
 		status.Scopes = []string{}
 	}
-	status.CallbackDomain = a.cfCallbackDomain
 	if a.cfInitError != "" {
 		status.Error = a.cfInitError
 	}
@@ -141,13 +90,8 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		settings.ClientID = strings.TrimSpace(settings.ClientID)
-		settings.CallbackDomain = strings.TrimSuffix(strings.TrimSpace(settings.CallbackDomain), ".")
 		if settings.ClientID == "" || len(settings.ClientID) > 256 || strings.ContainsAny(settings.ClientID, " \t\r\n") || len(settings.Scopes) < 1 || len(settings.Scopes) > 32 {
 			fail(w, 400, "Enter a public client ID and allowed OAuth scope IDs.")
-			return
-		}
-		if len(settings.CallbackDomain) > 253 {
-			fail(w, 400, "Домен callback слишком длинный.")
 			return
 		}
 		unique := map[string]bool{}
@@ -167,16 +111,7 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		options := a.cfOptions
 		options.ClientID = settings.ClientID
 		options.Scopes = settings.Scopes
-		if settings.CallbackDomain != "" {
-			redirect, err := callbackURLForDomain(settings.CallbackDomain)
-			if err != nil {
-				fail(w, 400, err.Error())
-				return
-			}
-			options.RedirectURL = redirect
-		} else {
-			options.RedirectURL = a.cfDefaultRedirect
-		}
+		options.RedirectURL = a.cfDefaultRedirect
 		if err := validateCloudflareRedirect(options.RedirectURL); err != nil {
 			fail(w, 400, err.Error())
 			return
@@ -207,10 +142,6 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		a.cf = manager
 		a.cfOptions = options
-		a.cfCallbackDomain = settings.CallbackDomain
-		if a.cfCallbackDomain == "" {
-			a.cfCallbackDomain = callbackDomainFromURL(options.RedirectURL)
-		}
 		a.setCloudflareCallback(options.RedirectURL)
 		a.cfInitError = revokeWarning
 		write(w, 200, a.cloudflareStatus())
@@ -356,7 +287,7 @@ func (a *App) cloudflareCallback(w http.ResponseWriter, r *http.Request) {
 func validateCloudflareRedirect(value string) error {
 	u, err := url.Parse(value)
 	if err != nil || u.Host == "" || u.Path != "/api/cloudflare/callback" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.RawPath != "" || u.Fragment != "" {
-		return errors.New("Set NICEPROXY_CF_REDIRECT_URL to the panel address with the /api/cloudflare/callback path.")
+		return errors.New("Set NICEPROXY_DOMAIN or configure a valid panel callback URL.")
 	}
 	host := u.Hostname()
 	ip := net.ParseIP(host)

@@ -53,7 +53,6 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
   const [setup, setSetup] = useState(false);
   const [clientId, setClientId] = useState("");
   const [scopes, setScopes] = useState("");
-  const [callbackDomain, setCallbackDomain] = useState("");
   const [zones, setZones] = useState<Zone[]>([]);
   const [zoneId, setZoneId] = useState("");
   const [records, setRecords] = useState<DNSRecord[]>([]);
@@ -67,7 +66,7 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
   const [oauthFailed, setOAuthFailed] = useState(callback === "error");
   const [oauthPending, setOAuthPending] = useState(false);
   const applyStatus = useCallback((s: CloudflareStatus) => {
-    setStatus(s); setClientId(s.clientId); setScopes(s.scopes.join(" ")); setCallbackDomain(s.callbackDomain ?? "");
+    setStatus(s); setClientId(s.clientId); setScopes(s.scopes.join(" "));
     setZones([]); setZoneId(""); setRecords([]); setEditor(null);
   }, []);
   const load = useCallback(async () => {
@@ -109,9 +108,9 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
   }
   function saveSettings(e: FormEvent) {
     e.preventDefault();
-    if (!clientId.trim() || !parseScopes(scopes).length || (!status?.redirectUrl && !callbackDomain.trim())) return;
+    if (!clientId.trim() || !parseScopes(scopes).length || !status?.redirectUrl) return;
     void action(async () => {
-      applyStatus(await cloudflareApi.settings(clientId.trim(), parseScopes(scopes), callbackDomain.trim()));
+      applyStatus(await cloudflareApi.settings(clientId.trim(), parseScopes(scopes)));
       setSetup(false);
     });
   }
@@ -238,16 +237,14 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
         <Text tone="secondary">Use Response Type Code, Grant type Authorization Code, and Token Authentication Method None. Grant Zone Read, DNS Read, DNS Write, and offline_access for the required zones.</Text>
         {status.redirectUrl
           ? <div className="callback-field"><TextInput id="cf-callback" label="Redirect URI" value={status.redirectUrl} readOnly /><Button type="button" variant="simple" onPress={() => void copyCallback()}>Copy</Button></div>
-          : <Alert>Redirect URI is not configured. For a local panel use http://127.0.0.1:9080/api/cloudflare/callback. For a LAN or domain setup, set NICEPROXY_CF_REDIRECT_URL and restart niceproxy.</Alert>}
-        <TextInput id="cf-callback-domain" label="Callback domain for Cloudflare (optional)" value={callbackDomain} onValueChange={setCallbackDomain} disabled={busy} hint="For example, cf.example.com. niceproxy adds https:// and /api/cloudflare/callback." />
-        {callbackDomain.trim() && <Text tone="secondary">After saving, open the panel through https://{callbackDomain.trim()}. The hostname must point to niceproxy.</Text>}
+          : <Alert>Redirect URI is not configured. For a local panel use http://127.0.0.1:9080/api/cloudflare/callback. For a public domain, set NICEPROXY_DOMAIN and restart niceproxy.</Alert>}
         <div className="form-grid">
           <TextInput id="cf-client-id" label="Public client ID" value={clientId} onValueChange={setClientId} required disabled={busy} />
           <TextInput id="cf-scopes" label="Scope ID" value={scopes} onValueChange={setScopes} hint="IDs from the Cloudflare dashboard, separated by spaces or commas." required disabled={busy} />
         </div>
         {status.connected && <Text tone="secondary">Saving new settings disconnects the current account.</Text>}
         <div className="actions">
-          <Button type="submit" loading={busy} disabled={busy || !clientId.trim() || !parseScopes(scopes).length || (!status.redirectUrl && !callbackDomain.trim())}>Save settings</Button>
+          <Button type="submit" loading={busy} disabled={busy || !clientId.trim() || !parseScopes(scopes).length || !status.redirectUrl}>Save settings</Button>
           <Text><a href="https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/" target="_blank" rel="noreferrer">Cloudflare guide</a></Text>
         </div>
       </Stack></form>}

@@ -50,7 +50,6 @@ type App struct {
 	cf                    *cloudflare.Manager
 	cfOptions             cloudflare.Options
 	cfDefaultRedirect     string
-	cfCallbackDomain      string
 	cfInitError           string
 	cfCallbackHost        atomic.Value // explicit trusted callback host; never learned from a request
 	cfHTTPSCallback       atomic.Bool

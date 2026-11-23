@@ -39,14 +39,13 @@ type Options struct {
 	AuthURL, TokenURL, RevokeURL, APIBase string
 }
 type Status struct {
-	Configured     bool       `json:"configured"`
-	Connected      bool       `json:"connected"`
-	ClientID       string     `json:"clientId"`
-	RedirectURL    string     `json:"redirectUrl"`
-	CallbackDomain string     `json:"callbackDomain"`
-	Scopes         []string   `json:"scopes"`
-	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
-	Error          string     `json:"error,omitempty"`
+	Configured  bool       `json:"configured"`
+	Connected   bool       `json:"connected"`
+	ClientID    string     `json:"clientId"`
+	RedirectURL string     `json:"redirectUrl"`
+	Scopes      []string   `json:"scopes"`
+	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
+	Error       string     `json:"error,omitempty"`
 }
 type Zone struct {
 	ID      string `json:"id"`
