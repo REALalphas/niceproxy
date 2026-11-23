@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [master]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -186,7 +185,8 @@ jobs:
     name: Build and publish GHCR image
     needs: [version, go-test, go-vet, go-splice, web-test, integration]
     if: >-
-      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
       needs.version.result == 'success' &&
       needs.go-test.result == 'success' &&
       needs.go-vet.result == 'success' &&
@@ -211,7 +211,6 @@ jobs:
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           registry: ghcr.io
@@ -225,10 +224,8 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=${{ needs.version.outputs.value }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=raw,value=latest
             type=sha,prefix=sha-
-            type=ref,event=branch
-            type=ref,event=tag
           labels: |
             org.opencontainers.image.title=niceproxy
             org.opencontainers.image.description=Self-hosted Linux HTTP(S), TCP and UDP proxy
@@ -241,7 +238,7 @@ jobs:
           file: ./Dockerfile
           build-args: |
             APP_VERSION=${{ needs.version.outputs.value }}
-          push: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')) }}
+          push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           platforms: linux/amd64,linux/arm64
