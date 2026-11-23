@@ -18,8 +18,21 @@ defaults:
     shell: bash
 
 jobs:
-  go:
-    name: Go tests, vet and TCP splice
+  version:
+    name: Calculate build version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      value: ${{ steps.version.outputs.value }}
+    steps:
+      - id: version
+        run: |
+          value="0.1.${GITHUB_RUN_NUMBER}"
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+          echo "Building niceproxy $value"
+
+  go-test:
+    name: Go tests with race detector
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -36,8 +49,38 @@ jobs:
       - name: Run race-enabled tests
         run: go test -race ./...
 
+  go-vet:
+    name: Go vet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
       - name: Run go vet
         run: go vet ./...
+
+  go-splice:
+    name: Verify TCP splice
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
 
       - name: Install strace if missing
         run: |
@@ -57,10 +100,15 @@ jobs:
             exit 1
           fi
 
-  integration:
-    name: Frontend and integration tests
+  web-test:
+    name: Frontend ${{ matrix.task }}
+    needs: version
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [typecheck, test]
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -77,11 +125,29 @@ jobs:
       - name: Install dependencies
         run: npm --prefix web ci
 
-      - name: Typecheck
-        run: npm --prefix web run typecheck
+      - name: Run frontend check
+        run: npm --prefix web run ${{ matrix.task }}
 
-      - name: Run frontend tests
-        run: npm --prefix web test
+  integration:
+    name: Build and integration smoke tests
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22.x'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm --prefix web ci
 
       - name: Build frontend
         run: npm --prefix web run build
@@ -92,11 +158,10 @@ jobs:
           go-version-file: go.mod
 
       - name: Build niceproxy
-        run: CGO_ENABLED=0 go build -trimpath -o bin/niceproxy ./cmd/niceproxy
+        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${{ needs.version.outputs.value }}" -o bin/niceproxy ./cmd/niceproxy
 
       - name: Download pinned Caddy
         env:
-          # Match the Caddy image version in Dockerfile.
           CADDY_VERSION: '2.10.2'
           CADDY_SHA512: 747df7ee74de188485157a383633a1a963fd9233b71fbb4a69ddcbcc589ce4e2cc82dacf5dbbe136cb51d17e14c59daeb5d9bc92487610b0f3b93680b2646546
         run: |
@@ -114,4 +179,70 @@ jobs:
         run: go test ./internal/caddy -run '^TestRealCaddy$' -count=1
 
       - name: Run HTTP, HTTPS, TCP and UDP smoke test
-        run: python3 scripts/smoke.py --caddy bin/caddy
+        run: python3 scripts/smoke.py --caddy bin/caddy --binary bin/niceproxy
+
+  image:
+    name: Build and publish GHCR image
+    needs: [version, go-test, go-vet, go-splice, web-test, integration]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
+      needs.version.result == 'success' &&
+      needs.go-test.result == 'success' &&
+      needs.go-vet.result == 'success' &&
+      needs.go-splice.result == 'success' &&
+      needs.web-test.result == 'success' &&
+      needs.integration.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: metadata
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ needs.version.outputs.value }}
+            type=raw,value=latest
+            type=sha,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=niceproxy
+            org.opencontainers.image.description=Self-hosted Linux HTTP(S), TCP and UDP proxy
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - name: Build image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ./Dockerfile
+          build-args: |
+            APP_VERSION=${{ needs.version.outputs.value }}
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha,scope=niceproxy
+          cache-to: type=gha,mode=max,scope=niceproxy
+          provenance: mode=max
+          sbom: true

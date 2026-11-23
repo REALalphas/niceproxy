@@ -1,7 +1,7 @@
 services:
   niceproxy:
     build: .
-    image: niceproxy:local
+    image: ${NICEPROXY_IMAGE:-niceproxy:local}
     restart: unless-stopped
     network_mode: host
     cap_drop: [ALL]
