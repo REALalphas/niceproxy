@@ -37,6 +37,8 @@ HTTP and direct rules share one list. Each row shows the incoming endpoint, targ
 
 Cloudflare uses official OAuth PKCE. No API token is entered in the panel. Register one public OAuth client for the installation, then connect the account. The panel can list zones and create or edit A, AAAA, and CNAME records after explicit confirmation. See [docs/cloudflare.md](docs/cloudflare.md).
 
+Set `NICEPROXY_DOMAIN=cf.example.com` when the Cloudflare callback should use a public hostname. Caddy then serves that hostname, obtains its HTTPS certificate, and proxies the panel and `/api/cloudflare/callback`. Leave it empty for a fully local HTTP callback.
+
 Forward required external ports from the router to the niceproxy host. If forwarding a full range, the host firewall must protect unrelated services because host networking exposes existing listeners. niceproxy listens only on enabled rules.
 
 ## State and data

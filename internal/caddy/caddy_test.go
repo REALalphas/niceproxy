@@ -132,6 +132,33 @@ func TestBuildConfig(t *testing.T) {
 	}
 }
 
+func TestBuildConfigPanelDomain(t *testing.T) {
+	o := options(t)
+	o.PanelDomain = "cf.example.com"
+	b, err := BuildConfig(o, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	for _, want := range []string{`"cf.example.com"`, `"dial":"unix/`, `"Host":["{http.request.host}"]`, `https://cf.example.com{http.request.uri}`, `"module":"acme"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("panel domain config is missing %s: %s", want, text)
+		}
+	}
+	if _, err := BuildConfig(o, []model.HTTPRoute{{Host: "cf.example.com", Target: "http://localhost", Enabled: true}}); err == nil {
+		t.Fatal("accepted a route on the reserved panel domain")
+	}
+	for _, domain := range []string{"", "127.0.0.1", "*.example.com", "bad/name"} {
+		o.PanelDomain = domain
+		if domain == "" {
+			continue
+		}
+		if _, err := BuildConfig(o, nil); err == nil {
+			t.Fatalf("accepted invalid panel domain %q", domain)
+		}
+	}
+}
+
 func TestPathPriorityAndDomainPolicy(t *testing.T) {
 	o := options(t)
 	routes := []model.HTTPRoute{

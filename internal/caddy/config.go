@@ -16,8 +16,8 @@ import (
 )
 
 type Options struct {
-	Binary, RuntimeDir, DataDir, PanelListen, BackendSocket string
-	HTTPPort, HTTPSPort                                     int
+	Binary, RuntimeDir, DataDir, PanelListen, PanelDomain, BackendSocket string
+	HTTPPort, HTTPSPort                                                  int
 }
 
 func defaults(o Options) Options {
@@ -33,6 +33,7 @@ func defaults(o Options) Options {
 	if o.HTTPSPort == 0 {
 		o.HTTPSPort = 443
 	}
+	o.PanelDomain = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(o.PanelDomain, ".")))
 	return o
 }
 
@@ -71,6 +72,9 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 	if err != nil || perr != nil || net.ParseIP(ph) == nil || pn < 1 || pn > 65535 || pn == o.HTTPPort || pn == o.HTTPSPort {
 		return nil, fmt.Errorf("panel listen must be a literal IP and a distinct valid port")
 	}
+	if o.PanelDomain != "" && (!hostname(o.PanelDomain) || !strings.Contains(o.PanelDomain, ".") || net.ParseIP(o.PanelDomain) != nil) {
+		return nil, fmt.Errorf("invalid panel domain")
+	}
 	proxy := func(dial string, transport object) object {
 		h := object{"handler": "reverse_proxy", "upstreams": []object{{"dial": dial}}}
 		if transport != nil {
@@ -102,6 +106,9 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 		host := strings.ToLower(r.Host)
 		if !hostname(host) || net.ParseIP(host) != nil {
 			return nil, fmt.Errorf("invalid route hostname")
+		}
+		if o.PanelDomain != "" && host == o.PanelDomain {
+			return nil, fmt.Errorf("panel domain is reserved: %s", o.PanelDomain)
 		}
 		mode := r.TLS
 		if mode == "" {
@@ -183,6 +190,22 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 			location += ":" + strconv.Itoa(o.HTTPSPort)
 		}
 		plain = append(plain, object{"match": []object{{"host": []string{host}}}, "handle": []object{{"handler": "static_response", "status_code": 308, "headers": object{"Location": []string{location + "{http.request.uri}"}}}}, "terminal": true})
+	}
+	if o.PanelDomain != "" {
+		panelProxy := proxy("unix/"+o.BackendSocket, nil)
+		panelProxy["headers"] = object{"request": object{"set": object{"Host": []string{"{http.request.host}"}}}}
+		secure = append(secure, object{
+			"match":    []object{{"host": []string{o.PanelDomain}}},
+			"handle":   []object{panelProxy},
+			"terminal": true,
+		})
+		location := "https://" + o.PanelDomain
+		plain = append(plain, object{
+			"match":    []object{{"host": []string{o.PanelDomain}}},
+			"handle":   []object{{"handler": "static_response", "status_code": 308, "headers": object{"Location": []string{location + "{http.request.uri}"}}}},
+			"terminal": true,
+		})
+		policies = append(policies, object{"subjects": []string{o.PanelDomain}, "issuers": []object{{"module": "acme"}}})
 	}
 	if len(plain) > 0 {
 		plain = append(plain, object{"handle": []object{{"handler": "static_response", "status_code": 404}}, "terminal": true})

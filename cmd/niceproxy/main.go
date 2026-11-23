@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -158,7 +159,8 @@ func run() error {
 	if err := os.Chmod(socket, 0600); err != nil {
 		return err
 	}
-	caddyOptions := caddy.Options{Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir, PanelListen: *panel, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort}
+	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(os.Getenv("NICEPROXY_DOMAIN")), "."))
+	caddyOptions := caddy.Options{Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir, PanelListen: *panel, PanelDomain: domain, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort}
 	cm := caddy.New(caddyOptions)
 	good, err := db.LastGood()
 	if err != nil {
@@ -192,8 +194,10 @@ func run() error {
 		return err
 	}
 	app.SetHTTPActive(startedRoutes)
-	cfRedirect := os.Getenv("NICEPROXY_CF_REDIRECT_URL")
-	if cfRedirect == "" {
+	cfRedirect := ""
+	if domain != "" {
+		cfRedirect = "https://" + domain + "/api/cloudflare/callback"
+	} else {
 		host, _, _ := net.SplitHostPort(*panel)
 		ip := net.ParseIP(host)
 		if host == "localhost" || ip != nil && ip.IsLoopback() {

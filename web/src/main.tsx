@@ -671,7 +671,7 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
                   {callbackUrl
                     ? <>
                       <Text font="mono">{callbackUrl}</Text>
-                      <Text tone="secondary">Service endpoint for Cloudflare sign-in. It does not create a separate Caddy route. Configure DNS and an HTTPS reverse proxy for the hostname separately.</Text>
+                      <Text tone="secondary">Service endpoint for Cloudflare sign-in and the management panel. When NICEPROXY_DOMAIN is set, Caddy serves this hostname over HTTPS. Configure DNS and port forwarding separately.</Text>
                     </>
                     : <Text tone="secondary">Callback is not configured. Open Cloudflare and enter a local URL or a domain with a subdomain.</Text>}
                   <div className="actions">
