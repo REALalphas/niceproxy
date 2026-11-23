@@ -49,6 +49,8 @@ type App struct {
 	cfMu                  sync.Mutex
 	cf                    *cloudflare.Manager
 	cfOptions             cloudflare.Options
+	cfDefaultRedirect     string
+	cfCallbackDomain      string
 	cfInitError           string
 	cfCallbackHost        atomic.Value // explicit trusted callback host; never learned from a request
 	cfHTTPSCallback       atomic.Bool

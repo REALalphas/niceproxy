@@ -6,12 +6,56 @@ niceproxy uses OAuth 2.0 Authorization Code + PKCE (S256). **Sign in with Cloudf
 
 Cloudflare requires a registered OAuth client. Register niceproxy in your own Cloudflare account.
 
-1. Open [Cloudflare → Manage Account → OAuth clients](https://dash.cloudflare.com/?to=/:account/oauth-clients) and create a niceproxy client.
-2. Use response type `code`, grant types `authorization_code` and `refresh_token`, and token endpoint authentication `none` for PKCE.
-3. Copy the Redirect URL from the niceproxy Cloudflare panel. Local native default is `http://127.0.0.1:19080/api/cloudflare/callback`; Docker default is `http://127.0.0.1:9080/api/cloudflare/callback`. It must match exactly, including the port. HTTP is allowed only on loopback. Remote callbacks require HTTPS.
-4. Grant only Zone Read, DNS Read, DNS Write, and `offline_access` for the required resources. Use the OAuth scope IDs shown for the registered client. Do not use API token permission names or invented `dns:*` values. Cloudflare also exposes valid IDs at `/client/v4/oauth/scopes`.
-5. Save the public Client ID and scope IDs in the niceproxy Cloudflare panel. These are app settings, not account secrets.
-6. Click **Sign in with Cloudflare** and approve the requested access.
+Open [Cloudflare → Manage Account → OAuth clients](https://dash.cloudflare.com/?to=/:account/oauth-clients), create a client, and fill the form as follows:
+
+| Cloudflare field | Value |
+| --- | --- |
+| **Client Name** | `niceproxy` or another name for this installation |
+| **Response Type** | `Code` |
+| **Grant type** | `Authorization Code` |
+| **Token Authentication Method** | `None` |
+| **Redirect (Callback) URLs** | The exact callback shown in the niceproxy panel, one URL |
+| **Client URL** *(optional)* | Leave empty |
+| **Logo** *(optional)* | Leave empty |
+| **Policy URL** *(optional)* | Leave empty |
+| **Terms of Service URL** *(optional)* | Leave empty |
+| **Post-logout Redirect URLs** *(optional)* | Leave empty |
+| **Allowed CORS Origins** *(optional)* | Leave empty |
+
+niceproxy uses Authorization Code with PKCE S256, so a client secret is not needed. Add `offline_access` to the granted scopes when refresh access is required.
+
+### Callback URL
+
+For a fully local installation, the panel derives this callback automatically:
+
+```text
+http://127.0.0.1:9080/api/cloudflare/callback
+```
+
+Copy the value with the **Copy** button in the niceproxy panel and paste it into Cloudflare's **Redirect (Callback) URLs** field. A domain is not required for a loopback callback.
+
+If the panel listens on a LAN address, `0.0.0.0`, or a domain, set `NICEPROXY_CF_REDIRECT_URL` and restart niceproxy. For Docker, add this to `.env`:
+
+```dotenv
+NICEPROXY_CF_REDIRECT_URL=https://panel.example.com/api/cloudflare/callback
+```
+
+The Cloudflare value and niceproxy value must match exactly, including scheme, hostname, and port. Remote callbacks require HTTPS. Do not register `0.0.0.0`, a container address, or a URL with query parameters. For another local port, replace `9080`, for example `http://127.0.0.1:19080/api/cloudflare/callback`.
+
+### Callback subdomain
+
+To use a dedicated domain or subdomain, fill **Callback domain for Cloudflare** in niceproxy with a hostname such as `cf.example.com`. niceproxy builds `https://cf.example.com/api/cloudflare/callback`, saves the setting, and shows the resulting URL for copying.
+
+Create the DNS record for that hostname and configure an HTTPS reverse proxy to the niceproxy panel separately. After saving, open niceproxy through that hostname. The OAuth start and callback checks require the request Host to match the configured hostname.
+
+The configured callback also appears as a separate card in **Routes**. This card documents the OAuth endpoint and does not add a Caddy route.
+
+### Scope IDs and saving settings
+
+1. Grant only Zone Read, DNS Read, DNS Write, and `offline_access` for the required resources.
+2. Cloudflare ties these permissions to OAuth scope IDs. Enter the IDs shown for the registered client in niceproxy's **Scope ID** field, separated by spaces or commas. Do not use API token permission names or invented `dns:*` values. Cloudflare also exposes valid IDs at `/client/v4/oauth/scopes`.
+3. Save the public Client ID and scope IDs in the niceproxy Cloudflare panel. These are app settings, not account secrets.
+4. Click **Sign in with Cloudflare** and approve the requested access.
 
 A private client is available to members of its account. A shared client for other accounts requires public visibility and publisher domain verification. Personal installations can remain private.
 
@@ -29,6 +73,6 @@ Access and refresh tokens are encrypted in SQLite with AES-GCM. `/data/cloudflar
 
 OAuth start requires an administrator session. The callback validates one-time state, PKCE, and the initiating session. Disconnect removes the local connection and attempts Cloudflare revocation. If the network call fails, the panel links to manual revocation.
 
-`NICEPROXY_CF_REDIRECT_URL` sets the registered callback URL. Loopback panels derive it automatically. Client ID and scopes are stored separately from tokens. Changing these settings disconnects the old grant.
+`NICEPROXY_CF_REDIRECT_URL` sets the default callback URL. Loopback panels derive it automatically. A callback domain saved in the OAuth panel takes precedence and is stored in SQLite with the Client ID and scopes. Changing these settings disconnects the old grant.
 
 A real sign-in needs a registered client and valid scopes. Without them, the panel shows setup state. Local OAuth/API test servers cover the protocol, refresh, and DNS client. The real account is connected by the user.

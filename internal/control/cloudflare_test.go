@@ -227,3 +227,36 @@ func TestExplicitHTTPSCallbackHostIsAllowed(t *testing.T) {
 		t.Fatal(resp.Status)
 	}
 }
+
+func TestCloudflareCallbackDomainCanBeConfiguredAndPersisted(t *testing.T) {
+	a, s, session := fixture(t)
+	options := cloudflare.Options{DataDir: t.TempDir(), RedirectURL: s.URL + "/api/cloudflare/callback"}
+	if err := a.ConfigureCloudflare(options); err != nil {
+		t.Fatal(err)
+	}
+	resp := call(t, s, "POST", "/api/cloudflare/settings", `{"clientId":"callback-client","scopes":["test.read"],"callbackDomain":"cf.example.com"}`, session)
+	var status cloudflare.Status
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 || status.RedirectURL != "https://cf.example.com/api/cloudflare/callback" || status.CallbackDomain != "cf.example.com" {
+		t.Fatalf("unexpected callback settings: %d %#v", resp.StatusCode, status)
+	}
+	if err := a.ConfigureCloudflare(options); err != nil {
+		t.Fatal(err)
+	}
+	resp = call(t, s, "GET", "/api/cloudflare", "", session)
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if status.RedirectURL != "https://cf.example.com/api/cloudflare/callback" || status.CallbackDomain != "cf.example.com" {
+		t.Fatalf("callback domain was not persisted: %#v", status)
+	}
+	resp = call(t, s, "POST", "/api/cloudflare/settings", `{"clientId":"callback-client","scopes":["test.read"],"callbackDomain":"https://bad.example"}`, session)
+	resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("invalid callback domain accepted: %s", resp.Status)
+	}
+}

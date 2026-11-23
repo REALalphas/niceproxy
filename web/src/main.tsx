@@ -18,6 +18,7 @@ import "@alpha/core/styles.css";
 import "./app.css";
 import { Cloudflare } from "./Cloudflare";
 import { CloudflareOAuthWindow, isCloudflareOAuthWindow, type CloudflareCallback } from "./CloudflareOAuth";
+import { cloudflareApi, type CloudflareStatus } from "./cloudflare-api";
 import {
   api,
   type Auth,
@@ -393,6 +394,7 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
   const [auth, setAuth] = useState<Auth | null>(null);
   const [config, setConfig] = useState<ProxyConfig | null>(null);
   const [health, setHealth] = useState<ServiceHealth | null>(null);
+  const [cloudflareStatus, setCloudflareStatus] = useState<CloudflareStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [section, setSection] = useState(sectionFromHash);
@@ -413,9 +415,10 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
       const a = await api.auth();
       setAuth(a);
       if (a.authenticated) {
-        const [c, h] = await Promise.all([api.config(), api.health()]);
+        const [c, h, cf] = await Promise.all([api.config(), api.health(), cloudflareApi.status()]);
         setConfig(c);
         setHealth(h);
+        setCloudflareStatus(cf);
       }
     } catch (e) {
       if (!(e instanceof Unauthorized)) setError(err(e));
@@ -429,6 +432,7 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
       setAuth(null);
       setConfig(null);
       setHealth(null);
+      setCloudflareStatus(null);
       void load();
     };
     const changed = () => void load();
@@ -522,6 +526,7 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
     ...config.httpRoutes.map((route) => ({ kind: "http-routes" as const, route })),
     ...config.directRules.map((route) => ({ kind: "direct-rules" as const, route })),
   ].filter(({ route }) => filter === "all" || ("host" in route ? filter === "http" : filter === route.protocol));
+  const callbackUrl = cloudflareStatus?.redirectUrl ?? "";
   const nav = [
     { id: "overview", label: "Overview", icon: "home" as const },
     { id: "routes", label: "Routes", icon: "link" as const,
@@ -656,6 +661,22 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
                   ) : (
                     <DirectForm onDone={(r) => upsert("direct", r)} onCancel={() => setAdding(false)} />
                   )}
+                </Stack>
+              </Card>
+            )}
+            {cloudflareStatus && (
+              <Card>
+                <Stack gap={2}>
+                  <Text as="h2" size="xl" font="heading">Cloudflare callback</Text>
+                  {callbackUrl
+                    ? <>
+                      <Text font="mono">{callbackUrl}</Text>
+                      <Text tone="secondary">Service endpoint for Cloudflare sign-in. It does not create a separate Caddy route. Configure DNS and an HTTPS reverse proxy for the hostname separately.</Text>
+                    </>
+                    : <Text tone="secondary">Callback is not configured. Open Cloudflare and enter a local URL or a domain with a subdomain.</Text>}
+                  <div className="actions">
+                    <Button variant="simple" onPress={() => { setSection("cloudflare"); window.location.hash = "cloudflare"; setAdding(false); setEditing(null); }}>Configure in Cloudflare</Button>
+                  </div>
                 </Stack>
               </Card>
             )}

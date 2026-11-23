@@ -5,6 +5,7 @@ export type CloudflareStatus = {
   connected: boolean;
   clientId: string;
   redirectUrl: string;
+  callbackDomain?: string;
   scopes: string[];
   expiresAt?: string;
   error?: string;
@@ -17,6 +18,7 @@ const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(x => 
 const status = (v: unknown): v is CloudflareStatus => object(v) &&
   typeof v.configured === "boolean" && typeof v.connected === "boolean" &&
   typeof v.clientId === "string" && typeof v.redirectUrl === "string" && strings(v.scopes) &&
+  (v.callbackDomain === undefined || typeof v.callbackDomain === "string") &&
   (v.expiresAt === undefined || typeof v.expiresAt === "string") &&
   (v.error === undefined || typeof v.error === "string");
 const zone = (v: unknown): v is Zone => object(v) && typeof v.id === "string" &&
@@ -36,7 +38,7 @@ export function authorizationURL(value: string): string {
 const recordsPath = (id: string) => `/cloudflare/zones/${encodeURIComponent(id)}/records`;
 export const cloudflareApi = {
   status: () => request("/cloudflare", status),
-  settings: (clientId: string, scopes: string[]) => request("/cloudflare/settings", status, "POST", { clientId, scopes }),
+  settings: (clientId: string, scopes: string[], callbackDomain: string) => request("/cloudflare/settings", status, "POST", { clientId, scopes, callbackDomain }),
   connect: () => request("/cloudflare/connect", (v): v is { url: string } => object(v) && typeof v.url === "string", "POST"),
   disconnect: () => request("/cloudflare/disconnect", (v): v is { ok: true; warning?: string } => object(v) && v.ok === true &&
     (v.warning === undefined || typeof v.warning === "string"), "POST"),
