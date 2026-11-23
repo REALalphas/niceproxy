@@ -5,7 +5,9 @@ import http.client
 import http.cookiejar
 import http.server
 import json
+import os
 import pathlib
+import re
 import socket
 import socketserver
 import ssl
@@ -14,6 +16,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -99,6 +102,17 @@ def main():
                     raise
         try:
             assert start() == {"configured": False, "authenticated": False}
+            subprocess.run([command[0], "healthcheck"], check=True, timeout=5,
+                           env={**os.environ, "NICEPROXY_RUNTIME_DIR": str(runtime)})
+            with client.open(base + "/", timeout=5) as response:
+                page = response.read()
+                assert response.headers.get_content_type() == "text/html"
+            module = re.search(rb'<script\b[^>]*\bsrc="(\.?/assets/[^"/]+\.js)"', page)
+            assert module, "panel HTML did not reference a built JavaScript bundle"
+            with client.open(urllib.parse.urljoin(base + "/", module[1].decode()), timeout=5) as response:
+                assert response.headers.get_content_type() in {"text/javascript", "application/javascript"}
+                assert response.read(), "panel JavaScript bundle was empty"
+
             api("setup", {"password": "temporary-smoke-password-123"})
             for host, tls in [("plain.test", "off"), ("secure.test", "internal")]:
                 route = api("http-routes", {"host": host, "target": f"http://127.0.0.1:{servers[0].server_port}", "tls": tls, "enabled": True})
@@ -194,7 +208,7 @@ def main():
                 api("direct-rules/" + r["id"], method="DELETE")
             api("logout", method="POST")
             assert not api("auth")["authenticated"]
-            print("PASS: setup/session, HTTP/HTTPS path priority and segment boundaries, strip-prefix/query, TCP/UDP remapping, restart persistence, occupied-port recovery, disable/delete/logout")
+            print("PASS: panel assets, healthcheck, setup/session, HTTP/HTTPS path priority and segment boundaries, strip-prefix/query, TCP/UDP remapping, restart persistence, occupied-port recovery, disable/delete/logout")
         finally:
             stop()
             for server in servers:
