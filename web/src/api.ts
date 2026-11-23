@@ -107,25 +107,25 @@ async function performRequest<T>(
     });
   } catch {
     throw new Error(
-      "Сервер недоступен или время ожидания истекло. Повторите попытку.",
+      "The server is unavailable or the request timed out. Try again.",
     );
   }
   const body: unknown = await response.json().catch(() => null);
   if (response.status === 401) {
     if (path === "/login" || path === "/setup") {
-      throw new Error("Неверный пароль. Повторите попытку.");
+      throw new Error("Incorrect password. Try again.");
     }
     window.dispatchEvent(new Event("niceproxy:unauthorized"));
-    throw new Unauthorized("Сессия завершена. Войдите снова.");
+    throw new Unauthorized("Your session has expired. Sign in again.");
   }
   if (!response.ok)
     throw new Error(
       record(body) && typeof body.error === "string"
         ? body.error
-        : `Ошибка сервера: HTTP ${response.status}`,
+        : `Server error: HTTP ${response.status}`,
     );
   if (!valid(body))
-    throw new Error("Сервер вернул данные в неизвестном формате.");
+    throw new Error("The server returned an invalid response.");
   return body;
 }
 // All mutations share one queue, including actions from different cards.

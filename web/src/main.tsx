@@ -28,7 +28,7 @@ import {
   Unauthorized,
 } from "./api";
 const err = (e: unknown) =>
-  e instanceof Error ? e.message : "Произошла неизвестная ошибка.";
+  e instanceof Error ? e.message : "An unknown error occurred.";
 function ErrorMessage({ children }: { children: string }) {
   return (
     <div role="alert">
@@ -66,16 +66,16 @@ function AuthScreen({
         <form onSubmit={submit}>
           <Stack gap={5}>
             <Text as="h1" size="heading" font="heading">
-              {initial.configured ? "Вход в Niceproxy" : "Первичная настройка"}
+              {initial.configured ? "Sign in to Niceproxy" : "Initial setup"}
             </Text>
             <Text tone="secondary">
               {initial.configured
-                ? "Введите пароль администратора."
-                : "Создайте пароль администратора для управления прокси."}
+                ? "Enter the administrator password."
+                : "Create an administrator password to manage the proxy."}
             </Text>
             <TextInput
               id="password"
-              label="Пароль"
+              label="Password"
               type="password"
               value={password}
               onValueChange={setPassword}
@@ -87,7 +87,7 @@ function AuthScreen({
             />
             {error && <ErrorMessage>{error}</ErrorMessage>}
             <Button type="submit" loading={busy} disabled={busy}>
-              {initial.configured ? "Войти" : "Сохранить пароль"}
+              {initial.configured ? "Sign in" : "Save password"}
             </Button>
           </Stack>
         </form>
@@ -109,12 +109,12 @@ function Status({
       <Badge
         value={
           !enabled
-            ? "Выключено"
+            ? "Disabled"
             : status === "healthy"
-              ? "Применено"
+              ? "Applied"
               : status === "error"
-                ? "Ошибка"
-                : "Неизвестно"
+                ? "Error"
+                : "Unknown"
         }
       />
       {error && <Text tone="muted">{error}</Text>}
@@ -148,14 +148,14 @@ function HttpForm({
         u = new URL(target);
       } catch {
         throw new Error(
-          "Введите корректный целевой URL: http:// или https://.",
+          "Enter a valid target URL starting with http:// or https://.",
         );
       }
       if (!["http:", "https:"].includes(u.protocol))
-        throw new Error("Цель должна начинаться с http:// или https://");
-      if (!host.trim()) throw new Error("Укажите домен.");
+        throw new Error("The target must start with http:// or https://");
+      if (!host.trim()) throw new Error("Enter a domain.");
       if (!path.startsWith("/") || /[?#\s]/.test(path))
-        throw new Error("Путь должен начинаться с / и не содержать пробелы, ? или #.");
+        throw new Error("The path must start with / and contain no spaces, ? or #.");
       setBusy(true);
       onDone(
         await api.saveHttp(
@@ -180,13 +180,13 @@ function HttpForm({
       <Stack gap={3}>
         <Text as="h3" size="lg" font="heading">
           {route
-            ? "Изменить HTTP/HTTPS маршрут"
-            : "Добавить HTTP/HTTPS маршрут"}
+            ? "Edit HTTP/HTTPS route"
+            : "Add HTTP/HTTPS route"}
         </Text>
         <div className="form-grid">
           <TextInput
             id="http-host"
-            label="Домен"
+            label="Domain"
             value={host}
             onValueChange={setHost}
             placeholder="example.com"
@@ -195,20 +195,20 @@ function HttpForm({
           />
           <TextInput
             id="http-path"
-            label="Путь"
+            label="Path"
             value={path}
             onValueChange={(value) => {
               setPath(value);
               if (value === "/") setStripPrefix(false);
             }}
             placeholder="/api"
-            hint="/api подходит для /api и /api/*, но не /apix. Более точный путь имеет приоритет; / подходит для всех путей. Регистр учитывается."
+            hint="/api matches /api and /api/*, but not /apix. More specific paths take priority. / matches every path. Matching is case-sensitive."
             required
             disabled={busy}
           />
           <TextInput
             id="http-target"
-            label="Целевой URL"
+            label="Target URL"
             type="url"
             value={target}
             onValueChange={setTarget}
@@ -223,27 +223,27 @@ function HttpForm({
             onValueChange={(v) => setTls(v as HttpRoute["tls"])}
             disabled={busy}
             options={[
-              { value: "auto", label: "Автоматически" },
-              { value: "internal", label: "Внутренний сертификат" },
-              { value: "off", label: "Выключен" },
+              { value: "auto", label: "Automatic" },
+              { value: "internal", label: "Internal certificate" },
+              { value: "off", label: "Off" },
             ]}
           />
         </div>
         <Text tone="secondary">
-          По умолчанию путь и параметры запроса передаются без изменений.
-          Для разных путей одного домена выбирайте одинаковый TLS.
+          The path and query are passed through unchanged by default.
+          Use the same TLS mode for all paths on one domain.
         </Text>
         <Switch
           id="http-strip-prefix"
-          label="Убирать префикс пути"
-          hint="Например, /api/users → /users; параметры запроса сохраняются."
+          label="Strip path prefix"
+          hint="Example: /api/users → /users. Query parameters are preserved."
           checked={path !== "/" && stripPrefix}
           onCheckedChange={setStripPrefix}
           disabled={busy || path === "/"}
         />
         <Switch
           id="http-enabled"
-          label="Включён"
+          label="Enabled"
           checked={enabled}
           onCheckedChange={setEnabled}
           disabled={busy}
@@ -251,11 +251,11 @@ function HttpForm({
         {error && <ErrorMessage>{error}</ErrorMessage>}
         <div className="actions">
           <Button type="submit" loading={busy} disabled={busy}>
-            {route ? "Сохранить" : "Добавить"}
+            {route ? "Save" : "Add"}
           </Button>
           {onCancel && (
             <Button type="button" variant="simple" onPress={onCancel} disabled={busy}>
-              Отмена
+              Cancel
             </Button>
           )}
         </div>
@@ -285,7 +285,7 @@ function DirectForm({
     if (busy) return;
     const valid = (v: string) => /^\d+$/.test(v) && +v >= 1 && +v <= 65535;
     if (!valid(listenPort) || !valid(targetPort) || !targetHost.trim()) {
-      setError("Проверьте хосты и порты (1–65535).");
+      setError("Check the hosts and ports (1–65535).");
       return;
     }
     setBusy(true);
@@ -313,12 +313,12 @@ function DirectForm({
     <form onSubmit={submit}>
       <Stack gap={3}>
         <Text as="h3" size="lg" font="heading">
-          {rule ? "Изменить прямое правило" : "Добавить прямое правило"}
+          {rule ? "Edit direct rule" : "Add direct rule"}
         </Text>
         <div className="form-grid">
           <Select
             id="protocol"
-            label="Протокол"
+            label="Protocol"
             value={protocol}
             onValueChange={(v) => setProtocol(v as DirectRule["protocol"])}
             disabled={busy}
@@ -329,7 +329,7 @@ function DirectForm({
           />
           <TextInput
             id="listen-host"
-            label="Хост прослушивания"
+            label="Listen host"
             value={listenHost}
             onValueChange={setListenHost}
             placeholder="0.0.0.0"
@@ -337,7 +337,7 @@ function DirectForm({
           />
           <TextInput
             id="listen-port"
-            label="Порт прослушивания"
+            label="Listen port"
             value={listenPort}
             onValueChange={setListenPort}
             placeholder="8080"
@@ -346,7 +346,7 @@ function DirectForm({
           />
           <TextInput
             id="target-host"
-            label="Целевой хост"
+            label="Target host"
             value={targetHost}
             onValueChange={setTargetHost}
             placeholder="127.0.0.1"
@@ -355,7 +355,7 @@ function DirectForm({
           />
           <TextInput
             id="target-port"
-            label="Целевой порт"
+            label="Target port"
             value={targetPort}
             onValueChange={setTargetPort}
             placeholder="80"
@@ -365,7 +365,7 @@ function DirectForm({
         </div>
         <Switch
           id="direct-enabled"
-          label="Включено"
+          label="Enabled"
           checked={enabled}
           onCheckedChange={setEnabled}
           disabled={busy}
@@ -373,11 +373,11 @@ function DirectForm({
         {error && <ErrorMessage>{error}</ErrorMessage>}
         <div className="actions">
           <Button type="submit" loading={busy} disabled={busy}>
-            {rule ? "Сохранить" : "Добавить"}
+            {rule ? "Save" : "Add"}
           </Button>
           {onCancel && (
             <Button type="button" variant="simple" onPress={onCancel} disabled={busy}>
-              Отмена
+              Cancel
             </Button>
           )}
         </div>
@@ -442,7 +442,7 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
   if (loading && !auth)
     return (
       <main className="alpha-ui auth-page">
-        <Text>Загрузка…</Text>
+        <Text>Loading…</Text>
       </main>
     );
   if (auth && !auth.authenticated)
@@ -455,9 +455,9 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
             <Text as="h1" size="heading" font="heading">
               Niceproxy
             </Text>
-            <Text>{error || "Конфигурация недоступна."}</Text>
+            <Text>{error || "Configuration unavailable."}</Text>
             <Button onPress={() => void load()} loading={loading}>
-              Повторить
+              Retry
             </Button>
           </Stack>
         </Card>
@@ -523,8 +523,8 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
     ...config.directRules.map((route) => ({ kind: "direct-rules" as const, route })),
   ].filter(({ route }) => filter === "all" || ("host" in route ? filter === "http" : filter === route.protocol));
   const nav = [
-    { id: "overview", label: "Обзор", icon: "home" as const },
-    { id: "routes", label: "Маршруты", icon: "link" as const,
+    { id: "overview", label: "Overview", icon: "home" as const },
+    { id: "routes", label: "Routes", icon: "link" as const,
       notifications: config.httpRoutes.length + config.directRules.length },
     { id: "cloudflare", label: "Cloudflare", icon: "link" as const },
   ];
@@ -545,11 +545,11 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
           <div>
             <Text as="h1" size="heading" font="heading">
               {section === "overview"
-                ? "Обзор"
-                : section === "cloudflare" ? "Cloudflare" : "Маршруты"}
+                ? "Overview"
+                : section === "cloudflare" ? "Cloudflare" : "Routes"}
             </Text>
             {section !== "cloudflare" && <Text tone="secondary">
-              Управление маршрутизацией и состоянием применения
+              Manage routes and apply status
             </Text>}
           </div>
           <div className="actions">
@@ -558,7 +558,7 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
               onPress={() => void load()}
               loading={loading}
             >
-              Обновить
+              Refresh
             </Button>
             <Button
               variant="simple"
@@ -572,7 +572,7 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
                   .catch((e) => setError(err(e)))
               }
             >
-              Выйти
+              Sign out
             </Button>
           </div>
         </header>
@@ -587,35 +587,35 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
             <Card>
               <Stack gap={3}>
                 <Text as="h2" size="xl" font="heading">
-                  Состояние сервиса
+                  Service status
                 </Text>
                 <div className="stats">
                   <Text>
-                    Сохранённая ревизия: <strong>{config.revision}</strong>
+                    Saved revision: <strong>{config.revision}</strong>
                   </Text>
                   <Text>
-                    Применённая ревизия:{" "}
-                    <strong>{health && health.appliedRevision < 0 ? "Частичное применение" : (health?.appliedRevision ?? "—")}</strong>
+                    Applied revision:{" "}
+                    <strong>{health && health.appliedRevision < 0 ? "Partially applied" : (health?.appliedRevision ?? "—")}</strong>
                   </Text>
                   <Text>
-                    Состояние: <strong>{health?.status === "healthy" ? "Конфигурация применена" : health?.status === "error" ? "Ошибка применения" : "—"}</strong>
+                    Status: <strong>{health?.status === "healthy" ? "Configuration applied" : health?.status === "error" ? "Apply error" : "—"}</strong>
                   </Text>
-                  <Text>Caddy: {health ? (health.caddy ? "Доступен" : "Недоступен") : "—"}</Text>
+                  <Text>Caddy: {health ? (health.caddy ? "Available" : "Unavailable") : "—"}</Text>
                 </div>
                 {health && health.appliedRevision !== config.revision && (
                   <Text>
-                    Сохранённая конфигурация ещё не применена полностью.
+                    The saved configuration is not fully applied.
                   </Text>
                 )}
                 {health?.error && <ErrorMessage>{health.error}</ErrorMessage>}
                 <Button variant="simple" onPress={() => void api.reconcile().then(() => load()).catch((e) => setError(err(e)))} disabled={loading}>
-                  Применить повторно
+                  Apply again
                 </Button>
               </Stack>
             </Card>
             <Card>
-              <Text>Маршрутов HTTP/HTTPS: {config.httpRoutes.length}</Text>
-              <Text>Прямых правил: {config.directRules.length}</Text>
+              <Text>HTTP/HTTPS routes: {config.httpRoutes.length}</Text>
+              <Text>Direct rules: {config.directRules.length}</Text>
             </Card>
           </Stack>
         )}
@@ -625,30 +625,30 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
               <div className="route-filter">
                 <Select
                   id="route-filter"
-                  label="Показать"
+                  label="Show"
                   value={filter}
                   onValueChange={setFilter}
                   options={[
-                    { value: "all", label: "Все маршруты" },
+                    { value: "all", label: "All routes" },
                     { value: "http", label: "HTTP/HTTPS" },
                     { value: "tcp", label: "TCP" },
                     { value: "udp", label: "UDP" },
                   ]}
                 />
               </div>
-              {!adding && <Button onPress={() => { setEditing(null); setAdding(true); }}>Добавить маршрут</Button>}
+              {!adding && <Button onPress={() => { setEditing(null); setAdding(true); }}>Add route</Button>}
             </div>
             {adding && (
               <Card>
                 <Stack gap={4}>
                   <Select
                     id="creation-kind"
-                    label="Тип маршрута"
+                    label="Route type"
                     value={creationKind}
                     onValueChange={setCreationKind}
                     options={[
-                      { value: "http", label: "HTTP/HTTPS — домен и путь" },
-                      { value: "direct", label: "TCP/UDP — проброс порта" },
+                      { value: "http", label: "HTTP/HTTPS — domain and path" },
+                      { value: "direct", label: "TCP/UDP — port forwarding" },
                     ]}
                   />
                   {creationKind === "http" ? (
@@ -660,7 +660,7 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
               </Card>
             )}
             {mappings.length === 0 && (
-              <Card><Text tone="muted">{filter === "all" ? "Маршрутов пока нет." : "Нет маршрутов выбранного типа."}</Text></Card>
+              <Card><Text tone="muted">{filter === "all" ? "No routes yet." : "No routes of this type."}</Text></Card>
             )}
             {mappings.map(({ kind, route }) => {
               const key = `${kind}:${route.id}`;
@@ -682,13 +682,13 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
                       <div className="actions">
                         <Switch
                           id={`enabled-${key}`}
-                          label="Включён"
+                          label="Enabled"
                           checked={route.enabled}
                           disabled={pending.has(key)}
                           onCheckedChange={(enabled) => void toggle(kind, route.id, enabled)}
                         />
-                        <IconButton icon="edit" label={`Изменить маршрут ${mapping}`} disabled={pending.has(key)} onPress={() => { setAdding(false); setEditing(key); }} />
-                        <IconButton icon="trash" label={`Удалить маршрут ${mapping}`} disabled={pending.has(key)} onPress={() => void remove(kind, route.id)} />
+                        <IconButton icon="edit" label={`Edit route ${mapping}`} disabled={pending.has(key)} onPress={() => { setAdding(false); setEditing(key); }} />
+                        <IconButton icon="trash" label={`Delete route ${mapping}`} disabled={pending.has(key)} onPress={() => void remove(kind, route.id)} />
                       </div>
                     </div>
                   )}

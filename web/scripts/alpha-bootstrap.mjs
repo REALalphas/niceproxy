@@ -61,7 +61,7 @@ export async function recordLocal() {
   const digest = await appDigest();
   await fs.writeFile(join(root,"dist/.app-build.json"),JSON.stringify({digest,version:pkg.version}));
   await activate(directory, pkg.version, digest);
-  log(`зафиксирована локальная сборка ${pkg.version}`);
+  log(`recorded local build ${pkg.version}`);
 }
 async function activate(directory, version, digest, signal) {
   signal?.throwIfAborted();
@@ -133,7 +133,7 @@ export async function prepare({
   try {
     if (!releaseRoot) {
       log(
-        "NICEPROXY_ALPHA_RELEASE_URL не задан: локальная bundled версия " +
+        "NICEPROXY_ALPHA_RELEASE_URL is not set: using bundled local version " +
           (previous?.version ?? "0.4.9"),
       );
     } else {
@@ -149,7 +149,7 @@ export async function prepare({
       if (typeof v !== "string" || !/^\d+\.\d+\.\d+$/.test(v))
         throw Error("invalid release version");
       if (v === previous?.version) {
-        log(`версия ${v}: актуально`);
+        log(`version ${v}: up to date`);
       } else {
         const release = new URL(v + "/", base),
           man = JSON.parse(
@@ -222,11 +222,11 @@ export async function prepare({
         ctl.signal.throwIfAborted();
         await activate(directory, v, digest, ctl.signal);
         selected = { directory, version: v };
-        log(`версия ${v}: обновлено`);
+        log(`version ${v}: updated`);
       }
     }
   } catch (e) {
-    log(`запуск локальной после ошибки/таймаута: ${e.message}`);
+    log(`using local build after error/timeout: ${e.message}`);
   } finally {
     clearTimeout(timer);
     ctl.abort();
@@ -234,11 +234,11 @@ export async function prepare({
   }
   if (!selected) {
     throw Error(
-      "Нет готовой локальной сборки. Требуется ручная установка: node /путь/к/выпуску/install.mjs --project . --framework react; затем npm run build",
+      "No ready local build. Install manually: node /path/to/release/install.mjs --project . --framework react, then npm run build",
     );
   }
   const path = join(builds, selected.directory, "dist");
-  log(`выбрана версия ${selected.version}: ${path}`);
+  log(`selected version ${selected.version}: ${path}`);
   return path;
 }
 async function main() {

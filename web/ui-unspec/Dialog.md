@@ -1,19 +1,25 @@
 # Dialog
 
-## Задача
-В потоке подключения аккаунта может понадобиться модальное окно внутри панели для пояснения запроса доступа, формы настройки и обратной связи. В Alpha UI 0.4.9 нет публичного компонента с модальной семантикой и управлением фокусом. Сама авторизация открывается в отдельном окне браузера на сайте провайдера.
+## Task
 
-## Универсальное поведение
-Открытие переводит фокус внутрь окна и временно отключает взаимодействие с остальной страницей. Tab и Shift+Tab обходят доступные элементы внутри окна, Escape запрашивает закрытие, а при закрытии фокус возвращается к вызвавшему элементу. Диалогу нужны доступное имя и необязательное описание.
+The account connection flow may need an in-panel modal for access details, setup, and feedback. Alpha UI 0.4.9 has no public modal component with focus management. Provider authorization opens in a separate browser window.
 
-## Предлагаемый API
-`Dialog` принимает управляемый `open`, `title`, необязательный `description`, `children` и обработчик `onOpenChange(open)`. Для Qwik обработчик называется `onOpenChange$`.
+## Universal behavior
 
-## Композиция и оформление
-Используются токены слоя overlay, интервалы Alpha UI и публичные компоненты для содержимого. Длинное содержание прокручивается внутри окна. На ширине 320 px заголовок, поля и действия доступны без горизонтальной прокрутки.
+Opening moves focus into the dialog and disables the rest of the page. Tab and Shift+Tab stay inside the dialog. Escape requests close. Closing restores focus to the trigger. The dialog has an accessible name and optional description.
 
-## Проверка
-Проверить открытие с клавиатуры, объявление названия скринридером, обход фокуса, закрытие по Escape и восстановление фокуса. Проверить форму с длинными подписями и сообщениями об ошибке на широком экране и на ширине 320 px.
+## Proposed API
 
-## Статус
-Предложен. Niceproxy использует карточку для настройки и отдельное окно браузера для OAuth.
+`Dialog` accepts controlled `open`, `title`, optional `description`, `children`, and `onOpenChange(open)`. Qwik uses `onOpenChange$`.
+
+## Composition and styling
+
+Use overlay tokens, Alpha UI spacing, and public content components. Scroll long content inside the dialog. At 320 px, title, fields, and actions must work without horizontal scrolling.
+
+## Checks
+
+Verify keyboard opening, screen-reader naming, focus trap, Escape close, and focus restoration. Check long labels and error messages at wide and 320 px widths.
+
+## Status
+
+Proposed. Niceproxy currently uses a card for setup and a separate browser window for OAuth.
