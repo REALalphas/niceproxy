@@ -41,7 +41,7 @@ Forward required external ports from the router to the niceproxy host. If forwar
 
 ## State and data
 
-`/data` stores SQLite, settings, the last applied configuration, Caddy certificates, and built UI assets. Saving creates a desired revision and then applies it. Port conflicts and Caddy errors are shown on the rule. A successful save does not prove that the revision was applied. Partial apply reports `appliedRevision: -1`. Rules recover after restart. If a public port is busy, the panel stays available on its separate listener. Caddy uses a private Unix admin socket. Use `docker compose logs` for diagnostics.
+`/data` stores SQLite, settings, the last applied configuration, and Caddy certificates. The repository compose file keeps the UI build state in the ephemeral `/tmp/niceproxy-ui` directory so a replacement container uses the frontend bundled in its image. Custom deployments should set the same `NICEPROXY_ALPHA_STATE_DIR` value and provide an ephemeral `/tmp` mount. Saving creates a desired revision and then applies it. Port conflicts and Caddy errors are shown on the rule. A successful save does not prove that the revision was applied. Partial apply reports `appliedRevision: -1`. Rules recover after restart. If a public port is busy, the panel stays available on its separate listener. Caddy uses a private Unix admin socket. Use `docker compose logs` for diagnostics.
 
 Changing a TCP target affects new connections. Existing connections keep their current target. Removing or changing a listener uses a short drain period, then closes connections. Changing a UDP target resets associations. Connection and association limits are per rule. TCP streams have no forced lifetime limit.
 
