@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { Badge, Button, Card, Select, Stack, Switch, Text, TextInput } from "@alpha/react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { Badge, Button, Card, Icon, Select, Stack, Switch, Text, TextInput } from "@alpha/react";
 import { type HttpRoute, Unauthorized } from "./api";
+import { openOAuthWindow, type CloudflareCallback, type OAuthPopup } from "./CloudflareOAuth";
 import { authorizationURL, cloudflareApi, parseScopes, supportedRecord, type CloudflareStatus, type DNSRecord, type RecordInput, type Zone } from "./cloudflare-api";
 const message = (e: unknown) => e instanceof Error ? e.message : "Не удалось выполнить действие.";
 function Alert({ children }: { children: string }) { return <div role="alert"><Text>{children}</Text></div>; }
@@ -43,7 +44,7 @@ function RecordForm({ zone, record, routes, onSaved, onCancel }: {
   </Stack></form></Card>;
 }
 
-export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; callback?: string }) {
+export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; callback?: CloudflareCallback }) {
   const [status, setStatus] = useState<CloudflareStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -61,6 +62,9 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
   const [recordsError, setRecordsError] = useState("");
   const [refresh, setRefresh] = useState(0);
   const [editor, setEditor] = useState<DNSRecord | "new" | null>(null);
+  const oauthRef = useRef<OAuthPopup | null>(null);
+  const [oauthFailed, setOAuthFailed] = useState(callback === "error");
+  const [oauthPending, setOAuthPending] = useState(false);
   const applyStatus = useCallback((s: CloudflareStatus) => {
     setStatus(s); setClientId(s.clientId); setScopes(s.scopes.join(" "));
     setZones([]); setZoneId(""); setRecords([]); setEditor(null);
@@ -72,6 +76,10 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
     finally { setLoading(false); }
   }, [applyStatus]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => () => {
+    oauthRef.current?.close();
+    oauthRef.current = null;
+  }, []);
   useEffect(() => {
     if (!status?.connected) return;
     let current = true;
@@ -93,7 +101,7 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
   }, [zoneId, status, refresh]);
   async function action(run: () => Promise<void>) {
     if (busy) return;
-    setBusy(true); setError(""); setNotice("");
+    setBusy(true); setError(""); setNotice(""); setOAuthFailed(false);
     try { await run(); }
     catch (e) { if (!(e instanceof Unauthorized)) setError(message(e)); }
     finally { setBusy(false); }
@@ -103,42 +111,115 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
     if (!clientId.trim() || !parseScopes(scopes).length) return;
     void action(async () => {
       applyStatus(await cloudflareApi.settings(clientId.trim(), parseScopes(scopes)));
-      setSetup(false); setNotice("Настройки сохранены. Войдите в аккаунт Cloudflare заново.");
+      setSetup(false);
     });
+  }
+  function closeOAuth() {
+    oauthRef.current?.close();
+    oauthRef.current = null;
+    setOAuthPending(false);
+  }
+  async function beginOAuth(inCurrentTab = false) {
+    closeOAuth();
+    setSetup(false);
+    const oauth = inCurrentTab ? null : openOAuthWindow(
+      (result) => {
+        closeOAuth();
+        setOAuthFailed(result === "error");
+        void load();
+      },
+      () => {
+        closeOAuth();
+        setNotice("Срок ожидания истёк. Можно повторить вход.");
+      },
+    );
+    oauthRef.current = oauth;
+    try {
+      const result = await cloudflareApi.connect();
+      const url = authorizationURL(result.url);
+      if (oauth) {
+        if (oauthRef.current !== oauth) return;
+        if (!oauth.navigate(url)) {
+          closeOAuth();
+          setNotice("Окно Cloudflare закрыто. Можно повторить вход.");
+          return;
+        }
+        setOAuthPending(true);
+      } else {
+        window.location.assign(url);
+      }
+    } catch (e) {
+      closeOAuth();
+      throw e;
+    }
   }
   const zone = zones.find(z => z.id === zoneId);
   return <div className="cloudflare-panel"><Stack gap={4}>
     <Card><Stack gap={4}>
-      <Text as="h2" size="xl" font="heading">Аккаунт Cloudflare</Text>
-      <Text tone="secondary">Интеграция для управления DNS. Вход администратора Niceproxy по паролю остаётся отдельным.</Text>
-      <div className="status" role="status"><Badge value={loading ? "Загрузка…" : !status ? "Ошибка загрузки" : status.connected ? "Подключено" : status.configured ? "Не подключено" : "Требуется настройка"} /></div>
-      {callback === "error" && <Alert>Не удалось подключить Cloudflare. Повторите вход или проверьте настройки приложения.</Alert>}
-      {callback === "connected" && status?.connected && <Text>Аккаунт Cloudflare успешно подключён.</Text>}
-      {status?.error && <><Alert>{status.error}</Alert><Text><a href="https://dash.cloudflare.com/?to=/profile/access-management/authorization" target="_blank" rel="noreferrer">Проверить и отозвать доступ в Cloudflare</a></Text></>}
-      {error && <Alert>{error}</Alert>}
-      {notice && <Text>{notice}</Text>}
-      {status?.connected && status.expiresAt && <Text>Срок действия текущего разрешения: {status.expiresAt}</Text>}
-      <div className="actions">
-        <Button variant="simple" onPress={() => void load()} loading={loading} disabled={loading || busy || editor !== null}>Обновить состояние</Button>
-        {status?.configured && !status.connected && <Button disabled={busy || loading} loading={busy} onPress={() => void action(async () => { const result = await cloudflareApi.connect(); window.location.assign(authorizationURL(result.url)); })}>Войти через Cloudflare</Button>}
-        {status?.connected && <Button variant="simple" disabled={busy || loading || editor !== null} onPress={() => void action(async () => {
-          const result = await cloudflareApi.disconnect();
-          applyStatus({ ...status, connected: false, expiresAt: undefined, error: undefined });
-          setNotice(result.warning ? `Аккаунт отключён локально. ${result.warning}` : "Аккаунт отключён.");
-        })}>Отключить аккаунт</Button>}
+      <div className="oauth-heading">
+        <Icon name="shield" />
+        <div>
+          <Text as="h2" size="xl" font="heading">Доступ к Cloudflare</Text>
+          <Text tone="secondary">Подключите аккаунт Cloudflare, чтобы управлять DNS в Niceproxy.</Text>
+        </div>
       </div>
+      <div className="status" role="status"><Badge value={loading ? "Загрузка…" : !status ? "Ошибка загрузки" : status.connected ? "Подключено" : oauthPending ? "Ожидание подтверждения" : status.configured ? "Готово к входу" : "Нужна настройка"} /></div>
+      {oauthFailed && !loading && !status?.error && <Alert>Не удалось подключить Cloudflare. Повторите вход или проверьте настройки приложения.</Alert>}
+      {status?.error && !oauthPending && <><Alert>{status.error}</Alert><Text><a href="https://dash.cloudflare.com/?to=/profile/access-management/authorization" target="_blank" rel="noreferrer">Проверить и отозвать доступ в Cloudflare</a></Text></>}
+      {error && <Alert>{error}</Alert>}
+      {notice && <div role="status"><Text>{notice}</Text></div>}
+      {!status?.connected && status?.configured && <>
+        <Text tone="secondary">{oauthPending
+          ? "Подтвердите доступ в окне Cloudflare. Панель обновится автоматически."
+          : "Войдите на сайте Cloudflare и подтвердите доступ к нужным зонам."}</Text>
+        <div className="actions">
+          {oauthPending ? <>
+            <Button onPress={() => void action(() => beginOAuth(true))} disabled={busy || loading}>Войти в этой вкладке</Button>
+            <Button variant="simple" onPress={() => { closeOAuth(); void load(); }} disabled={busy || loading}>Прекратить ожидание</Button>
+          </> : <>
+            <Button disabled={busy || loading} loading={busy} onPress={() => void action(beginOAuth)}><Icon name="external" />Войти через Cloudflare</Button>
+            <Button variant="simple" onPress={() => void load()} loading={loading} disabled={loading || busy}>Обновить состояние</Button>
+          </>}
+        </div>
+      </>}
+      {status?.connected && <div className="oauth-connected">
+        <div><Stack gap={1}>
+          <Text weight="medium">Аккаунт Cloudflare подключён</Text>
+          {status.expiresAt && <Text tone="secondary">Токен действителен до {new Date(status.expiresAt).toLocaleString("ru-RU")}.</Text>}
+        </Stack></div>
+        <div className="actions">
+          <Button variant="simple" onPress={() => void load()} loading={loading} disabled={loading || busy || editor !== null}>Обновить состояние</Button>
+          <Button variant="simple" disabled={busy || loading || editor !== null} onPress={() => void action(async () => {
+            const result = await cloudflareApi.disconnect();
+            applyStatus({ ...status, connected: false, expiresAt: undefined, error: undefined });
+            setNotice(result.warning ? `Аккаунт отключён локально. ${result.warning}` : "Аккаунт отключён.");
+          })}>Отключить аккаунт</Button>
+        </div>
+      </div>}
+      {status && !status.configured && <Text tone="secondary">Для первого входа зарегистрируйте OAuth-приложение Cloudflare и сохраните его настройки ниже.</Text>}
+      {!status && !loading && <div className="actions"><Button onPress={() => void load()}>Повторить загрузку</Button></div>}
     </Stack></Card>
     {status && <Card><Stack gap={4}>
-      <Button variant="simple" onPress={() => setSetup(!setup)} disabled={busy || loading || editor !== null}>{setup ? "Скрыть настройку OAuth" : status.configured ? "Изменить настройку OAuth" : "Настроить OAuth-приложение"}</Button>
-      {setup && <form onSubmit={saveSettings}><Stack gap={4}>
-        <Text>Администратор один раз регистрирует OAuth-приложение Cloudflare с PKCE. Для личной установки подходит видимость Private. Затем пользователям нужна только кнопка «Войти через Cloudflare».</Text>
-        <Text><a href="https://dash.cloudflare.com/?to=/:account/oauth-clients" target="_blank" rel="noreferrer">Регистрация приложения в Cloudflare</a> · <a href="https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/" target="_blank" rel="noreferrer">Официальная инструкция</a></Text>
-        <Text>Настройки регистрации: response type — code; grant types — authorization_code и refresh_token; authentication — none; PKCE — S256. Минимальные разрешения: Zone Read, DNS Read, DNS Write; offline_access — для обновления доступа.</Text>
-        <Text>Скопируйте scope ID из панели Cloudflare. Укажите доступ к нужным зонам. Изменение настроек отключит текущий аккаунт.</Text>
-        <TextInput id="cf-callback" label="Callback URL / Redirect URI" value={status.redirectUrl} readOnly />
-        <TextInput id="cf-client-id" label="Публичный OAuth Client ID" value={clientId} onValueChange={setClientId} required disabled={busy} />
-        <TextInput id="cf-scopes" label="Scope ID" value={scopes} onValueChange={setScopes} hint="ID из панели Cloudflare, через пробел или запятую." required disabled={busy} />
-        <div className="actions"><Button type="submit" loading={busy} disabled={busy || !clientId.trim() || !parseScopes(scopes).length}>Сохранить настройки</Button></div>
+      <div className="section-heading">
+        <div>
+          <Text as="h2" size="xl" font="heading">Настройка OAuth-приложения</Text>
+          <Text tone="secondary">Однократная настройка для этой установки Niceproxy.</Text>
+        </div>
+        {status.configured && <Button variant="simple" onPress={() => setSetup(!setup)} disabled={busy || loading || oauthPending || editor !== null}>{setup ? "Скрыть настройки" : "Изменить настройки"}</Button>}
+      </div>
+      {(setup || !status.configured) && <form onSubmit={saveSettings}><Stack gap={4}>
+        <Text><a href="https://dash.cloudflare.com/?to=/:account/oauth-clients" target="_blank" rel="noreferrer">Создайте OAuth-клиент в Cloudflare</a> с указанным ниже Redirect URI. Для личной установки подходит видимость Private.</Text>
+        <Text tone="secondary">Выберите Authorization Code с PKCE (S256), аутентификацию клиента None и grant types authorization_code и refresh_token. Для нужных зон укажите Zone Read, DNS Read, DNS Write и offline_access для обновления доступа.</Text>
+        <TextInput id="cf-callback" label="Redirect URI" value={status.redirectUrl} readOnly />
+        <div className="form-grid">
+          <TextInput id="cf-client-id" label="Публичный Client ID" value={clientId} onValueChange={setClientId} required disabled={busy} />
+          <TextInput id="cf-scopes" label="Scope ID" value={scopes} onValueChange={setScopes} hint="ID из панели Cloudflare, через пробел или запятую." required disabled={busy} />
+        </div>
+        {status.connected && <Text tone="secondary">Сохранение новых настроек отключит текущий аккаунт.</Text>}
+        <div className="actions">
+          <Button type="submit" loading={busy} disabled={busy || !clientId.trim() || !parseScopes(scopes).length}>Сохранить настройки</Button>
+          <Text><a href="https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/" target="_blank" rel="noreferrer">Инструкция Cloudflare</a></Text>
+        </div>
       </Stack></form>}
     </Stack></Card>}
     {status?.connected && <>

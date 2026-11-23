@@ -97,3 +97,27 @@ body {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+.oauth-heading,
+.oauth-connected {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--as-space-3);
+}
+
+.oauth-heading > div,
+.oauth-connected > div {
+  min-width: 0;
+}
+
+.oauth-connected {
+  align-items: center;
+  justify-content: space-between;
+}
+
+@media (max-width: 40rem) {
+  .oauth-connected {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
