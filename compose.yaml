@@ -9,6 +9,7 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
+      NICEPROXY_ALPHA_STATE_DIR: /tmp/niceproxy-ui
       NICEPROXY_PANEL_LISTEN: ${NICEPROXY_PANEL_LISTEN:-127.0.0.1:9080}
       NICEPROXY_HTTP_PORT: ${NICEPROXY_HTTP_PORT:-80}
       NICEPROXY_HTTPS_PORT: ${NICEPROXY_HTTPS_PORT:-443}
@@ -20,6 +21,7 @@ services:
       - niceproxy-data:/data
     tmpfs:
       - /run/niceproxy:mode=0700
+      - /tmp:mode=1777
     ulimits:
       nofile:
         soft: 262144

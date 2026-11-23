@@ -18,6 +18,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       HOME: /data
+      NICEPROXY_ALPHA_STATE_DIR: /tmp/niceproxy-ui
       NICEPROXY_PANEL_LISTEN: "YOUR_LAN_IP:19080"
       NICEPROXY_DOMAIN: "cf.example.com" # optional public panel and Cloudflare callback hostname
       NICEPROXY_HTTP_PORT: "18080"
@@ -30,6 +31,7 @@ services:
           create_host_path: false
     tmpfs:
       - /run/niceproxy:uid=1000,gid=1000,mode=0700
+      - /tmp:mode=1777
     ulimits:
       nofile:
         soft: 262144
