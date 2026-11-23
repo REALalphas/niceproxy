@@ -8,7 +8,7 @@ Linux self-hosted proxy with a web panel for HTTP/HTTPS and direct TCP/UDP forwa
 docker compose up -d --build
 ```
 
-A push to `master` builds and publishes a multi-arch image to GHCR. Tags use `0.1.N`, where `N` is the GitHub Actions run number.
+A push to `master` builds and publishes a multi-arch image to GHCR. Tags use `0.1.N`, where `N` is the GitHub Actions run number. GHCR keeps the numbered tag and moving `latest`; commit SHA tags are not published.
 
 ```sh
 export NICEPROXY_IMAGE=ghcr.io/realalphas/niceproxy:latest
