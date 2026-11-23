@@ -8,7 +8,7 @@ Linux-хост с веб-панелью для публикации HTTP/HTTPS �
 docker compose up -d --build
 ```
 
-После push в `master` GitHub Actions собирает multi-arch образ и публикует его в GHCR. Версия получает тег `0.1.N`, где `N` — номер запуска GitHub Actions. Для запуска опубликованного образа выполните:
+После push в `master` GitHub Actions собирает multi-arch образ и публикует его в GHCR. Версия получает тег `0.1.N`, где `N` — номер запуска GitHub Actions. В GHCR остаются номерной тег и подвижный `latest`; теги с SHA коммита не публикуются. Для запуска опубликованного образа выполните:
 
 ```sh
 export NICEPROXY_IMAGE=ghcr.io/realalphas/niceproxy:latest
