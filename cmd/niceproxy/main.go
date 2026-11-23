@@ -22,6 +22,10 @@ import (
 	"niceproxy/internal/store"
 )
 
+// version is set by release builds with -ldflags. Keep a usable value for
+// local development builds as well.
+var version = "0.1.0"
+
 func env(key, fallback string) string {
 	if s := os.Getenv(key); s != "" {
 		return s
@@ -40,6 +44,10 @@ func envInt(key string, fallback int) int {
 	return n
 }
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version") {
+		fmt.Println(version)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		if err := healthcheck(); err != nil {
 			log.Print(err)

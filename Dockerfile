@@ -1,14 +1,18 @@
+ARG APP_VERSION=0.1.0
+
 FROM docker.io/library/caddy:2.10.2 AS caddy
 
 FROM docker.io/library/golang:1.26.0-bookworm AS backend
+ARG APP_VERSION
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /niceproxy ./cmd/niceproxy
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${APP_VERSION}" -o /niceproxy ./cmd/niceproxy
 
 FROM docker.io/library/node:22.16.0-bookworm-slim AS frontend
+ARG APP_VERSION
 WORKDIR /app
 COPY assets/alpha ./assets/alpha
 COPY web/package*.json ./web/
@@ -18,6 +22,8 @@ COPY web ./
 RUN npm run typecheck && npm run build
 
 FROM docker.io/library/node:22.16.0-bookworm-slim
+ARG APP_VERSION
+LABEL org.opencontainers.image.version="${APP_VERSION}"
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # Install a fresh file so Caddy's upstream file capabilities are not inherited.
