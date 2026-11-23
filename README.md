@@ -45,6 +45,8 @@ TCP 80/443 и UDP 443 зарезервированы для Caddy (HTTP/3); фа
 
 ## Разработка и проверки
 
+GitHub Actions запускает эти проверки в Linux для pull request и push в `master`. Smoke-тест использует Caddy 2.10.2, а `strace` подтверждает, что `splice` передаёт данные через TCP-прокси.
+
 ```sh
 npm --prefix web ci
 npm --prefix web run typecheck
