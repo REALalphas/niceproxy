@@ -48,7 +48,7 @@ function CertificateSummary({ status }: { status: CertificateStatus }) {
   return <Card><Stack gap={2}>
     <Text as="h2" size="xl" font="heading">Origin HTTPS certificate</Text>
     {status.domain && <Text font="mono">{status.domain}</Text>}
-    <Text tone="secondary">{text}</Text>
+    <Text tone="secondary">{text}{status.error && status.state === "pending" ? ` (${status.error})` : ""}</Text>
   </Stack></Card>;
 }
 function AuthScreen({

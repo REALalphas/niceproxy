@@ -69,28 +69,27 @@ func (m *Manager) CertificateStatus(domain string) model.CertificateStatus {
 	}
 	port := m.options.HTTPSPort
 	m.mu.Unlock()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 2*time.Second)
-	if err == nil {
+	conn, probeErr := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 2*time.Second)
+	if probeErr == nil {
 		// This probe is local and only reads the certificate Caddy presents.
 		tlsConn := tls.Client(conn, &tls.Config{ServerName: domain, InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
-		err = tlsConn.Handshake()
+		probeErr = tlsConn.Handshake()
 		state := tlsConn.ConnectionState()
 		_ = tlsConn.Close()
-		if err == nil && len(state.PeerCertificates) > 0 {
+		if probeErr == nil && len(state.PeerCertificates) > 0 {
 			cert := state.PeerCertificates[0]
-			status.ExpiresAt = &cert.NotAfter
-			if time.Now().After(cert.NotAfter) {
-				status.State = "expired"
+			if err := cert.VerifyHostname(domain); err != nil {
+				probeErr = fmt.Errorf("certificate hostname mismatch: %w", err)
 			} else {
-				status.State = "issued"
+				status.ExpiresAt = &cert.NotAfter
+				if time.Now().After(cert.NotAfter) {
+					status.State = "expired"
+				} else {
+					status.State = "issued"
+				}
+				return status
 			}
-			return status
 		}
-	}
-	if err != nil {
-		status.State = "error"
-		status.Error = "Caddy HTTPS certificate probe failed: " + err.Error()
-		return status
 	}
 	root := filepath.Join(m.options.DataDir, "caddy", "certificates")
 	var certPath string
@@ -105,6 +104,14 @@ func (m *Manager) CertificateStatus(domain string) model.CertificateStatus {
 		return nil
 	})
 	if certPath == "" {
+		if probeErr != nil {
+			status.Error = "Caddy HTTPS certificate probe failed: " + probeErr.Error()
+			if strings.Contains(probeErr.Error(), "tls: internal error") {
+				status.State = "pending"
+			} else {
+				status.State = "error"
+			}
+		}
 		return status
 	}
 	b, err := os.ReadFile(certPath)
