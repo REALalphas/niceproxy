@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"niceproxy/internal/model"
 )
@@ -21,8 +23,40 @@ type Options struct {
 	Binary, RuntimeDir, DataDir, PanelListen, BackendSocket string
 	PanelDomain, PanelCertFile, PanelKeyFile                string
 	PanelDomainProxied, PanelDNSObserved                    bool
+	PanelCloudflareCIDRs                                    string
 	HTTPPort, HTTPSPort                                     int
 }
+
+const (
+	PanelPeerIPHeader       = "X-Niceproxy-Peer-IP"
+	PanelCloudflareIPHeader = "X-Niceproxy-Cloudflare-IP"
+)
+
+// Cloudflare's public IPv4 and IPv6 ranges from https://api.cloudflare.com/client/v4/ips.
+const cloudflarePanelCIDRs = `
+173.245.48.0/20
+103.21.244.0/22
+103.22.200.0/22
+103.31.4.0/22
+141.101.64.0/18
+108.162.192.0/18
+190.93.240.0/20
+188.114.96.0/20
+197.234.240.0/22
+198.41.128.0/17
+162.158.0.0/15
+104.16.0.0/13
+104.24.0.0/14
+172.64.0.0/13
+131.0.72.0/22
+2400:cb00::/32
+2606:4700::/32
+2803:f800::/32
+2405:b500::/32
+2405:8100::/32
+2a06:98c0::/29
+2c0f:f248::/32
+`
 
 func defaults(o Options) Options {
 	if o.Binary == "" {
@@ -88,6 +122,22 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 	if panelDomain != "" && owners.HTTPS != "caddy" && owners.HTTP3 != "caddy" {
 		return nil, fmt.Errorf("panel domain %q requires Caddy ownership of HTTPS TCP or HTTP3 UDP", panelDomain)
 	}
+	var cloudflareRanges []string
+	if panelDomain != "" {
+		panelCIDRs := strings.TrimSpace(o.PanelCloudflareCIDRs)
+		if panelCIDRs == "" {
+			panelCIDRs = cloudflarePanelCIDRs
+		}
+		for _, value := range strings.FieldsFunc(panelCIDRs, func(r rune) bool {
+			return r == ',' || unicode.IsSpace(r)
+		}) {
+			prefix, err := netip.ParsePrefix(value)
+			if err != nil || prefix.Bits() == 0 || prefix.Addr().Is4In6() {
+				return nil, fmt.Errorf("invalid Cloudflare panel proxy CIDR %q", value)
+			}
+			cloudflareRanges = append(cloudflareRanges, prefix.Masked().String())
+		}
+	}
 	proxy := func(dial string, transport object) object {
 		h := object{"handler": "reverse_proxy", "upstreams": []object{{"dial": dial}}}
 		if transport != nil {
@@ -95,7 +145,21 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 		}
 		return h
 	}
-	servers := object{"panel": object{"listen": []string{o.PanelListen}, "automatic_https": object{"disable": true}, "routes": []object{{"handle": []object{proxy("unix/"+o.BackendSocket, nil)}}}}}
+	panelProxy := func(cloudflare bool) object {
+		h := proxy("unix/"+o.BackendSocket, nil)
+		set := object{PanelPeerIPHeader: []string{"{http.request.remote.host}"}}
+		headers := object{"set": set}
+		if cloudflare {
+			// Caddy joins repeated fields with commas. The panel validates the
+			// result as a single address before treating it as a client IP.
+			set[PanelCloudflareIPHeader] = []string{"{http.request.header.CF-Connecting-IP}"}
+		} else {
+			headers["delete"] = []string{PanelCloudflareIPHeader}
+		}
+		h["headers"] = object{"request": headers}
+		return h
+	}
+	servers := object{"panel": object{"listen": []string{o.PanelListen}, "automatic_https": object{"disable": true}, "routes": []object{{"handle": []object{panelProxy(false)}}}}}
 	var plain, secure []object
 	var policies []object
 	var panelCertificate object
@@ -105,9 +169,25 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 	domainTLS := map[string]string{}
 	if panelDomain != "" {
 		domainTLS[panelDomain] = "auto"
+		handler := panelProxy(false)
+		if len(cloudflareRanges) > 0 {
+			// Match the hostname first. Caddy's IP matcher can return HTTP 425
+			// before the TLS handshake finishes on an HTTP/3 request.
+			handler = object{
+				"handler": "subroute",
+				"routes": []object{{
+					"match":    []object{{"remote_ip": object{"ranges": cloudflareRanges}}},
+					"handle":   []object{panelProxy(true)},
+					"terminal": true,
+				}, {
+					"handle":   []object{handler},
+					"terminal": true,
+				}},
+			}
+		}
 		secure = append(secure, object{
 			"match":    []object{{"host": []string{panelDomain}}},
-			"handle":   []object{proxy("unix/"+o.BackendSocket, nil)},
+			"handle":   []object{handler},
 			"terminal": true,
 		})
 		certFile, keyFile, chain, _, err := panelCertificateFiles(o.DataDir, o.PanelCertFile, o.PanelKeyFile, panelDomain, o.panelDNSMode())
