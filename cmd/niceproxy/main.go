@@ -150,21 +150,28 @@ func run() error {
 	if err := os.Chmod(socket, 0600); err != nil {
 		return err
 	}
-	caddyOptions := caddy.Options{Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir, PanelListen: *panel, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort}
-	cm := caddy.New(caddyOptions)
 	good, err := db.LastGood()
 	if err != nil {
 		return err
 	}
+	panelDomain := cfg.PanelDomain
+	if good.PanelDomain != "" {
+		panelDomain = good.PanelDomain
+	}
+	if panelDomain == "" {
+		panelDomain = os.Getenv("NICEPROXY_DOMAIN")
+	}
+	caddyOptions := caddy.Options{Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir, PanelListen: *panel, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort, PanelDomain: panelDomain, PanelDomainProxied: good.PanelDomainProxied || cfg.PanelDomainProxied}
+	cm := caddy.New(caddyOptions)
 	startedRoutes := good.HTTPRoutes
-	if err := cm.Start(ctx, startedRoutes); err != nil {
+	if err := cm.Start(ctx, startedRoutes, good.PortOwners); err != nil {
 		log.Printf("last-good Caddy startup failed; starting management panel only: %v", err)
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = cm.Close(closeCtx)
 		closeCancel()
 		cm = caddy.New(caddyOptions)
 		startedRoutes = nil
-		if err := cm.Start(ctx, startedRoutes); err != nil {
+		if err := cm.Start(ctx, startedRoutes, good.PortOwners); err != nil {
 			return fmt.Errorf("start Caddy management panel: %w", err)
 		}
 	}
@@ -184,7 +191,17 @@ func run() error {
 		return err
 	}
 	app.SetHTTPActive(startedRoutes)
+	initialDomain := cfg.PanelDomain
+	if initialDomain == "" {
+		initialDomain = os.Getenv("NICEPROXY_DOMAIN")
+	}
+	if err := app.ConfigurePanelDomain(initialDomain); err != nil {
+		log.Printf("panel domain configuration unavailable: %v", err)
+	}
 	cfRedirect := os.Getenv("NICEPROXY_CF_REDIRECT_URL")
+	if initialDomain != "" {
+		cfRedirect = "https://" + initialDomain + "/api/cloudflare/callback"
+	}
 	if cfRedirect == "" {
 		host, _, _ := net.SplitHostPort(*panel)
 		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {

@@ -3,6 +3,7 @@ package caddy
 import (
 	"bytes"
 	"context"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -127,11 +128,14 @@ func (m *Manager) persist(name string) error {
 	return nil
 }
 
-func (m *Manager) Start(ctx context.Context, routes []model.HTTPRoute) error {
+func (m *Manager) Start(ctx context.Context, routes []model.HTTPRoute, owners ...model.PortOwners) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed || m.cmd != nil {
 		return errors.New("Caddy manager already started or closed")
+	}
+	if len(owners) > 0 {
+		m.options.PortOwners = owners[0]
 	}
 	config, err := BuildConfig(m.options, routes)
 	if err != nil {
@@ -229,12 +233,112 @@ func (m *Manager) Start(ctx context.Context, routes []model.HTTPRoute) error {
 }
 
 func (m *Manager) Apply(ctx context.Context, routes []model.HTTPRoute) error {
+	return m.apply(ctx, routes, nil)
+}
+func (m *Manager) ApplyConfig(ctx context.Context, cfg model.Config) error {
+	m.mu.Lock()
+	m.options.PanelDomain = cfg.PanelDomain
+	m.options.PanelDomainProxied = cfg.PanelDomainProxied
+	m.mu.Unlock()
+	return m.apply(ctx, cfg.HTTPRoutes, &cfg.PortOwners)
+}
+func (m *Manager) ValidateConfig(cfg model.Config) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o := m.options
+	o.PortOwners = cfg.PortOwners
+	o.PanelDomain = cfg.PanelDomain
+	o.PanelDomainProxied = cfg.PanelDomainProxied
+	_, err := BuildConfig(o, cfg.HTTPRoutes)
+	return err
+}
+func (m *Manager) PublicPorts() (int, int) { return m.options.HTTPPort, m.options.HTTPSPort }
+func (m *Manager) SetPanelDomain(domain string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.options.PanelDomain = domain
+}
+
+// CertificateState inspects Caddy's persisted certificate store. It never
+// treats an unrelated certificate as valid for the requested SNI.
+func (m *Manager) CertificateState(ctx context.Context, host string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var found bool
+	var firstErr error
+	var firstState string
+	root := filepath.Join(m.options.DataDir, "caddy")
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if d.IsDir() || (filepath.Ext(path) != ".crt" && filepath.Ext(path) != ".pem") {
+			return nil
+		}
+		if strings.Contains(path, string(filepath.Separator)+"authorities"+string(filepath.Separator)) || strings.EqualFold(filepath.Base(path), "root.crt") {
+			return nil
+		}
+		b, e := os.ReadFile(path)
+		if e != nil {
+			return nil
+		}
+		block, _ := pem.Decode(b)
+		if block == nil || block.Type != "CERTIFICATE" {
+			return nil
+		}
+		found = true
+		key, _ := os.ReadFile(strings.TrimSuffix(path, filepath.Ext(path)) + ".key")
+		if len(key) == 0 {
+			// Caddy also stores local/root CA certificates without private
+			// keys. Only a leaf candidate for this SNI is an invalid missing-key
+			// condition.
+			if strings.Contains(strings.ToLower(path), string(filepath.Separator)+strings.ToLower(host)+string(filepath.Separator)) {
+				found = true
+				if firstErr == nil {
+					firstState = "invalid"
+					firstErr = errors.New("certificate private key is missing")
+				}
+			}
+			return nil
+		}
+		state, e := ValidateCertificate(b, key, host, time.Now())
+		if state == "valid" {
+			return filepath.SkipAll
+		}
+		if firstErr == nil {
+			firstErr = e
+			firstState = state
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, filepath.SkipAll) {
+		return "invalid", err
+	}
+	if !found {
+		return "missing", nil
+	}
+	if firstErr != nil {
+		return firstState, firstErr
+	}
+	return "invalid", errors.New("no certificate matches requested SNI")
+}
+func (m *Manager) apply(ctx context.Context, routes []model.HTTPRoute, owners *model.PortOwners) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed || !m.running() {
 		return errors.New("Caddy is not running")
 	}
-	config, err := BuildConfig(m.options, routes)
+	o := m.options
+	if owners != nil {
+		o.PortOwners = *owners
+	}
+	config, err := BuildConfig(o, routes)
 	if err != nil {
 		return err
 	}

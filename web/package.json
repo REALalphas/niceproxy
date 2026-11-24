@@ -11,9 +11,9 @@
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@alpha/core": "file:../assets/alpha/0.4.9/alpha-core-0.4.9.tgz",
-    "@alpha/project-server": "file:../assets/alpha/0.4.9/alpha-project-server-0.4.9.tgz",
-    "@alpha/react": "file:../assets/alpha/0.4.9/alpha-react-0.4.9.tgz",
+    "@alpha/core": "file:../assets/alpha/0.4.12-niceproxy.4/alpha-core-0.4.12-niceproxy.4.tgz",
+    "@alpha/project-server": "file:../assets/alpha/0.4.12-niceproxy.4/alpha-project-server-0.4.12-niceproxy.4.tgz",
+    "@alpha/react": "file:../assets/alpha/0.4.12-niceproxy.4/alpha-react-0.4.12-niceproxy.4.tgz",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

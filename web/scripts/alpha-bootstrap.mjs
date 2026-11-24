@@ -7,7 +7,10 @@ import { spawn } from "node:child_process";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const state = resolve(process.env.NICEPROXY_ALPHA_STATE_DIR || join(root, ".alpha-state")),
   builds = join(state, "builds"),
-  marker = join(state, "active.json");
+  marker = join(state, "active.json"),
+  migration = join(state, "migration.json"),
+  lockPath = join(state, "migration.lock");
+const LOCK_MAX_AGE = 10 * 60 * 1000;
 const log = (m) => console.error(`[alpha-bootstrap] ${m}`);
 const exists = async (p) => {
   try {
@@ -22,6 +25,102 @@ async function validDist(p) {
     (await exists(join(p, "index.html"))) && (await exists(join(p, "assets")))
   );
 }
+async function readJSON(path) {
+  try { return JSON.parse(await fs.readFile(path, "utf8")); } catch { return null; }
+}
+async function writeJSONAtomic(path, value) {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const handle = await fs.open(tmp, "w", 0o600);
+  try {
+    await handle.writeFile(JSON.stringify(value));
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await fs.rename(tmp, path);
+}
+function validVersion(version) {
+  return typeof version === "string" && version.length > 0 && version.length < 128 && /^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(version);
+}
+function validDigest(digest) {
+  return typeof digest === "string" && digest.length > 0 && digest.length < 256 && /^[A-Za-z0-9._:+/=~-]+$/.test(digest);
+}
+function contentDigestValue(digest) {
+  return typeof digest === "string" && /^[a-f0-9]{64}$/.test(digest);
+}
+async function contentDigest(path) {
+  const hash = createHash("sha256");
+  async function visit(p, relative) {
+    const stat = await fs.stat(p);
+    if (stat.isDirectory()) for (const name of (await fs.readdir(p)).sort()) await visit(join(p, name), join(relative, name));
+    else if (relative !== ".app-build.json") { hash.update(relative); hash.update(await fs.readFile(p)); }
+  }
+  await visit(path, "");
+  return hash.digest("hex");
+}
+async function buildManifest(p) {
+  if (!(await validDist(p))) return null;
+  const m = await readJSON(join(p, ".app-build.json"));
+  if (!m || (m.schema !== undefined && m.schema !== 1) || !validVersion(m.version) || !validDigest(m.digest)) return null;
+  if (contentDigestValue(m.digest) && await contentDigest(p) !== m.digest) return null;
+  return { schema: 1, version: m.version, digest: m.digest };
+}
+async function markerBuild() {
+  const a = await readJSON(marker);
+  if (!a || !/^[\w.-]+$/.test(a.directory) || !validVersion(a.version)) return null;
+  const p = join(builds, a.directory, "dist");
+  const manifest = await buildManifest(p);
+  const digest = a.digest || a.appDigest;
+  if (!manifest || !validDigest(digest) || manifest.digest !== digest || manifest.version !== a.version) return null;
+  return { ...a, digest, appDigest: digest, manifest, path: p };
+}
+async function acquireLock() {
+  await fs.mkdir(state, { recursive: true });
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  for (;;) {
+    try {
+      const handle = await fs.open(lockPath, "wx", 0o600);
+      await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: Date.now(), token }));
+      await handle.sync();
+      await handle.close();
+      return async () => {
+        const current = await readJSON(lockPath);
+        if (current?.token === token) await fs.rm(lockPath, { force: true });
+      };
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      const current = await readJSON(lockPath);
+      let stale = !current || !Number.isInteger(current.pid) || !Number.isFinite(current.startedAt);
+      if (!stale) {
+        try { process.kill(current.pid, 0); } catch (probe) { stale = probe.code === "ESRCH"; }
+        stale ||= Date.now() - current.startedAt > LOCK_MAX_AGE;
+      }
+      if (!stale) throw Error("UI migration already in progress");
+      await fs.rm(lockPath, { force: true });
+    }
+  }
+}
+async function recoverMigration() {
+  const p = await readJSON(migration);
+  if (!p) {
+    await fs.rm(migration, { force: true });
+    return;
+  }
+  const directory = typeof p.directory === "string" && /^[\w.-]+$/.test(p.directory) ? p.directory : "";
+  const target = directory ? join(builds, directory, "dist") : "";
+  if (directory) await fs.rm(join(builds, `.staging-${directory}`), { recursive: true, force: true });
+  if (p.phase === "ready" && target) {
+    const manifest = await buildManifest(target);
+    if (manifest && manifest.version === p.version && manifest.digest === p.digest) {
+      await activate(directory, manifest.version, manifest.digest);
+    } else if (directory) {
+      await fs.rm(join(builds, directory), { recursive: true, force: true });
+    }
+  } else if (directory) {
+    await fs.rm(join(builds, directory), { recursive: true, force: true });
+  }
+  await fs.rm(migration, { force: true });
+}
 async function appDigest() {
   const hash = createHash("sha256");
   async function visit(path) {
@@ -33,40 +132,74 @@ async function appDigest() {
   for (const name of ["src","index.html","package.json","tsconfig.json","vite.config.ts"]) await visit(join(root,name));
   return hash.digest("hex");
 }
-async function active() {
+async function active() { return markerBuild(); }
+async function sourceVersion() {
   try {
-    const a = JSON.parse(await fs.readFile(marker, "utf8"));
-    return /^[\w.-]+$/.test(a.directory) &&
-      (await validDist(join(builds, a.directory, "dist")))
-      ? a
-      : null;
-  } catch {
-    return null;
+    const p = JSON.parse(await fs.readFile(join(root, "node_modules/@alpha/core/package.json"), "utf8"));
+    if (validVersion(p.version)) return p.version;
+  } catch {}
+  try {
+    const p = JSON.parse(await fs.readFile(join(root, "package.json"), "utf8"));
+    if (validVersion(p.version)) return p.version;
+  } catch {}
+  return "0.0.0";
+}
+async function bundledBuild() {
+  const p = join(root, "dist");
+  const manifest = await buildManifest(p);
+  if (manifest) return { manifest, path: p, legacy: false };
+  if (!(await validDist(p))) return null;
+  // Older images did not ship a manifest. Derive a stable identity for one
+  // migration and persist it only in the derived state copy under /data/ui.
+  return { legacy: true, manifest: { schema: 1, version: await sourceVersion(), digest: await contentDigest(p) }, path: p };
+}
+function versionParts(v) {
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/.exec(v || "");
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3]), m[4] || ""] : null;
+}
+function compareVersions(a, b) {
+  const x = versionParts(a), y = versionParts(b);
+  if (!x || !y) return 0;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i];
+  if (!x[3] && y[3]) return 1;
+  if (x[3] && !y[3]) return -1;
+  return x[3].localeCompare(y[3]);
+}
+async function stageBuild(source, manifest, prefix) {
+  const directory = `${prefix}-${Date.now()}-${process.pid}`;
+  const temp = join(builds, `.staging-${directory}`);
+  await writeJSONAtomic(migration, { schema: 1, phase: "staging", directory, version: manifest.version, digest: manifest.digest });
+  await fs.rm(temp, { recursive: true, force: true });
+  await fs.mkdir(temp, { recursive: true });
+  await fs.cp(source, join(temp, "dist"), { recursive: true });
+  if (!(await buildManifest(join(temp, "dist")))) {
+    await fs.writeFile(join(temp, "dist/.app-build.json"), JSON.stringify(manifest));
   }
+  const checked = await buildManifest(join(temp, "dist"));
+  if (!checked || checked.version !== manifest.version || checked.digest !== manifest.digest) throw Error("staged UI manifest mismatch");
+  await fs.rename(temp, join(builds, directory));
+  await writeJSONAtomic(migration, { schema: 1, phase: "ready", directory, version: manifest.version, digest: manifest.digest });
+  await activate(directory, manifest.version, manifest.digest);
+  await fs.rm(migration, { force: true });
+  return { directory, version: manifest.version, digest: manifest.digest, path: join(builds, directory, "dist"), manifest: checked };
 }
 export async function recordLocal() {
   if (!(await validDist(join(root, "dist"))))
     throw Error("local dist is incomplete");
   await fs.mkdir(builds, { recursive: true });
-  const directory = `bundled-${Date.now()}`;
-  await fs.cp(join(root, "dist"), join(builds, directory, "dist"), {
-    recursive: true,
-  });
-  const pkg = JSON.parse(
-    await fs.readFile(
-      join(root, "node_modules/@alpha/core/package.json"),
-      "utf8",
-    ),
-  );
-  const digest = await appDigest();
-  await fs.writeFile(join(root,"dist/.app-build.json"),JSON.stringify({digest,version:pkg.version}));
-  await activate(directory, pkg.version, digest);
-  log(`зафиксирована локальная сборка ${pkg.version}`);
+  const release = await acquireLock();
+  try {
+    const version = await sourceVersion();
+    const digest = await contentDigest(join(root, "dist"));
+    await fs.writeFile(join(root,"dist/.app-build.json"),JSON.stringify({schema:1,digest,version}));
+    await stageBuild(join(root, "dist"), { schema: 1, version, digest }, "bundled");
+    log(`зафиксирована локальная сборка ${version}`);
+  } finally { await release(); }
 }
 async function activate(directory, version, digest, signal) {
   signal?.throwIfAborted();
-  const tmp = marker + ".tmp";
-  await fs.writeFile(tmp, JSON.stringify({ directory, version, appDigest:digest }));
+  const tmp = `${marker}.${process.pid}.${Date.now()}.tmp`;
+  await writeJSONAtomic(tmp, { directory, version, digest, appDigest: digest });
   signal?.throwIfAborted();
   await fs.rename(tmp, marker);
 }
@@ -110,19 +243,17 @@ export async function prepare({
   deadline = 20000,
 } = {}) {
   await fs.mkdir(builds, { recursive: true });
-  let previous = await active();
-  let bundled;
-  try { bundled=JSON.parse(await fs.readFile(join(root,"dist/.app-build.json"),"utf8")); } catch {}
-  const digest = bundled?.digest || await appDigest();
-  // A completed local Vite build is the bundled fallback. Never register a partial tree.
-  if ((!previous || (bundled?.digest && previous.appDigest !== digest)) && (await validDist(join(root, "dist")))) {
-    const directory = `bundled-${Date.now()}`;
-    await fs.cp(join(root, "dist"), join(builds, directory, "dist"), {
-      recursive: true,
-    });
-    await activate(directory, bundled?.version || "0.4.9", digest);
-    previous = await active();
-  }
+  const releaseLock = await acquireLock();
+  try {
+    await recoverMigration();
+    let previous = await active();
+    const bundled = await bundledBuild();
+    // A completed local Vite build is the bundled fallback. Never register a partial tree.
+    // The image's bundled UI wins whenever it has a different identity or a newer version.
+    const bundledVersionComparison = previous && bundled ? compareVersions(bundled.manifest.version, previous.version) : 1;
+    if (bundled && (!previous || (bundled.legacy && bundled.manifest.digest !== previous.digest) || bundledVersionComparison > 0 || (bundledVersionComparison === 0 && bundled.manifest.digest !== previous.digest))) {
+      previous = await stageBuild(bundled.path, bundled.manifest, "bundled");
+    }
   let selected = previous;
   const ctl = new AbortController(),
     timer = setTimeout(
@@ -134,7 +265,7 @@ export async function prepare({
     if (!releaseRoot) {
       log(
         "NICEPROXY_ALPHA_RELEASE_URL не задан: локальная bundled версия " +
-          (previous?.version ?? "0.4.9"),
+          (previous?.version ?? "0.4.11"),
       );
     } else {
       const base = new URL(
@@ -146,7 +277,10 @@ export async function prepare({
         (await fetchBytes(new URL("latest.json", base), ctl.signal)).toString(),
       );
       const v = latest.version;
-      if (typeof v !== "string" || !/^\d+\.\d+\.\d+$/.test(v))
+      const versionParts = typeof v === "string"
+        ? /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(v)
+        : null;
+      if (!versionParts || versionParts[4]?.split(".").some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith("0")))
         throw Error("invalid release version");
       if (v === previous?.version) {
         log(`версия ${v}: актуально`);
@@ -217,11 +351,17 @@ export async function prepare({
         ctl.signal.throwIfAborted();
         if (!(await validDist(join(tmp, "dist"))))
           throw Error("build missing assets");
-        const directory = `release-${v}-${Date.now()}`;
+        const directory = `release-${v}-${Date.now()}-${process.pid}`;
+        const releaseDigest = await contentDigest(join(tmp, "dist"));
+        await fs.writeFile(join(tmp, "dist/.app-build.json"), JSON.stringify({ schema: 1, version: v, digest: releaseDigest }));
         await fs.rename(tmp, join(builds, directory));
+        const built = await buildManifest(join(builds, directory, "dist"));
+        if (!built) throw Error("release build missing manifest");
         ctl.signal.throwIfAborted();
-        await activate(directory, v, digest, ctl.signal);
-        selected = { directory, version: v };
+        await writeJSONAtomic(migration, { schema: 1, phase: "ready", directory, version: built.version, digest: built.digest });
+        await activate(directory, built.version, built.digest, ctl.signal);
+        await fs.rm(migration, { force: true });
+        selected = { directory, version: built.version, digest: built.digest, path: join(builds, directory, "dist"), manifest: built };
         log(`версия ${v}: обновлено`);
       }
     }
@@ -237,9 +377,10 @@ export async function prepare({
       "Нет готовой локальной сборки. Требуется ручная установка: node /путь/к/выпуску/install.mjs --project . --framework react; затем npm run build",
     );
   }
-  const path = join(builds, selected.directory, "dist");
+  const path = selected.path || join(builds, selected.directory, "dist");
   log(`выбрана версия ${selected.version}: ${path}`);
   return path;
+  } finally { await releaseLock(); }
 }
 async function main() {
   if (process.argv.includes("--record-local")) {

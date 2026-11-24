@@ -132,6 +132,21 @@ func TestBuildConfig(t *testing.T) {
 	}
 }
 
+func TestBuildConfigReservesPanelDomain(t *testing.T) {
+	o := options(t)
+	o.PanelDomain = "Panel.Example.com."
+	if _, err := BuildConfig(o, []model.HTTPRoute{{ID: "route-1", Host: "panel.example.com", Target: "http://localhost", TLS: "off", Enabled: true}}); err == nil || !strings.Contains(err.Error(), "panel domain") {
+		t.Fatalf("panel domain conflict was not rejected: %v", err)
+	}
+	b, err := BuildConfig(o, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "panel.example.com") {
+		t.Fatal("panel SNI route missing")
+	}
+}
+
 func TestPathPriorityAndDomainPolicy(t *testing.T) {
 	o := options(t)
 	routes := []model.HTTPRoute{
@@ -464,5 +479,99 @@ func TestRealCaddy(t *testing.T) {
 	}
 	if code, body := get(client, httpURL, "local.example.test"); code != 200 || body != "upstream" {
 		t.Fatalf("off: %d %q", code, body)
+	}
+}
+
+func TestOwnershipProtocolsAndChallenges(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		owners    model.PortOwners
+		mode      string
+		protocols string
+		redirect  bool
+		invalid   bool
+	}{
+		{"no h3", model.PortOwners{HTTP3: "direct"}, "auto", `["h1","h2"]`, true, false},
+		{"h3 only", model.PortOwners{HTTPS: "direct"}, "internal", `["h3"]`, false, false},
+		{"no HTTP challenge", model.PortOwners{HTTP: "direct"}, "auto", `["h1","h2","h3"]`, false, false},
+		{"no TCP challenge", model.PortOwners{HTTP: "direct", HTTPS: "direct"}, "auto", "", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := options(t)
+			o.PortOwners = tc.owners
+			b, err := BuildConfig(o, []model.HTTPRoute{{ID: "route", Host: "test.example.com", Target: "http://localhost:3000", TLS: tc.mode, Enabled: true}})
+			if tc.invalid {
+				if err == nil {
+					t.Fatal("accepted unreachable ACME challenges")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(b), `"protocols":`+tc.protocols) {
+				t.Fatalf("protocols: %s", b)
+			}
+			if strings.Contains(string(b), `"status_code":308`) != tc.redirect {
+				t.Fatalf("redirect: %s", b)
+			}
+			if tc.name == "no HTTP challenge" && !strings.Contains(string(b), `"http":{"disabled":true}`) {
+				t.Fatalf("HTTP challenge: %s", b)
+			}
+		})
+	}
+}
+
+func TestRealOwnershipH3OnlyAndNoH3(t *testing.T) {
+	binary := os.Getenv("NICEPROXY_CADDY_TEST_BINARY")
+	if binary == "" {
+		t.Skip("set NICEPROXY_CADDY_TEST_BINARY for integration")
+	}
+	freePort := func() int {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		return l.Addr().(*net.TCPAddr).Port
+	}
+	for _, h3Only := range []bool{false, true} {
+		t.Run(fmt.Sprintf("h3Only=%t", h3Only), func(t *testing.T) {
+			o := options(t)
+			o.Binary = binary
+			o.HTTPPort = freePort()
+			o.HTTPSPort = freePort()
+			o.PanelListen = net.JoinHostPort("127.0.0.1", strconv.Itoa(freePort()))
+			owners := model.PortOwners{HTTP: "direct", HTTP3: "direct"}
+			if h3Only {
+				owners.HTTPS = "direct"
+				owners.HTTP3 = "caddy"
+			}
+			m := New(o)
+			ctx := context.Background()
+			if err := m.Start(ctx, []model.HTTPRoute{{Host: "ownership.test", TLS: "internal", Target: "http://127.0.0.1:1", Enabled: true}}, owners); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { ctx, cancel := context.WithTimeout(ctx, 3*time.Second); defer cancel(); _ = m.Close(ctx) }()
+			addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(o.HTTPSPort))
+			if h3Only {
+				l, err := net.Listen("tcp", addr)
+				if err != nil {
+					t.Fatalf("H3-only took TCP socket: %v", err)
+				}
+				l.Close()
+			} else {
+				l, err := net.ListenPacket("udp", addr)
+				if err != nil {
+					t.Fatalf("disabled H3 took UDP socket: %v", err)
+				}
+				l.Close()
+			}
+			l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(o.HTTPPort)))
+			if err != nil {
+				t.Fatalf("direct HTTP port taken: %v", err)
+			}
+			l.Close()
+		})
 	}
 }

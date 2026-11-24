@@ -27,6 +27,7 @@ func (a *App) ConfigureCloudflare(options cloudflare.Options) error {
 	a.cfMu.Lock()
 	defer a.cfMu.Unlock()
 	a.cfOptions = options
+	a.cfDefaultRedirect = options.RedirectURL
 	a.cfCallbackHost.Store("")
 	a.cfHTTPSCallback.Store(false)
 	if validateCloudflareRedirect(options.RedirectURL) == nil {
@@ -53,6 +54,51 @@ func (a *App) ConfigureCloudflare(options cloudflare.Options) error {
 		a.cfInitError = "Не удалось загрузить подключение Cloudflare. Проверьте настройки приложения и сохранённый ключ шифрования."
 	}
 	return err
+}
+
+func (a *App) syncCloudflareRedirect(domain string) error {
+	a.cfMu.Lock()
+	defer a.cfMu.Unlock()
+	redirect := a.cfDefaultRedirect
+	if domain != "" {
+		redirect = "https://" + domain + "/api/cloudflare/callback"
+	}
+	if redirect == "" {
+		// A deployment without an explicitly configured callback can remove a
+		// public panel domain cleanly. Do not leave the old public host trusted.
+		a.cfOptions.RedirectURL = ""
+		a.cfCallbackHost.Store("")
+		a.cfHTTPSCallback.Store(false)
+		a.cf = nil
+		_ = a.db.SetIntegration("cloudflare", nil)
+		a.cfInitError = ""
+		return nil
+	}
+	if err := validateCloudflareRedirect(redirect); err != nil {
+		return err
+	}
+	a.cfOptions.RedirectURL = redirect
+	if parsed, _ := url.Parse(redirect); parsed != nil {
+		a.cfCallbackHost.Store(parsed.Host)
+		a.cfHTTPSCallback.Store(parsed.Scheme == "https")
+	}
+	if a.cf == nil {
+		if a.cfOptions.ClientID != "" && len(a.cfOptions.Scopes) > 0 {
+			manager, err := cloudflare.New(a.cfOptions, a.db)
+			if err != nil {
+				a.cfInitError = "Не удалось восстановить Cloudflare после смены домена: " + err.Error()
+				return err
+			}
+			a.cf = manager
+		}
+		return nil
+	}
+	if err := a.cf.SetRedirectURL(redirect); err != nil {
+		a.cfInitError = "Callback URL не синхронизирован с доменом панели: " + err.Error()
+		return err
+	}
+	a.cfInitError = ""
+	return nil
 }
 
 func (a *App) cloudflareStatus() cloudflare.Status {

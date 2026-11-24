@@ -89,6 +89,29 @@ type Manager struct {
 	dirty   bool // a rotated grant that must be saved before further use
 }
 
+// SetRedirectURL keeps the provider's advertised callback synchronized with
+// the validated panel domain. A redirect change invalidates the old grant,
+// because Cloudflare binds grants to the registered callback configuration.
+func (m *Manager) SetRedirectURL(value string) error {
+	if err := validRedirect(value); err != nil {
+		return err
+	}
+	m.op.Lock()
+	defer m.op.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.o.RedirectURL = value
+	m.pending = make(map[string]pending)
+	m.tok = stored{}
+	m.dirty = false
+	if m.p != nil {
+		if err := m.p.SetIntegration("cloudflare", nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func New(o Options, p Persistence) (*Manager, error) {
 	o.Scopes = append([]string(nil), o.Scopes...)
 	sort.Strings(o.Scopes)

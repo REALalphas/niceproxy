@@ -16,7 +16,10 @@ import (
 )
 
 type Options struct {
+	PortOwners                                              model.PortOwners
 	Binary, RuntimeDir, DataDir, PanelListen, BackendSocket string
+	PanelDomain                                             string
+	PanelDomainProxied                                      bool
 	HTTPPort, HTTPSPort                                     int
 }
 
@@ -60,6 +63,10 @@ func validPath(s string) bool { return filepath.IsAbs(s) && !strings.ContainsAny
 // BuildConfig produces a complete Caddy JSON config; callers cannot supply raw JSON.
 func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 	o := defaults(options)
+	owners := o.PortOwners.Defaults()
+	if err := owners.Validate(); err != nil {
+		return nil, err
+	}
 	if !validPath(o.RuntimeDir) || !validPath(o.DataDir) || !validPath(o.BackendSocket) {
 		return nil, fmt.Errorf("runtime, data and backend socket paths must be absolute")
 	}
@@ -70,6 +77,13 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 	pn, perr := strconv.Atoi(pp)
 	if err != nil || perr != nil || net.ParseIP(ph) == nil || pn < 1 || pn > 65535 || pn == o.HTTPPort || pn == o.HTTPSPort {
 		return nil, fmt.Errorf("panel listen must be a literal IP and a distinct valid port")
+	}
+	panelDomain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(o.PanelDomain), "."))
+	if panelDomain != "" && (!hostname(panelDomain) || net.ParseIP(panelDomain) != nil) {
+		return nil, fmt.Errorf("invalid panel domain %q", o.PanelDomain)
+	}
+	if panelDomain != "" && owners.HTTPS != "caddy" && owners.HTTP3 != "caddy" {
+		return nil, fmt.Errorf("panel domain %q requires Caddy ownership of HTTPS TCP or HTTP3 UDP", panelDomain)
 	}
 	proxy := func(dial string, transport object) object {
 		h := object{"handler": "reverse_proxy", "upstreams": []object{{"dial": dial}}}
@@ -84,6 +98,28 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 	hasInternal := false
 	seen := map[string]bool{}
 	domainTLS := map[string]string{}
+	if panelDomain != "" {
+		domainTLS[panelDomain] = "auto"
+		secure = append(secure, object{
+			"match":    []object{{"host": []string{panelDomain}}},
+			"handle":   []object{proxy("unix/"+o.BackendSocket, nil)},
+			"terminal": true,
+		})
+		issuerConfig := object{"module": "acme", "challenges": object{
+			// Caddy's challenge handler runs before user routes. Keeping both
+			// challenge methods enabled avoids redirect loops for DNS-only records.
+			"http":     object{"disabled": o.PanelDomainProxied || owners.HTTP != "caddy"},
+			"tls-alpn": object{"disabled": o.PanelDomainProxied || owners.HTTPS != "caddy"},
+		}}
+		policies = append(policies, object{"subjects": []string{panelDomain}, "issuers": []object{issuerConfig}})
+		if owners.HTTP == "caddy" && owners.HTTPS == "caddy" {
+			location := "https://" + panelDomain
+			if o.HTTPSPort != 443 {
+				location += ":" + strconv.Itoa(o.HTTPSPort)
+			}
+			plain = append(plain, object{"match": []object{{"host": []string{panelDomain}}}, "handle": []object{{"handler": "static_response", "status_code": 308, "headers": object{"Location": []string{location + "{http.request.uri}"}}}}, "terminal": true})
+		}
+	}
 	// Caddy JSON evaluates routes in order. Longer segment prefixes must win
 	// over /api and the root fallback regardless of creation order.
 	routes = append([]model.HTTPRoute{}, routes...)
@@ -102,6 +138,9 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 		host := strings.ToLower(r.Host)
 		if !hostname(host) || net.ParseIP(host) != nil {
 			return nil, fmt.Errorf("invalid route hostname")
+		}
+		if panelDomain != "" && host == panelDomain {
+			return nil, fmt.Errorf("route %s conflicts with reserved panel domain %q", r.ID, panelDomain)
 		}
 		mode := r.TLS
 		if mode == "" {
@@ -134,6 +173,15 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 		}
 		if !r.Enabled {
 			continue
+		}
+		if mode == "off" && owners.HTTP != "caddy" {
+			return nil, fmt.Errorf("route %s requires HTTP owner caddy", r.ID)
+		}
+		if mode != "off" && owners.HTTPS != "caddy" && owners.HTTP3 != "caddy" {
+			return nil, fmt.Errorf("route %s requires HTTPS or HTTP3 owner caddy", r.ID)
+		}
+		if mode == "auto" && owners.HTTP != "caddy" && owners.HTTPS != "caddy" {
+			return nil, fmt.Errorf("route %s requires a Caddy TCP ACME challenge port", r.ID)
 		}
 		key := host + "\x00" + r.Path
 		if seen[key] {
@@ -177,7 +225,14 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 			issuer = "internal"
 			hasInternal = true
 		}
-		policies = append(policies, object{"subjects": []string{host}, "issuers": []object{{"module": issuer}}})
+		issuerConfig := object{"module": issuer}
+		if issuer == "acme" {
+			issuerConfig["challenges"] = object{"http": object{"disabled": owners.HTTP != "caddy"}, "tls-alpn": object{"disabled": owners.HTTPS != "caddy"}}
+		}
+		policies = append(policies, object{"subjects": []string{host}, "issuers": []object{issuerConfig}})
+		if owners.HTTP != "caddy" || owners.HTTPS != "caddy" {
+			continue
+		}
 		location := "https://" + host
 		if o.HTTPSPort != 443 {
 			location += ":" + strconv.Itoa(o.HTTPSPort)
@@ -190,7 +245,13 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 	}
 	if len(secure) > 0 {
 		secure = append(secure, object{"handle": []object{{"handler": "static_response", "status_code": 404}}, "terminal": true})
-		servers["public_https"] = object{"listen": []string{":" + strconv.Itoa(o.HTTPSPort)}, "automatic_https": object{"disable_redirects": true}, "tls_connection_policies": []object{{}}, "routes": secure}
+		protocols := []string{"h1", "h2", "h3"}
+		if owners.HTTP3 != "caddy" {
+			protocols = []string{"h1", "h2"}
+		} else if owners.HTTPS != "caddy" {
+			protocols = []string{"h3"}
+		}
+		servers["public_https"] = object{"protocols": protocols, "listen": []string{":" + strconv.Itoa(o.HTTPSPort)}, "automatic_https": object{"disable_redirects": true}, "tls_connection_policies": []object{{}}, "routes": secure}
 	}
 	apps := object{"http": object{"http_port": o.HTTPPort, "https_port": o.HTTPSPort, "servers": servers}}
 	if len(policies) > 0 {
