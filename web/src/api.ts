@@ -1,4 +1,10 @@
-export type Health = "healthy" | "unknown" | "error";
+export type Health =
+  | "healthy"
+  | "unknown"
+  | "error"
+  | "waiting_acme"
+  | "waiting_dns"
+  | "invalid_certificate";
 export type LifecycleState =
   | "ready"
   | "migrating"
@@ -18,12 +24,18 @@ export type HttpRoute = {
   enabled: boolean;
   status: Health;
   error?: string;
+  systemManaged?: boolean;
 };
 export type PortOwners = Record<"http" | "https" | "http3", "caddy" | "direct">;
 export type PortOwnerSettings = {
   httpPort: number;
   httpsPort: number;
   owners: PortOwners;
+};
+export type PanelDomainSettings = {
+  panelDomain: string;
+  proxied: boolean;
+  proxyWarning?: string;
 };
 export type DirectStats = {
   accepted: number;
@@ -75,7 +87,14 @@ const base = (v: unknown): v is Record<string, unknown> =>
   record(v) &&
   typeof v.id === "string" &&
   typeof v.enabled === "boolean" &&
-  ["healthy", "unknown", "error"].includes(String(v.status)) &&
+  [
+    "healthy",
+    "unknown",
+    "error",
+    "waiting_acme",
+    "waiting_dns",
+    "invalid_certificate",
+  ].includes(String(v.status)) &&
   (v.error == null || typeof v.error === "string");
 type StoredHttpRoute = Omit<HttpRoute, "path" | "stripPrefix"> &
   Partial<Pick<HttpRoute, "path" | "stripPrefix">>;
@@ -225,11 +244,16 @@ export const api = {
   panelDomain: () =>
     request(
       "/panel-domain",
-      (v): v is { panelDomain: string } =>
-        record(v) && typeof v.panelDomain === "string",
+      (v): v is PanelDomainSettings =>
+        record(v) &&
+        typeof v.panelDomain === "string" &&
+        typeof v.proxied === "boolean" &&
+        (v.proxyWarning == null || typeof v.proxyWarning === "string"),
     ),
   savePanelDomain: (panelDomain: string) =>
-    request("/panel-domain", config, "PATCH", { panelDomain }).then(normalizeConfig),
+    request("/panel-domain", config, "PATCH", { panelDomain }).then(
+      normalizeConfig,
+    ),
   portOwners: () =>
     request(
       "/port-owners",
