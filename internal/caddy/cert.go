@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -27,6 +28,10 @@ func ValidateCertificate(certPEM, keyPEM []byte, host string, now time.Time) (st
 			return "invalid", fmt.Errorf("certificate key mismatch: %w", err)
 		}
 	}
+	return certificateValidity(cert, host, now)
+}
+
+func certificateValidity(cert *x509.Certificate, host string, now time.Time) (string, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
@@ -41,4 +46,44 @@ func ValidateCertificate(certPEM, keyPEM []byte, host string, now time.Time) (st
 		return "wrong_host", fmt.Errorf("certificate does not contain %s", host)
 	}
 	return "valid", nil
+}
+
+// importedPanelCertificate checks the pair before Caddy loads it. Requiring a
+// single SAN keeps an origin-only certificate from matching other routes.
+func importedPanelCertificate(certFile, keyFile, host string) ([]*x509.Certificate, string, error) {
+	if !validPath(certFile) || !validPath(keyFile) {
+		return nil, "invalid", errors.New("set both panel certificate and private key to absolute PEM file paths")
+	}
+	cert, err := os.ReadFile(certFile)
+	if err != nil {
+		return nil, "invalid", fmt.Errorf("read panel certificate: %w", err)
+	}
+	key, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, "invalid", fmt.Errorf("read panel private key: %w", err)
+	}
+	return panelCertificateChain(cert, key, host)
+}
+
+func panelCertificateChain(cert, key []byte, host string) ([]*x509.Certificate, string, error) {
+	pair, err := tls.X509KeyPair(cert, key)
+	if err != nil {
+		return nil, "invalid", fmt.Errorf("invalid panel certificate/private key pair: %w", err)
+	}
+	chain := make([]*x509.Certificate, 0, len(pair.Certificate))
+	for _, der := range pair.Certificate {
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			return nil, "invalid", fmt.Errorf("parse panel certificate chain: %w", err)
+		}
+		chain = append(chain, cert)
+	}
+	leaf := chain[0]
+	if state, err := certificateValidity(leaf, host, time.Now()); err != nil {
+		return nil, state, err
+	}
+	if len(leaf.DNSNames) != 1 || !strings.EqualFold(leaf.DNSNames[0], host) || len(leaf.IPAddresses) != 0 {
+		return nil, "invalid", fmt.Errorf("panel certificate must cover only %q. Issue a dedicated certificate for this hostname", host)
+	}
+	return chain, "valid", nil
 }

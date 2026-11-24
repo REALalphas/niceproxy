@@ -18,6 +18,7 @@ import (
 	"niceproxy/internal/caddy"
 	"niceproxy/internal/cloudflare"
 	"niceproxy/internal/control"
+	"niceproxy/internal/model"
 	"niceproxy/internal/proxy"
 	"niceproxy/internal/store"
 )
@@ -154,24 +155,25 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	panelDomain := cfg.PanelDomain
-	if good.PanelDomain != "" {
-		panelDomain = good.PanelDomain
+	caddyOptions := caddy.Options{
+		Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir,
+		PanelListen: *panel, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort,
+		PanelCertFile: os.Getenv("NICEPROXY_PANEL_CERT_FILE"), PanelKeyFile: os.Getenv("NICEPROXY_PANEL_KEY_FILE"),
 	}
-	if panelDomain == "" {
-		panelDomain = os.Getenv("NICEPROXY_DOMAIN")
-	}
-	caddyOptions := caddy.Options{Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir, PanelListen: *panel, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort, PanelDomain: panelDomain, PanelDomainProxied: good.PanelDomainProxied || cfg.PanelDomainProxied}
+	caddyOptions.PanelDomain, caddyOptions.PanelDomainProxied = good.PanelDomain, good.PanelDomainProxied
+	caddyOptions.PanelDNSObserved = good.PanelDNSObserved
 	cm := caddy.New(caddyOptions)
-	startedRoutes := good.HTTPRoutes
-	if err := cm.Start(ctx, startedRoutes, good.PortOwners); err != nil {
+	startedConfig := good
+	if err := cm.Start(ctx, startedConfig.HTTPRoutes, startedConfig.PortOwners); err != nil {
 		log.Printf("last-good Caddy startup failed; starting management panel only: %v", err)
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = cm.Close(closeCtx)
 		closeCancel()
+		caddyOptions.PanelDomain = ""
+		caddyOptions.PanelDomainProxied, caddyOptions.PanelDNSObserved = false, false
 		cm = caddy.New(caddyOptions)
-		startedRoutes = nil
-		if err := cm.Start(ctx, startedRoutes, good.PortOwners); err != nil {
+		startedConfig = model.Config{PortOwners: good.PortOwners}
+		if err := cm.Start(ctx, startedConfig.HTTPRoutes, startedConfig.PortOwners); err != nil {
 			return fmt.Errorf("start Caddy management panel: %w", err)
 		}
 	}
@@ -190,7 +192,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	app.SetHTTPActive(startedRoutes)
+	app.SetCaddyActive(startedConfig)
 	initialDomain := cfg.PanelDomain
 	if initialDomain == "" {
 		initialDomain = os.Getenv("NICEPROXY_DOMAIN")
@@ -199,16 +201,16 @@ func run() error {
 		log.Printf("panel domain configuration unavailable: %v", err)
 	}
 	cfRedirect := os.Getenv("NICEPROXY_CF_REDIRECT_URL")
-	if initialDomain != "" {
-		cfRedirect = "https://" + initialDomain + "/api/cloudflare/callback"
-	}
+	loopbackCallback := "http://" + net.JoinHostPort("localhost", strconv.Itoa(pp)) + "/api/cloudflare/callback"
 	if cfRedirect == "" {
 		host, _, _ := net.SplitHostPort(*panel)
 		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 			cfRedirect = "http://" + *panel + "/api/cloudflare/callback"
+		} else {
+			cfRedirect = loopbackCallback
 		}
 	}
-	if err := app.ConfigureCloudflare(cloudflare.Options{DataDir: *dataDir, RedirectURL: cfRedirect}); err != nil {
+	if err := app.ConfigureCloudflare(cloudflare.Options{DataDir: *dataDir, RedirectURL: cfRedirect, LoopbackRedirectURL: loopbackCallback}); err != nil {
 		log.Print("Cloudflare integration unavailable; management panel remains available")
 	}
 	applyCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -234,6 +236,16 @@ func run() error {
 	server := &http.Server{Handler: app.Handler(static), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 16384}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
+	panelCtx, stopPanel := context.WithCancel(ctx)
+	panelDone := make(chan struct{})
+	go func() {
+		defer close(panelDone)
+		app.RunPanelAutomation(panelCtx)
+	}()
+	defer func() {
+		stopPanel()
+		<-panelDone
+	}()
 	log.Printf("niceproxy ready: panel http://%s; TCP HTTP %d / HTTPS %d; config revision %d", *panel, *httpPort, *httpsPort, cfg.Revision)
 	var runErr error
 	select {

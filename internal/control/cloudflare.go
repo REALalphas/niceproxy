@@ -25,10 +25,15 @@ type cloudflareSettings struct {
 // ConfigureCloudflare loads public client settings. OAuth tokens remain inside
 // the provider manager; the control API never serializes them.
 func (a *App) ConfigureCloudflare(options cloudflare.Options) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.cfMu.Lock()
 	defer a.cfMu.Unlock()
-	a.cfOptions = options
 	a.cfDefaultRedirect = options.RedirectURL
+	if a.config.PanelDomain != "" {
+		options.RedirectURL = "https://" + a.config.PanelDomain + "/api/cloudflare/callback"
+	}
+	a.cfOptions = options
 	a.cfCallbackHost.Store("")
 	a.cfHTTPSCallback.Store(false)
 	if validateCloudflareRedirect(options.RedirectURL) == nil {
@@ -64,22 +69,13 @@ func (a *App) syncCloudflareRedirect(domain string) error {
 	if domain != "" {
 		redirect = "https://" + domain + "/api/cloudflare/callback"
 	}
-	if redirect == "" {
-		// A deployment without an explicitly configured callback can remove a
-		// public panel domain cleanly. Do not leave the old public host trusted.
-		a.cfOptions.RedirectURL = ""
-		a.cfCallbackHost.Store("")
-		a.cfHTTPSCallback.Store(false)
-		a.cf = nil
-		_ = a.db.SetIntegration("cloudflare", nil)
-		a.cfInitError = ""
-		return nil
-	}
-	if err := validateCloudflareRedirect(redirect); err != nil {
-		return err
+	if redirect != "" {
+		if err := validateCloudflareRedirect(redirect); err != nil {
+			return err
+		}
 	}
 	a.cfOptions.RedirectURL = redirect
-	if parsed, _ := url.Parse(redirect); parsed != nil {
+	if parsed, err := url.Parse(redirect); err == nil && parsed != nil {
 		a.cfCallbackHost.Store(parsed.Host)
 		a.cfHTTPSCallback.Store(parsed.Scheme == "https")
 	}
@@ -103,7 +99,7 @@ func (a *App) syncCloudflareRedirect(domain string) error {
 }
 
 func (a *App) cloudflareStatus() cloudflare.Status {
-	status := cloudflare.Status{ClientID: a.cfOptions.ClientID, RedirectURL: a.cfOptions.RedirectURL, Scopes: []string{}}
+	status := cloudflare.Status{ClientID: a.cfOptions.ClientID, RedirectURL: a.cfOptions.RedirectURL, LoopbackRedirectURL: a.cfOptions.LoopbackRedirectURL, Scopes: []string{}}
 	if a.cf != nil {
 		status = a.cf.Status()
 	}
@@ -151,9 +147,11 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		options := a.cfOptions
 		options.ClientID = settings.ClientID
 		options.Scopes = settings.Scopes
-		if err := validateCloudflareRedirect(options.RedirectURL); err != nil {
-			fail(w, 400, err.Error())
-			return
+		if options.RedirectURL != "" || options.LoopbackRedirectURL == "" {
+			if err := validateCloudflareRedirect(options.RedirectURL); err != nil {
+				fail(w, 400, err.Error())
+				return
+			}
 		}
 		// A configuration change invalidates the old grant before instantiating
 		// a manager for the newly registered application.
@@ -206,17 +204,28 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/api/cloudflare/connect" && r.Method == "POST" {
-		redirect, _ := url.Parse(a.cf.Status().RedirectURL)
-		if redirect == nil || redirect.Host != r.Host {
-			fail(w, 400, "Откройте панель по адресу, указанному в callback URL OAuth-приложения.")
-			return
-		}
 		cookie, err := r.Cookie("niceproxy_session")
 		if err != nil {
 			fail(w, 401, "authentication required")
 			return
 		}
-		authorization, state, err := a.cf.Begin(hash(cookie.Value))
+		session := hash(cookie.Value)
+		if r.URL.Query().Get("mode") == "localhost" {
+			authorization, err := a.cf.BeginLoopback(session)
+			if err != nil {
+				fail(w, 400, "Не удалось начать вход через localhost. Проверьте настройки OAuth.")
+				return
+			}
+			a.cfInitError = ""
+			write(w, 200, map[string]string{"url": authorization})
+			return
+		}
+		redirect, _ := url.Parse(a.cf.Status().RedirectURL)
+		if redirect == nil || redirect.Host != r.Host {
+			fail(w, 400, "Откройте панель по адресу OAuth callback или начните вход через localhost.")
+			return
+		}
+		authorization, state, err := a.cf.Begin(session)
 		if err != nil {
 			fail(w, 400, "Не удалось начать подключение Cloudflare.")
 			return
@@ -224,6 +233,30 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{Name: "niceproxy_cf_oauth", Value: state, Path: "/api/cloudflare/callback", HttpOnly: true, Secure: redirect.Scheme == "https", SameSite: http.SameSiteLaxMode, MaxAge: 600})
 		a.cfInitError = ""
 		write(w, 200, map[string]string{"url": authorization})
+		return
+	}
+	if r.URL.Path == "/api/cloudflare/complete" && r.Method == "POST" {
+		var input struct {
+			CallbackURL string `json:"callbackUrl"`
+		}
+		if err := decode(w, r, &input); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		cookie, err := r.Cookie("niceproxy_session")
+		if err != nil {
+			fail(w, 401, "authentication required")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+		if err := a.cf.CompleteLoopback(ctx, input.CallbackURL, hash(cookie.Value), a.db.Authenticated); err != nil {
+			fail(w, 400, "Не удалось завершить OAuth. Скопируйте полный localhost URL из вкладки после подтверждения. Если попытка истекла или Cloudflare отклонил код, начните вход заново.")
+			return
+		}
+		a.cfInitError = ""
+		a.queuePanelAutomation()
+		write(w, 200, a.cloudflareStatus())
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
@@ -295,6 +328,16 @@ func (a *App) cloudflareCallback(w http.ResponseWriter, r *http.Request) {
 	defer a.cfMu.Unlock()
 	result := "error"
 	cookie, cookieErr := r.Cookie("niceproxy_cf_oauth")
+	if callback, _ := url.Parse(a.cfOptions.LoopbackRedirectURL); callback != nil && callback.Host == r.Host {
+		state := r.URL.Query().Get("state")
+		if cookieErr != nil || subtle.ConstantTimeCompare([]byte(state), []byte(cookie.Value)) != 1 {
+			// Keep the address bar intact for an authenticated manual completion.
+			w.Header().Set("Referrer-Policy", "no-referrer")
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("Скопируйте полный URL из адресной строки и вставьте его в niceproxy."))
+			return
+		}
+	}
 	if a.cf != nil && cookieErr == nil {
 		u, _ := url.Parse(a.cf.Status().RedirectURL)
 		query := r.URL.Query()
@@ -308,6 +351,7 @@ func (a *App) cloudflareCallback(w http.ResponseWriter, r *http.Request) {
 				cancel()
 				if err == nil {
 					result = "connected"
+					a.queuePanelAutomation()
 				}
 			}
 			a.cfInitError = ""

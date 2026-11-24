@@ -904,7 +904,21 @@ function App() {
     !!health &&
     health.appliedRevision === config.revision &&
     health.revision === config.revision;
-  const applied = converged && health?.state === "ready";
+  const applied = converged && health?.status === "healthy";
+  const panelAutomation = panelDomainSettings?.automation;
+  const cloudflareSSLMode = panelAutomation?.zoneSSL;
+  const cloudflareSSLLabel =
+    cloudflareSSLMode === "strict"
+      ? "Full (strict)"
+      : cloudflareSSLMode === "full"
+        ? "Full"
+        : cloudflareSSLMode === "flexible"
+          ? "Flexible"
+          : cloudflareSSLMode === "off"
+            ? "Off"
+            : cloudflareSSLMode === "origin_pull"
+              ? "Strict (SSL-Only Origin Pull)"
+              : cloudflareSSLMode;
   const renderEpoch = epoch.current;
   const saved = (kind: "http" | "direct", item: HttpRoute | DirectRule) => {
     if (renderEpoch !== epoch.current || !authenticated.current) return;
@@ -1257,13 +1271,15 @@ function App() {
                 <Text as="h2" size="xl" font="heading">
                   {!health
                     ? "Состояние недоступно"
-                    : health.state === "waiting_acme" && converged
-                      ? "Ожидание публичного сертификата"
-                      : applied
-                        ? "Конфигурация применена"
-                        : health.status === "error"
-                          ? "Ошибка применения"
-                          : "Конфигурация применена частично"}
+                    : health.state === "invalid_certificate" && converged
+                      ? "Недействительный сертификат панели"
+                      : health.state === "waiting_acme" && converged
+                        ? "Ожидание публичного сертификата"
+                        : applied
+                          ? "Конфигурация применена"
+                          : health.status === "error"
+                            ? "Ошибка применения"
+                            : "Конфигурация применена частично"}
                 </Text>
                 <Text tone="secondary">
                   Сохранено:{" "}
@@ -1291,7 +1307,7 @@ function App() {
                       : String(health.caddy)}
               </Text>
               {health?.error && <ErrorMessage>{health.error}</ErrorMessage>}
-              {certificate && (
+              {certificate?.configured && (
                 <Text tone="secondary">
                   Сертификат{" "}
                   {certificate.domain || health?.panelDomain || "панели"}:{" "}
@@ -1303,7 +1319,40 @@ function App() {
                   {certificate.error ? `. ${certificate.error}` : ""}
                 </Text>
               )}
-              {panelDomainSettings?.proxyWarning && (
+              {certificate?.dnsState && (
+                <Text tone="secondary">
+                  Системный резолвер, включая hosts:{" "}
+                  {certificate.addresses?.join(", ") ||
+                    certificate.dnsError ||
+                    "нет адресов"}
+                </Text>
+              )}
+              {certificate?.tlsState && (
+                <Text tone="secondary">
+                  TLS на локальном origin:{" "}
+                  {certificate.tlsState === "bootstrap"
+                    ? "сертификат Caddy Local Authority"
+                    : certificate.tlsState === "served"
+                      ? "доверенный сертификат"
+                      : certificate.tlsState === "cloudflare_origin"
+                        ? "Cloudflare Origin CA для Full (strict)"
+                        : certificate.tlsState}
+                  {certificate.tlsError ? `. ${certificate.tlsError}` : ""}
+                </Text>
+              )}
+              {panelAutomation?.dnsMode && (
+                <Text>
+                  Cloudflare:{" "}
+                  {panelAutomation.dnsMode === "proxied" ? "Proxied" : "DNS Only"}
+                  {panelAutomation.sslSelection === "automatic" &&
+                    " · Automatic SSL/TLS"}
+                  {cloudflareSSLLabel && ` · режим зоны: ${cloudflareSSLLabel}`}
+                </Text>
+              )}
+              {panelAutomation?.detail && (
+                <Text tone="secondary">{panelAutomation.detail}</Text>
+              )}
+              {!panelAutomation?.dnsMode && panelDomainSettings?.proxyWarning && (
                 <ErrorMessage>{panelDomainSettings.proxyWarning}</ErrorMessage>
               )}
               <Stack direction="row" gap={3}>

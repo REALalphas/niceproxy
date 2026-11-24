@@ -219,6 +219,8 @@ export function Cloudflare({
   const [setup, setSetup] = useState(false);
   const [clientId, setClientId] = useState("");
   const [scopes, setScopes] = useState("");
+  const [authorization, setAuthorization] = useState("");
+  const [callbackURL, setCallbackURL] = useState("");
   const [zones, setZones] = useState<Zone[]>([]);
   const [zoneId, setZoneId] = useState("");
   const [records, setRecords] = useState<DNSRecord[]>([]);
@@ -329,6 +331,29 @@ export function Cloudflare({
       setNotice("Настройки сохранены. Войдите в аккаунт Cloudflare заново.");
     });
   }
+  const loopback = status?.loopbackRedirectUrl;
+  const direct = status?.redirectUrl.startsWith(window.location.origin + "/");
+  const useLoopback = !!loopback;
+
+  async function startOAuth(localhost: boolean) {
+    const result = await cloudflareApi.connect(localhost);
+    const url = authorizationURL(result.url);
+    setCallbackURL("");
+    if (localhost) setAuthorization(url);
+    else window.location.assign(url);
+  }
+
+  function finishOAuth(e: FormEvent) {
+    e.preventDefault();
+    if (!callbackURL.trim()) return;
+    void action(async () => {
+      applyStatus(await cloudflareApi.complete(callbackURL.trim()));
+      setAuthorization("");
+      setCallbackURL("");
+      setNotice("Cloudflare подключён. Niceproxy проверяет DNS и HTTPS панели.");
+    });
+  }
+
   const zone = zones.find((z) => z.id === zoneId);
   const change = (update: () => void) => {
     void changeView(update);
@@ -341,8 +366,8 @@ export function Cloudflare({
             Подключение Cloudflare
           </Text>
           <Text tone="secondary">
-            Зарегистрируйте OAuth-приложение с PKCE и скопируйте его Client ID и
-            разрешения.
+            Скопируйте адрес ниже в Redirect (Callback) URLs при регистрации
+            OAuth-приложения Cloudflare. Затем вставьте сюда Client ID и Scope ID.
           </Text>
           <Text>
             <a
@@ -366,9 +391,19 @@ export function Cloudflare({
             id="cf-callback"
             label="Redirect URI"
             labelPlacement="inside"
-            value={status.redirectUrl}
+            value={loopback || status.redirectUrl}
             readOnly
           />
+          {loopback && status.redirectUrl.startsWith("https://") && (
+            <TextInput
+              showIcon={false}
+              id="cf-public-callback"
+              label="Публичный Redirect URI для входа по домену"
+              labelPlacement="inside"
+              value={status.redirectUrl}
+              readOnly
+            />
+          )}
           <TextInput
             showIcon={false}
             id="cf-client-id"
@@ -386,7 +421,7 @@ export function Cloudflare({
             labelPlacement="inside"
             value={scopes}
             onValueChange={setScopes}
-            hint="Zone Read, DNS Read, DNS Write; offline_access для обновления доступа. ID через пробел или запятую."
+            hint="Zone Read, DNS Read, DNS Write. Для автосертификата и Full (strict) добавьте Zone Settings Read, SSL and Certificates Edit, Config Settings Read/Write. Для обновления доступа добавьте offline_access. ID через пробел или запятую."
             required
             disabled={busy}
           />
@@ -465,7 +500,54 @@ export function Cloudflare({
           <Text>{notice}</Text>
         </div>
       )}
-      {!status?.connected && (
+      {!status?.connected && authorization && (
+        <form onSubmit={finishOAuth}>
+          <Stack gap={3}>
+            <Text>
+              <a href={authorization} target="_blank" rel="noreferrer">
+                Открыть Cloudflare и разрешить доступ
+              </a>
+            </Text>
+            <Text tone="secondary">
+              После подтверждения скопируйте полный адрес localhost из новой
+              вкладки и вставьте его сюда. Это работает и если браузер покажет,
+              что страница localhost недоступна.
+            </Text>
+            <TextInput
+              id="cf-loopback-response"
+              label="URL из адресной строки localhost"
+              showIcon={false}
+              labelPlacement="inside"
+              value={callbackURL}
+              onValueChange={setCallbackURL}
+              autoComplete="off"
+              required
+              disabled={busy}
+            />
+            <Stack direction="row" gap={3}>
+              <Button
+                type="submit"
+                loading={busy}
+                disabled={!callbackURL.trim()}
+              >
+                Завершить подключение
+              </Button>
+              <Button
+                variant="blank"
+                disabled={busy}
+                onPress={() => {
+                  setAuthorization("");
+                  setCallbackURL("");
+                  setError("");
+                }}
+              >
+                Отмена
+              </Button>
+            </Stack>
+          </Stack>
+        </form>
+      )}
+      {!status?.connected && !authorization && (
         <Stack direction="row" gap={3}>
           {status && !status.configured && (
             <Button onPress={() => change(() => setSetup(true))}>
@@ -475,14 +557,27 @@ export function Cloudflare({
           {status?.configured && (
             <Button
               loading={busy}
-              onPress={() =>
-                void action(async () => {
-                  const result = await cloudflareApi.connect();
-                  window.location.assign(authorizationURL(result.url));
-                })
-              }
+              onPress={() => void action(() => startOAuth(useLoopback))}
             >
               Войти через Cloudflare
+            </Button>
+          )}
+          {status?.configured && useLoopback && direct && (
+            <Button
+              variant="blank"
+              disabled={busy}
+              onPress={() => void action(() => startOAuth(false))}
+            >
+              Войти через callback панели
+            </Button>
+          )}
+          {status?.configured && (
+            <Button
+              variant="blank"
+              disabled={busy}
+              onPress={() => change(() => setSetup(true))}
+            >
+              Настройки OAuth
             </Button>
           )}
           <Button variant="blank" loading={loading} onPress={() => void load()}>
