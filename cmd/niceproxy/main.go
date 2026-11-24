@@ -201,13 +201,16 @@ func run() error {
 		log.Printf("panel domain configuration unavailable: %v", err)
 	}
 	cfRedirect := os.Getenv("NICEPROXY_CF_REDIRECT_URL")
+	loopbackCallback := "http://" + net.JoinHostPort("localhost", strconv.Itoa(pp)) + "/api/cloudflare/callback"
 	if cfRedirect == "" {
 		host, _, _ := net.SplitHostPort(*panel)
 		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 			cfRedirect = "http://" + *panel + "/api/cloudflare/callback"
+		} else {
+			cfRedirect = loopbackCallback
 		}
 	}
-	if err := app.ConfigureCloudflare(cloudflare.Options{DataDir: *dataDir, RedirectURL: cfRedirect}); err != nil {
+	if err := app.ConfigureCloudflare(cloudflare.Options{DataDir: *dataDir, RedirectURL: cfRedirect, LoopbackRedirectURL: loopbackCallback}); err != nil {
 		log.Print("Cloudflare integration unavailable; management panel remains available")
 	}
 	applyCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -237,7 +240,7 @@ func run() error {
 	panelDone := make(chan struct{})
 	go func() {
 		defer close(panelDone)
-		app.RunPanelAutomation(panelCtx, os.Getenv("NICEPROXY_CF_AUTOMATION_TOKEN_FILE"))
+		app.RunPanelAutomation(panelCtx)
 	}()
 	defer func() {
 		stopPanel()

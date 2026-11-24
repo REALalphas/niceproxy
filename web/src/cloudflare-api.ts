@@ -5,6 +5,7 @@ export type CloudflareStatus = {
   connected: boolean;
   clientId: string;
   redirectUrl: string;
+  loopbackRedirectUrl?: string;
   scopes: string[];
   expiresAt?: string;
   error?: string;
@@ -30,6 +31,7 @@ const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(x => 
 const status = (v: unknown): v is CloudflareStatus => object(v) &&
   typeof v.configured === "boolean" && typeof v.connected === "boolean" &&
   typeof v.clientId === "string" && typeof v.redirectUrl === "string" && strings(v.scopes) &&
+  (v.loopbackRedirectUrl === undefined || typeof v.loopbackRedirectUrl === "string") &&
   (v.expiresAt === undefined || typeof v.expiresAt === "string") &&
   (v.error === undefined || typeof v.error === "string");
 const certificateStatus = (v: unknown): v is CertificateStatus => object(v) &&
@@ -62,7 +64,8 @@ export const cloudflareApi = {
   status: () => request("/cloudflare", status),
   certificate: () => request("/certificate", certificateStatus),
   settings: (clientId: string, scopes: string[]) => request("/cloudflare/settings", status, "POST", { clientId, scopes }),
-  connect: () => request("/cloudflare/connect", (v): v is { url: string } => object(v) && typeof v.url === "string", "POST"),
+  connect: (localhost = false) => request(localhost ? "/cloudflare/connect?mode=localhost" : "/cloudflare/connect", (v): v is { url: string } => object(v) && typeof v.url === "string", "POST"),
+  complete: (callbackUrl: string) => request("/cloudflare/complete", status, "POST", { callbackUrl }),
   disconnect: () => request("/cloudflare/disconnect", (v): v is { ok: true; warning?: string } => object(v) && v.ok === true &&
     (v.warning === undefined || typeof v.warning === "string"), "POST"),
   zones: () => request("/cloudflare/zones", (v): v is { zones: Zone[] } => object(v) && Array.isArray(v.zones) && v.zones.every(zone)),

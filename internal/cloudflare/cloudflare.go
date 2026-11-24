@@ -34,19 +34,20 @@ type Persistence interface {
 }
 type Options struct {
 	ClientID, RedirectURL, DataDir        string
-	apiToken                              string
+	LoopbackRedirectURL                   string
 	Scopes                                []string
 	HTTPClient                            *http.Client
 	AuthURL, TokenURL, RevokeURL, APIBase string
 }
 type Status struct {
-	Configured  bool       `json:"configured"`
-	Connected   bool       `json:"connected"`
-	ClientID    string     `json:"clientId"`
-	RedirectURL string     `json:"redirectUrl"`
-	Scopes      []string   `json:"scopes"`
-	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
-	Error       string     `json:"error,omitempty"`
+	Configured          bool       `json:"configured"`
+	Connected           bool       `json:"connected"`
+	ClientID            string     `json:"clientId"`
+	RedirectURL         string     `json:"redirectUrl"`
+	LoopbackRedirectURL string     `json:"loopbackRedirectUrl,omitempty"`
+	Scopes              []string   `json:"scopes"`
+	ExpiresAt           *time.Time `json:"expiresAt,omitempty"`
+	Error               string     `json:"error,omitempty"`
 }
 type Zone struct {
 	ID      string `json:"id"`
@@ -66,8 +67,9 @@ type Record struct {
 	TTL     int    `json:"ttl"`
 }
 type pending struct {
-	verifier, origin string
-	until            time.Time
+	verifier, origin, redirect string
+	pasted                     bool
+	until                      time.Time
 }
 type stored struct {
 	ClientID, RedirectURL string
@@ -91,23 +93,22 @@ type Manager struct {
 }
 
 // SetRedirectURL keeps the provider's advertised callback synchronized with
-// the validated panel domain. A redirect change invalidates the old grant,
-// because Cloudflare binds grants to the registered callback configuration.
+// the panel domain. Authorization codes are bound to their redirect URI, while
+// an already exchanged access/refresh grant belongs to its client and scopes.
 func (m *Manager) SetRedirectURL(value string) error {
-	if err := validRedirect(value); err != nil {
-		return err
+	if value != "" {
+		if err := validRedirect(value); err != nil {
+			return err
+		}
 	}
 	m.op.Lock()
 	defer m.op.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.o.RedirectURL = value
-	m.pending = make(map[string]pending)
-	m.tok = stored{}
-	m.dirty = false
-	if m.p != nil {
-		if err := m.p.SetIntegration("cloudflare", nil); err != nil {
-			return err
+	for state, attempt := range m.pending {
+		if !attempt.pasted {
+			delete(m.pending, state)
 		}
 	}
 	return nil
@@ -138,11 +139,16 @@ func New(o Options, p Persistence) (*Manager, error) {
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	o.HTTPClient = &client
 	m := &Manager{o: o, p: p, pending: make(map[string]pending)}
+	if o.LoopbackRedirectURL != "" && !loopbackRedirect(o.LoopbackRedirectURL) {
+		return nil, errors.New("OAuth bootstrap redirect must be loopback HTTP")
+	}
 	if !m.configured() {
 		return m, nil
 	}
-	if err := validRedirect(o.RedirectURL); err != nil {
-		return nil, err
+	if o.RedirectURL != "" || o.LoopbackRedirectURL == "" {
+		if err := validRedirect(o.RedirectURL); err != nil {
+			return nil, err
+		}
 	}
 	for _, s := range o.Scopes {
 		if s == "" || strings.ContainsAny(s, " \t\r\n") {
@@ -163,6 +169,11 @@ func New(o Options, p Persistence) (*Manager, error) {
 	return m, nil
 }
 func (m *Manager) configured() bool { return m.o.ClientID != "" && len(m.o.Scopes) > 0 }
+
+func loopbackRedirect(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "http" && validRedirect(raw) == nil
+}
 func validRedirect(s string) error {
 	u, e := url.Parse(s)
 	if e != nil || !u.IsAbs() || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(s, "#") || u.Path != "/api/cloudflare/callback" || u.RawPath != "" {
@@ -213,7 +224,7 @@ func (m *Manager) load() error {
 	if json.Unmarshal(plain, &t) != nil {
 		return errors.New("invalid saved Cloudflare credentials")
 	}
-	if t.ClientID != m.o.ClientID || t.RedirectURL != m.o.RedirectURL || !reflect.DeepEqual(t.Scopes, m.o.Scopes) {
+	if t.ClientID != m.o.ClientID || validRedirect(t.RedirectURL) != nil || !reflect.DeepEqual(t.Scopes, m.o.Scopes) {
 		return errors.New("saved Cloudflare authorization configuration changed")
 	}
 	m.tok = t
@@ -323,7 +334,7 @@ func (m *Manager) saveLocked(t stored) error {
 func (m *Manager) Status() Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s := Status{Configured: m.configured(), Connected: m.tok.Access != "", ClientID: m.o.ClientID, RedirectURL: m.o.RedirectURL, Scopes: append([]string(nil), m.o.Scopes...), Error: m.err}
+	s := Status{Configured: m.configured(), Connected: m.tok.Access != "", ClientID: m.o.ClientID, RedirectURL: m.o.RedirectURL, LoopbackRedirectURL: m.o.LoopbackRedirectURL, Scopes: append([]string(nil), m.o.Scopes...), Error: m.err}
 	if !m.tok.ExpiresAt.IsZero() {
 		t := m.tok.ExpiresAt
 		s.ExpiresAt = &t
@@ -336,10 +347,26 @@ func randstr() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), e
 }
 func (m *Manager) Begin(sessionHash string) (string, string, error) {
+	return m.begin(sessionHash, false)
+}
+
+func (m *Manager) BeginLoopback(sessionHash string) (string, error) {
+	authorization, _, err := m.begin(sessionHash, true)
+	return authorization, err
+}
+
+func (m *Manager) begin(sessionHash string, pasted bool) (string, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.configured() {
 		return "", "", errors.New("Cloudflare not configured")
+	}
+	redirect := m.o.RedirectURL
+	if pasted {
+		redirect = m.o.LoopbackRedirectURL
+	}
+	if redirect == "" {
+		return "", "", errors.New("OAuth redirect is not configured")
 	}
 	if sessionHash == "" || len(sessionHash) > 1024 {
 		return "", "", errors.New("valid originating session required")
@@ -363,28 +390,56 @@ func (m *Manager) Begin(sessionHash string) (string, string, error) {
 	if e != nil {
 		return "", "", errors.New("cannot create authorization verifier")
 	}
-	m.pending[state] = pending{verifier: ver, origin: sessionHash, until: time.Now().Add(10 * time.Minute)}
+	m.pending[state] = pending{verifier: ver, origin: sessionHash, redirect: redirect, pasted: pasted, until: time.Now().Add(10 * time.Minute)}
 	sum := sha256.Sum256([]byte(ver))
-	q := url.Values{"response_type": {"code"}, "client_id": {m.o.ClientID}, "redirect_uri": {m.o.RedirectURL}, "scope": {strings.Join(m.o.Scopes, " ")}, "state": {state}, "code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])}, "code_challenge_method": {"S256"}}
+	q := url.Values{"response_type": {"code"}, "client_id": {m.o.ClientID}, "redirect_uri": {redirect}, "scope": {strings.Join(m.o.Scopes, " ")}, "state": {state}, "code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])}, "code_challenge_method": {"S256"}}
 	return m.o.AuthURL + "?" + q.Encode(), state, nil
 }
 func (m *Manager) Complete(ctx context.Context, code, state, cookie string, valid func(string) bool) error {
+	return m.complete(ctx, code, state, cookie, "", false, valid)
+}
+
+// CompleteLoopback accepts the browser's complete loopback URI. The URI is
+// parsed locally, and only the configured Cloudflare token endpoint is called.
+func (m *Manager) CompleteLoopback(ctx context.Context, callback, sessionHash string, valid func(string) bool) error {
+	callback = strings.TrimSpace(callback)
+	if len(callback) > 8192 || strings.Contains(callback, "#") {
+		return errors.New("invalid loopback callback URL")
+	}
+	u, err := url.Parse(callback)
+	if err != nil {
+		return errors.New("invalid loopback callback URL")
+	}
+	q, err := url.ParseQuery(u.RawQuery)
+	u.RawQuery, u.ForceQuery = "", false
+	if err != nil || !loopbackRedirect(u.String()) || len(q["state"]) != 1 || len(q["code"]) != 1 ||
+		len(q["code"][0]) > 4096 || q.Has("error") {
+		return errors.New("copy the full localhost URL after approving Cloudflare access")
+	}
+	return m.complete(ctx, q.Get("code"), q.Get("state"), sessionHash, u.String(), true, valid)
+}
+
+func (m *Manager) complete(ctx context.Context, code, state, proof, redirect string, pasted bool, valid func(string) bool) error {
 	m.op.Lock()
 	defer m.op.Unlock()
 	m.mu.Lock()
 	v, ok := m.pending[state]
+	if !ok || v.pasted != pasted || pasted && (v.redirect != redirect || subtle.ConstantTimeCompare([]byte(v.origin), []byte(proof)) != 1) {
+		m.mu.Unlock()
+		return errors.New("invalid authorization state")
+	}
 	delete(m.pending, state)
 	m.mu.Unlock()
-	a, b := sha256.Sum256([]byte(state)), sha256.Sum256([]byte(cookie))
-	if !ok || code == "" || !time.Now().Before(v.until) || subtle.ConstantTimeCompare(a[:], b[:]) != 1 || valid == nil || !valid(v.origin) {
+	if code == "" || !time.Now().Before(v.until) || !pasted && subtle.ConstantTimeCompare([]byte(state), []byte(proof)) != 1 || valid == nil || !valid(v.origin) {
 		return errors.New("invalid authorization state")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t, e := m.exchange(ctx, url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {m.o.ClientID}, "redirect_uri": {m.o.RedirectURL}, "code_verifier": {v.verifier}}, "")
+	t, e := m.exchange(ctx, url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {m.o.ClientID}, "redirect_uri": {v.redirect}, "code_verifier": {v.verifier}}, "")
 	if e != nil {
 		return e
 	}
+	t.RedirectURL = v.redirect
 	// Recheck the originating login after the potentially slow exchange, too.
 	if !valid(v.origin) {
 		return errors.New("originating session expired")
@@ -424,7 +479,7 @@ func (m *Manager) exchange(ctx context.Context, form url.Values, oldRefresh stri
 	if readJSON(resp.Body, 1<<20, &x) != nil || x.Access == "" || (x.Type != "" && !strings.EqualFold(x.Type, "bearer")) {
 		return stored{}, errors.New("invalid Cloudflare token response")
 	}
-	t := stored{ClientID: m.o.ClientID, RedirectURL: m.o.RedirectURL, Scopes: append([]string(nil), m.o.Scopes...), Access: x.Access, Refresh: x.Refresh}
+	t := stored{ClientID: m.o.ClientID, Scopes: append([]string(nil), m.o.Scopes...), Access: x.Access, Refresh: x.Refresh}
 	if t.Refresh == "" {
 		t.Refresh = oldRefresh
 	}
@@ -452,9 +507,6 @@ func readJSON(r io.Reader, limit int64, out any) error {
 	return json.Unmarshal(b, out)
 }
 func (m *Manager) tokenLocked(ctx context.Context) (string, error) {
-	if m.o.apiToken != "" {
-		return m.o.apiToken, nil
-	}
 	if m.dirty {
 		if err := m.saveLocked(m.tok); err != nil {
 			m.err = err.Error()
@@ -482,6 +534,7 @@ func (m *Manager) tokenLocked(ctx context.Context) (string, error) {
 		m.err = "Cloudflare refresh failed"
 		return "", errors.New(m.err)
 	}
+	t.RedirectURL = m.tok.RedirectURL
 	if e = m.saveLocked(t); e != nil {
 		// The old refresh token may already be invalid. Retain its replacement
 		// and retry durable storage before allowing another API operation.

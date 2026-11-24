@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"niceproxy/internal/cloudflare"
 	"niceproxy/internal/model"
 )
 
@@ -41,14 +40,13 @@ type panelRule struct {
 	ZoneID string
 }
 
-// RunPanelAutomation checks Cloudflare outside the request path. The token file
-// also allows a new installation to bootstrap before browser OAuth is possible.
-func (a *App) RunPanelAutomation(ctx context.Context, tokenFile string) {
+// RunPanelAutomation checks Cloudflare outside the request path.
+func (a *App) RunPanelAutomation(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for ctx.Err() == nil {
 		attempt, cancel := context.WithTimeout(ctx, 40*time.Second)
-		a.checkPanelEdge(attempt, tokenFile)
+		a.checkPanelEdge(attempt)
 		cancel()
 		select {
 		case <-ctx.Done():
@@ -66,7 +64,7 @@ func (a *App) queuePanelAutomation() {
 	}
 }
 
-func (a *App) checkPanelEdge(ctx context.Context, tokenFile string) {
+func (a *App) checkPanelEdge(ctx context.Context) {
 	a.mu.Lock()
 	status := a.panelEdge
 	if status.Domain != a.config.PanelDomain {
@@ -86,26 +84,13 @@ func (a *App) checkPanelEdge(ctx context.Context, tokenFile string) {
 			return
 		}
 	}
-	var provider panelEdgeProvider
-	if tokenFile != "" {
-		m, err := cloudflare.NewAutomationClient(tokenFile)
-		if err != nil {
-			a.setPanelEdge(status, "waiting_access", err.Error())
-			return
-		}
-		provider = m
-	} else {
-		a.cfMu.Lock()
-		m := a.cf
-		a.cfMu.Unlock()
-		if m != nil && m.Status().Connected {
-			provider = m
-		}
-	}
-	if provider == nil {
-		detail := "Cloudflare DNS mode is unverified. DNS Only can use public ACME. For automatic TLS in Proxied mode, connect Cloudflare or mount a scoped automation API token."
+	a.cfMu.Lock()
+	provider := a.cf
+	a.cfMu.Unlock()
+	if provider == nil || !provider.Status().Connected {
+		detail := "Cloudflare DNS mode is unverified. To automate Proxied TLS, connect Cloudflare from the management panel using the localhost OAuth callback. DNS Only can use public ACME."
 		if !public {
-			detail = "The previous panel's managed Cloudflare rule is pending cleanup. Mount a token scoped to its zone with Config Settings Write."
+			detail = "The previous panel's managed Cloudflare rule is pending cleanup. Reconnect Cloudflare with Config Settings Write for its zone."
 		}
 		a.setPanelEdge(status, "waiting_access", detail)
 		return

@@ -20,6 +20,7 @@ type testPanelOrigin struct {
 	nextTLS               string
 	failProbe             bool
 	loads, issues         int
+	csr                   func(string) string
 }
 
 func (c *testPanelOrigin) ApplyConfig(ctx context.Context, cfg model.Config) error {
@@ -40,7 +41,11 @@ func (c *testPanelOrigin) CertificateStatus(_ context.Context, host string) mode
 
 func (c *testPanelOrigin) PreparePanelOrigin(ctx context.Context, host string, issue func(context.Context, string, string) (string, error)) (bool, error) {
 	c.issues++
-	if _, err := issue(ctx, host, "test-csr"); err != nil {
+	request := "test-csr"
+	if c.csr != nil {
+		request = c.csr(host)
+	}
+	if _, err := issue(ctx, host, request); err != nil {
 		return false, err
 	}
 	if !c.failProbe {
@@ -218,7 +223,7 @@ func TestPanelAutomationRetiresOldRuleWhileNewDNSIsUnavailable(t *testing.T) {
 			}
 			ctx := context.Background()
 			p := &testPanelEdge{dnsErr: errors.New("no exact DNS record"), removeErr: errors.New("permission denied")}
-			a.checkPanelEdge(ctx, "")
+			a.checkPanelEdge(ctx)
 			if a.panelEdge.State != "waiting_access" || a.panelEdge.Detail == "" {
 				t.Fatalf("missing cleanup prerequisite: %+v", a.panelEdge)
 			}
