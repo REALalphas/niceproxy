@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"niceproxy/internal/caddy"
 	"niceproxy/internal/model"
 	"niceproxy/internal/proxy"
 	"niceproxy/internal/store"
@@ -238,6 +239,41 @@ func TestLoginLimitIsPerClientAndSetupCannotLockOut(t *testing.T) {
 	}
 	if status := request("/api/login", "192.0.2.2", "a-test-password-123"); status != 200 {
 		t.Fatal(status)
+	}
+}
+
+func TestLoginClientKey(t *testing.T) {
+	for _, tc := range []struct {
+		name, remote, peer, want string
+		unix                     bool
+		cloudflare               []string
+	}{
+		{"TCP ignores headers", "192.0.2.1:1234", "192.0.2.2", "192.0.2.1", false, []string{"198.51.100.1"}},
+		{"Unix with trusted edge", "@", "192.0.2.2", "2001:db8::1", true, []string{"2001:0db8::1"}},
+		{"Unix with mapped IPv4", "@", "192.0.2.2", "198.51.100.1", true, []string{"::ffff:198.51.100.1"}},
+		{"Unix with missing header", "@", "192.0.2.2", "192.0.2.2", true, nil},
+		{"Unix with malformed header", "@", "192.0.2.2", "192.0.2.2", true, []string{"198.51.100.1:1234"}},
+		{"Unix with a list", "@", "192.0.2.2", "192.0.2.2", true, []string{"198.51.100.1, 203.0.113.1"}},
+		{"Unix with repeated header", "@", "192.0.2.2", "192.0.2.2", true, []string{"198.51.100.1", "198.51.100.1"}},
+		{"Unix with zoned peer", "@", "fe80::1%eth0", "fe80::1", true, nil},
+		{"Unnamed socket address alone grants no trust", "@", "192.0.2.2", "@", false, []string{"198.51.100.1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "/api/login", nil)
+			r.RemoteAddr = tc.remote
+			if tc.unix {
+				addr := &net.UnixAddr{Name: "control.sock", Net: "unix"}
+				r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, addr))
+			}
+			r.Header.Set(caddy.PanelPeerIPHeader, tc.peer)
+			for _, value := range tc.cloudflare {
+				r.Header.Add(caddy.PanelCloudflareIPHeader, value)
+			}
+			r.Header.Set("X-Forwarded-For", "203.0.113.2")
+			if got := loginClientKey(r); got != tc.want {
+				t.Fatalf("client key = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

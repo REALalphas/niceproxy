@@ -161,7 +161,12 @@ func run() error {
 	if panelDomain == "" {
 		panelDomain = os.Getenv("NICEPROXY_DOMAIN")
 	}
-	caddyOptions := caddy.Options{Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir, PanelListen: *panel, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort, PanelDomain: panelDomain, PanelDomainProxied: good.PanelDomainProxied || cfg.PanelDomainProxied}
+	caddyOptions := caddy.Options{
+		Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir,
+		PanelListen: *panel, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort,
+		PanelDomain: panelDomain, PanelDomainProxied: good.PanelDomainProxied || cfg.PanelDomainProxied,
+		PanelCloudflareCIDRs: os.Getenv("NICEPROXY_PANEL_CLOUDFLARE_CIDRS"),
+	}
 	cm := caddy.New(caddyOptions)
 	startedRoutes := good.HTTPRoutes
 	if err := cm.Start(ctx, startedRoutes, good.PortOwners); err != nil {
