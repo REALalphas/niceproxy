@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -161,7 +162,7 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 			oldClient := a.cf.Status().ClientID
 			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 			if err := a.cf.Disconnect(ctx); err != nil {
-				revokeWarning = "Настройки сохранены, но прежний OAuth-доступ не удалось отозвать. Проверьте авторизации niceproxy в Cloudflare (Client ID: " + oldClient + ")."
+				revokeWarning = "Settings saved, but the previous OAuth grant could not be revoked. Check niceproxy authorizations in Cloudflare (client ID: " + oldClient + ")."
 			}
 			cancel()
 		}
@@ -292,29 +293,28 @@ func (a *App) cloudflareCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	a.cfMu.Lock()
 	defer a.cfMu.Unlock()
-	secure := false
-	if a.cf != nil {
-		u, _ := url.Parse(a.cf.Status().RedirectURL)
-		secure = u != nil && u.Scheme == "https"
-	}
-	http.SetCookie(w, &http.Cookie{Name: "niceproxy_cf_oauth", Value: "", Path: "/api/cloudflare/callback", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	result := "error"
 	cookie, cookieErr := r.Cookie("niceproxy_cf_oauth")
 	if a.cf != nil && cookieErr == nil {
 		u, _ := url.Parse(a.cf.Status().RedirectURL)
 		query := r.URL.Query()
-		if u != nil && u.Host == r.Host && query.Get("error") == "" && len(query["code"]) == 1 && len(query["state"]) == 1 && len(query.Get("code")) <= 4096 {
-			ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-			err := a.cf.Complete(ctx, query.Get("code"), query.Get("state"), cookie.Value, a.db.Authenticated)
-			cancel()
-			if err == nil {
-				result = "connected"
-				a.cfInitError = ""
+		state := query.Get("state")
+		if u != nil && u.Host == r.Host && len(query["state"]) == 1 && subtle.ConstantTimeCompare([]byte(state), []byte(cookie.Value)) == 1 {
+			http.SetCookie(w, &http.Cookie{Name: "niceproxy_cf_oauth", Value: "", Path: "/api/cloudflare/callback", HttpOnly: true, Secure: u.Scheme == "https", SameSite: http.SameSiteLaxMode, MaxAge: -1})
+			code := query.Get("code")
+			if query.Get("error") == "" && len(query["code"]) == 1 && len(code) <= 4096 {
+				ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+				err := a.cf.Complete(ctx, code, state, cookie.Value, a.db.Authenticated)
+				cancel()
+				if err == nil {
+					result = "connected"
+				}
+			}
+			a.cfInitError = ""
+			if result == "error" {
+				a.cfInitError = "Cloudflare не подключён: вход отменён, истёк или не прошёл проверку. Повторите подключение."
 			}
 		}
-	}
-	if result == "error" {
-		a.cfInitError = "Cloudflare не подключён: вход отменён, истёк или не прошёл проверку. Повторите подключение."
 	}
 	http.Redirect(w, r, "/?cloudflare="+result+"#cloudflare", http.StatusSeeOther)
 }
