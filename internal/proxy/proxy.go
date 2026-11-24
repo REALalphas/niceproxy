@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -61,11 +62,55 @@ func (r Rule) validate() error {
 }
 func address(host string, port int) string { return net.JoinHostPort(host, strconv.Itoa(port)) }
 
+// Stats is a process-local snapshot. TCP Accepted counts OS accepts (including
+// rejected connections); UDP Accepted counts admitted association attempts,
+// including queued setups and pending dials. Active includes both; Closed
+// counts finished accepted work. Rejects counts observed admission failures, never unreachable
+// ports. Repeated UDP attempts from an unadmitted sender can each be rejected;
+// no per-client rejection tombstones are retained. Errors counts failed
+// lifecycles, not packets or bytes. Administrative
+// shutdown and UDP idle expiry are not errors. Fields are loaded independently.
+// StartedAt is the first successful bind for this retained rule ID.
+type Stats struct {
+	Accepted, Active, Closed, Errors, Rejects uint64
+	StartedAt                                 time.Time
+}
+
+type counters struct {
+	accepted, active, closed, errors, rejects atomic.Uint64
+	tcpActive, udpActive                      atomic.Int64
+	startedAt                                 time.Time
+	refs                                      int // manager lock
+	forget                                    bool
+}
+
+func (c *counters) snapshot() Stats {
+	return Stats{c.accepted.Load(), c.active.Load(), c.closed.Load(), c.errors.Load(), c.rejects.Load(), c.startedAt}
+}
+func admit(n *atomic.Int64, limit int) bool {
+	for {
+		old := n.Load()
+		if old >= int64(limit) {
+			return false
+		}
+		if n.CompareAndSwap(old, old+1) {
+			return true
+		}
+	}
+}
+
+// ErrRetiredLimit means a listener handover would exceed the draining bound.
+var ErrRetiredLimit = errors.New("retired listener limit reached")
+
+const maxRetiredRules = 1024
+const maxInactiveStats = 1024
+
 type instance interface {
 	stop()
 	wait(context.Context) error
 	addr() net.Addr
 	update(Rule)
+	metrics() *counters
 }
 type Manager struct {
 	mu      sync.Mutex
@@ -74,10 +119,100 @@ type Manager struct {
 	opts    Options
 	closed  bool
 	retired map[instance]struct{}
+	stats   map[string]*counters
+	cleanup sync.WaitGroup
 }
 
 func NewManager(o Options) *Manager {
-	return &Manager{rules: make(map[string]instance), specs: make(map[string]Rule), opts: o.defaults(), retired: make(map[instance]struct{})}
+	return &Manager{rules: make(map[string]instance), specs: make(map[string]Rule), opts: o.defaults(), retired: make(map[instance]struct{}), stats: make(map[string]*counters)}
+}
+
+// Stats returns retained statistics for a rule ID, including retired streams.
+// At most maxInactiveStats inactive IDs are retained; active IDs are never evicted.
+func (m *Manager) Stats(id string) (Stats, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.stats[id]
+	if !ok {
+		return Stats{}, false
+	}
+	return c.snapshot(), true
+}
+
+// ForgetStats releases statistics for an explicitly deleted rule once its last
+// generation finishes. Re-adding before then preserves counters and admission.
+func (m *Manager) ForgetStats(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c := m.stats[id]; c != nil {
+		c.forget = true
+		if c.refs == 0 {
+			delete(m.stats, id)
+		}
+	}
+}
+func (m *Manager) trimStats() {
+	inactive := 0
+	for _, c := range m.stats {
+		if c.refs == 0 {
+			inactive++
+		}
+	}
+	for id, c := range m.stats {
+		if c.refs == 0 && (c.forget || inactive > maxInactiveStats) {
+			delete(m.stats, id)
+			inactive--
+		}
+	}
+}
+
+// retireLocked registers exactly one cleanup owner. Its entry remains visible to
+// Close until all traffic has finished. Caller holds m.mu.
+func (m *Manager) retireLocked(i instance) {
+	i.stop()
+	m.retired[i] = struct{}{}
+	m.cleanup.Add(1)
+	go func() {
+		defer m.cleanup.Done()
+		_ = i.wait(context.Background())
+		m.mu.Lock()
+		delete(m.retired, i)
+		i.metrics().refs--
+		m.trimStats()
+		m.mu.Unlock()
+	}()
+}
+
+// Retire releases the listener immediately while accepted TCP streams finish
+// naturally. Admission is shared by rule ID across re-adds and rebinds. A global
+// bound of 1024 draining generations rejects further handovers until one drains.
+func (m *Manager) Retire(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return net.ErrClosed
+	}
+	i, ok := m.rules[id]
+	if !ok {
+		return fmt.Errorf("rule %q not found", id)
+	}
+	if len(m.retired) >= maxRetiredRules {
+		return ErrRetiredLimit
+	}
+	delete(m.rules, id)
+	delete(m.specs, id)
+	m.retireLocked(i)
+	return nil
+}
+
+// HasListener reports current listener ownership, excluding retired streams.
+// Reconciliation uses it after a failed replacement/rollback; statistics alone
+// cannot prove a listener is still bound.
+func (m *Manager) HasListener(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.rules[id]
+	return ok
 }
 
 // Add starts a rule. The OS performs the authoritative bind-conflict check.
@@ -99,6 +234,10 @@ func (m *Manager) add(id string, r Rule) (net.Addr, error) {
 	if err := r.validate(); err != nil {
 		return nil, err
 	}
+	c := m.stats[id]
+	if c == nil {
+		c = &counters{startedAt: time.Now()}
+	}
 	var inst instance
 	if r.Protocol == "tcp" {
 		l, err := net.Listen("tcp", address(r.ListenAddress, r.ListenPort))
@@ -106,7 +245,7 @@ func (m *Manager) add(id string, r Rule) (net.Addr, error) {
 			return nil, err
 		}
 		forceCtx, forceCancel := context.WithCancel(context.Background())
-		t := &tcpRule{forceCtx: forceCtx, forceCancel: forceCancel, listener: l.(*net.TCPListener), rule: r, opts: m.opts, conns: make(map[*net.TCPConn]struct{}), done: make(chan struct{})}
+		t := &tcpRule{stats: c, forceCtx: forceCtx, forceCancel: forceCancel, listener: l.(*net.TCPListener), rule: r, opts: m.opts, conns: make(map[*net.TCPConn]struct{}), done: make(chan struct{})}
 		inst = t
 		go t.serve()
 	} else {
@@ -119,10 +258,14 @@ func (m *Manager) add(id string, r Rule) (net.Addr, error) {
 			return nil, err
 		}
 		forceCtx, forceCancel := context.WithCancel(context.Background())
-		u := &udpRule{forceCtx: forceCtx, forceCancel: forceCancel, listener: l, rule: r, opts: m.opts, clients: make(map[string]*udpClient), pending: make(map[string]bool), done: make(chan struct{})}
+		u := &udpRule{stats: c, forceCtx: forceCtx, forceCancel: forceCancel, listener: l, rule: r, opts: m.opts, clients: make(map[string]*udpClient), pending: make(map[string]*udpSetup), done: make(chan struct{})}
 		inst = u
 		go u.serve()
 	}
+	c.refs++
+	c.forget = false
+	m.stats[id] = c
+	m.trimStats()
 	m.rules[id] = inst
 	m.specs[id] = r
 	return inst.addr(), nil
@@ -155,6 +298,10 @@ func (m *Manager) Update(ctx context.Context, id string, r Rule) (net.Addr, erro
 		m.mu.Unlock()
 		return a, nil
 	}
+	if len(m.retired) >= maxRetiredRules {
+		m.mu.Unlock()
+		return nil, ErrRetiredLimit
+	}
 	// Overlapping listeners (wildcard <-> a specific address on the same
 	// port) cannot coexist. Stop accepting first and restore the old listener
 	// if the replacement bind fails. Existing TCP streams can still drain.
@@ -170,7 +317,7 @@ func (m *Manager) Update(ctx context.Context, id string, r Rule) (net.Addr, erro
 	if err != nil {
 		if overlaps {
 			_, rollback := m.add(id, prev)
-			m.retired[old] = struct{}{}
+			m.retireLocked(old)
 			m.mu.Unlock()
 			_ = m.wait(ctx, old)
 			if rollback != nil {
@@ -181,10 +328,7 @@ func (m *Manager) Update(ctx context.Context, id string, r Rule) (net.Addr, erro
 		m.mu.Unlock()
 		return nil, err
 	}
-	if !overlaps {
-		old.stop()
-	}
-	m.retired[old] = struct{}{}
+	m.retireLocked(old)
 	m.mu.Unlock()
 	// The replacement is live even if the old listener needed forced draining.
 	// Keep the drain result out of the desired-rule result; callers can observe
@@ -195,6 +339,7 @@ func (m *Manager) Update(ctx context.Context, id string, r Rule) (net.Addr, erro
 
 // Remove stops accepting traffic and waits for TCP streams to finish. If ctx
 // expires, remaining streams are forcibly closed and ctx's error is returned.
+// ErrRetiredLimit leaves the active listener intact when the draining bound is full.
 func (m *Manager) Remove(ctx context.Context, id string) error {
 	m.mu.Lock()
 	inst, ok := m.rules[id]
@@ -202,21 +347,18 @@ func (m *Manager) Remove(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("rule %q not found", id)
 	}
+	if len(m.retired) >= maxRetiredRules {
+		m.mu.Unlock()
+		return ErrRetiredLimit
+	}
 	delete(m.rules, id)
 	delete(m.specs, id)
-	inst.stop()
-	m.retired[inst] = struct{}{}
+	m.retireLocked(inst)
 	m.mu.Unlock()
 	return m.wait(ctx, inst)
 }
 
-func (m *Manager) wait(ctx context.Context, inst instance) error {
-	err := inst.wait(ctx)
-	m.mu.Lock()
-	delete(m.retired, inst)
-	m.mu.Unlock()
-	return err
-}
+func (m *Manager) wait(ctx context.Context, inst instance) error { return inst.wait(ctx) }
 
 // Close permanently closes the manager, including rules already draining.
 // ctx bounds graceful shutdown; cancellation closes and joins all remaining work.
@@ -229,8 +371,7 @@ func (m *Manager) Close(ctx context.Context) error {
 	}
 	for id, i := range m.rules {
 		all = append(all, i)
-		m.retired[i] = struct{}{}
-		i.stop()
+		m.retireLocked(i)
 		delete(m.rules, id)
 		delete(m.specs, id)
 	}
@@ -241,6 +382,7 @@ func (m *Manager) Close(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
+	m.cleanup.Wait()
 	return errors.Join(errs...)
 }
 
@@ -269,6 +411,7 @@ func CheckBind(r Rule) error {
 }
 
 type tcpRule struct {
+	stats       *counters
 	forceCtx    context.Context
 	forceCancel context.CancelFunc
 	listener    *net.TCPListener
@@ -277,14 +420,14 @@ type tcpRule struct {
 	opts        Options
 	conns       map[*net.TCPConn]struct{}
 	stopping    bool
-	active      int
 	wg          sync.WaitGroup
 	done        chan struct{}
 }
 
-func (t *tcpRule) addr() net.Addr { return t.listener.Addr() }
-func (t *tcpRule) update(r Rule)  { t.mu.Lock(); t.rule = r; t.mu.Unlock() }
-func (t *tcpRule) stop()          { t.mu.Lock(); t.stopping = true; _ = t.listener.Close(); t.mu.Unlock() }
+func (t *tcpRule) metrics() *counters { return t.stats }
+func (t *tcpRule) addr() net.Addr     { return t.listener.Addr() }
+func (t *tcpRule) update(r Rule)      { t.mu.Lock(); t.rule = r; t.mu.Unlock() }
+func (t *tcpRule) stop()              { t.mu.Lock(); t.stopping = true; _ = t.listener.Close(); t.mu.Unlock() }
 func (t *tcpRule) wait(ctx context.Context) error {
 	select {
 	case <-t.done:
@@ -307,6 +450,9 @@ func (t *tcpRule) serve() {
 	for {
 		c, err := t.listener.AcceptTCP()
 		if err != nil {
+			if !errors.Is(err, net.ErrClosed) {
+				t.stats.errors.Add(1)
+			}
 			if e, ok := err.(net.Error); ok && e.Temporary() {
 				if backoff == 0 {
 					backoff = 5 * time.Millisecond
@@ -326,18 +472,22 @@ func (t *tcpRule) serve() {
 			break
 		}
 		backoff = 0
+		t.stats.accepted.Add(1)
 		t.mu.Lock()
 		if t.stopping {
+			t.stats.closed.Add(1)
 			t.mu.Unlock()
 			_ = c.Close()
 			break
 		}
-		if t.active >= t.opts.MaxTCPConnections {
+		if !admit(&t.stats.tcpActive, t.opts.MaxTCPConnections) {
+			t.stats.rejects.Add(1)
+			t.stats.closed.Add(1)
 			t.mu.Unlock()
 			_ = c.Close()
 			continue
 		}
-		t.active++
+		t.stats.active.Add(1)
 		r := t.rule
 		t.conns[c] = struct{}{}
 		t.wg.Add(1)
@@ -347,11 +497,15 @@ func (t *tcpRule) serve() {
 }
 func (t *tcpRule) handle(client *net.TCPConn, r Rule) {
 	defer t.wg.Done()
-	defer func() { t.mu.Lock(); delete(t.conns, client); t.active--; t.mu.Unlock(); _ = client.Close() }()
+	defer func() { t.stats.active.Add(^uint64(0)); t.stats.tcpActive.Add(-1); t.stats.closed.Add(1) }()
+	defer func() { t.mu.Lock(); delete(t.conns, client); t.mu.Unlock(); _ = client.Close() }()
 	ctx, cancel := context.WithTimeout(t.forceCtx, t.opts.DialTimeout)
 	defer cancel()
 	c, err := (&net.Dialer{}).DialContext(ctx, "tcp", address(r.TargetAddress, r.TargetPort))
 	if err != nil {
+		if t.forceCtx.Err() == nil {
+			t.stats.errors.Add(1)
+		}
 		return
 	}
 	upstream := c.(*net.TCPConn)
@@ -368,16 +522,18 @@ func (t *tcpRule) handle(client *net.TCPConn, r Rule) {
 		_ = client.SetDeadline(time.Now().Add(t.opts.TCPTimeout))
 		_ = upstream.SetDeadline(time.Now().Add(t.opts.TCPTimeout))
 	}
-	done := make(chan struct{}, 2)
+	done := make(chan error, 2)
 	go tcpCopy(upstream, client, done)
 	go tcpCopy(client, upstream, done)
-	<-done
-	<-done
+	e1, e2 := <-done, <-done
+	if (e1 != nil || e2 != nil) && t.forceCtx.Err() == nil {
+		t.stats.errors.Add(1)
+	}
 }
 
 // Keep the concrete TCP connections in io.Copy: Go may use Linux splice for
 // this path when supported. Actual kernel/runtime behavior must be measured.
-func tcpCopy(dst, src *net.TCPConn, done chan<- struct{}) {
+func tcpCopy(dst, src *net.TCPConn, done chan<- error) {
 	_, err := io.Copy(dst, src)
 	if err != nil {
 		_ = dst.Close()
@@ -385,36 +541,61 @@ func tcpCopy(dst, src *net.TCPConn, done chan<- struct{}) {
 	}
 	_ = dst.CloseWrite()
 	_ = src.CloseRead()
-	done <- struct{}{}
+	done <- err
 }
 
 type udpClient struct {
+	failed atomic.Bool
 	conn   *net.UDPConn
 	client *net.UDPAddr
 }
+
+// Setup retains only the first datagram per client. Limits include running
+// dials as well as queued work; no buffers or workers are preallocated per rule.
+const udpSetupParallelism = 32
+const udpSetupLimit = 128
+const udpSetupBytes = 1 << 20
+
+type udpSetup struct {
+	key        string
+	client     *net.UDPAddr
+	packet     []byte
+	rule       Rule
+	generation uint64
+	ctx        context.Context
+	cancel     context.CancelFunc
+	conn       *net.UDPConn // guarded by udpRule.mu, including before publication
+}
+
 type udpRule struct {
+	stats        *counters
 	forceCtx     context.Context
 	forceCancel  context.CancelFunc
 	writeMu      sync.Mutex
 	generation   uint64
-	active       int
 	listener     *net.UDPConn
 	mu           sync.Mutex
 	rule         Rule
 	opts         Options
 	clients      map[string]*udpClient
-	pending      map[string]bool
+	pending      map[string]*udpSetup
 	pendingCount int
+	pendingBytes int
+	setupQueue   []*udpSetup
+	setupWorkers int
 	stopping     bool
 	wg           sync.WaitGroup
 	done         chan struct{}
 }
 
-func (u *udpRule) addr() net.Addr { return u.listener.LocalAddr() }
+func (u *udpRule) metrics() *counters { return u.stats }
+func (u *udpRule) addr() net.Addr     { return u.listener.LocalAddr() }
 func (u *udpRule) update(r Rule) {
 	u.mu.Lock()
 	u.rule = r
 	u.generation++
+	u.cancelSetups()
+	u.forceCtx, u.forceCancel = context.WithCancel(context.Background())
 	for _, c := range u.clients {
 		_ = c.conn.Close()
 	}
@@ -424,7 +605,7 @@ func (u *udpRule) update(r Rule) {
 func (u *udpRule) stop() {
 	u.mu.Lock()
 	u.stopping = true
-	u.forceCancel()
+	u.cancelSetups()
 	_ = u.listener.Close()
 	for _, c := range u.clients {
 		_ = c.conn.Close()
@@ -448,6 +629,9 @@ func (u *udpRule) serve() {
 	for {
 		n, _, flags, client, err := u.listener.ReadMsgUDP(buf, nil)
 		if err != nil {
+			if !errors.Is(err, net.ErrClosed) {
+				u.stats.errors.Add(1)
+			}
 			return
 		}
 		if flags&syscall.MSG_TRUNC != 0 {
@@ -456,62 +640,169 @@ func (u *udpRule) serve() {
 		key := client.String()
 		u.mu.Lock()
 		c := u.clients[key]
-		r, generation := u.rule, u.generation
-		canCreate := c == nil && !u.pending[key] && !u.stopping && u.active+u.pendingCount < u.opts.MaxUDPAssociations && u.pendingCount < 32
+		canCreate := c == nil && u.pending[key] == nil && !u.stopping &&
+			u.pendingCount < udpSetupLimit && n <= udpSetupBytes-u.pendingBytes
+		if canCreate && !admit(&u.stats.udpActive, u.opts.MaxUDPAssociations) {
+			canCreate = false
+		}
+		if c == nil && u.pending[key] == nil && !u.stopping && !canCreate {
+			u.stats.rejects.Add(1)
+		}
 		if canCreate {
-			u.pending[key] = true
+			ctx, cancel := context.WithTimeout(u.forceCtx, u.opts.DialTimeout)
+			task := &udpSetup{key: key, client: client, packet: append([]byte{}, buf[:n]...),
+				rule: u.rule, generation: u.generation, ctx: ctx, cancel: cancel}
+			u.stats.accepted.Add(1)
+			u.stats.active.Add(1)
+			u.pending[key] = task
 			u.pendingCount++
-			u.wg.Add(1)
+			u.pendingBytes += n
+			u.setupQueue = append(u.setupQueue, task)
+			if u.setupWorkers < udpSetupParallelism {
+				u.setupWorkers++
+				u.wg.Add(1)
+				go u.setupWorker()
+			}
 		}
 		u.mu.Unlock()
-		if canCreate {
-			// Keep slow DNS and connection setup out of the receive loop.
-			// At most 32 first packets can be pending; later packets from a
-			// pending client are dropped until its association is ready.
-			packet := append([]byte{}, buf[:n]...)
-			go u.associate(key, client, packet, r, generation)
-		} else if c != nil {
+		// Pending-client followups are still dropped. Established clients bypass
+		// the setup queue, so slow DNS cannot block their receive path.
+		if c != nil {
 			u.send(c, buf[:n])
 		}
 	}
 }
-func (u *udpRule) send(c *udpClient, packet []byte) {
-	_ = c.conn.SetReadDeadline(time.Now().Add(u.opts.UDPIdleTimeout))
-	_ = c.conn.SetWriteDeadline(time.Now().Add(u.opts.DialTimeout))
-	if _, err := c.conn.Write(packet); err != nil {
-		_ = c.conn.Close()
+func (u *udpRule) finishAssociation() {
+	u.stats.active.Add(^uint64(0))
+	u.stats.udpActive.Add(-1)
+	u.stats.closed.Add(1)
+}
+func (u *udpRule) failed(c *udpClient, err error) {
+	if err == nil || errors.Is(err, net.ErrClosed) {
+		return
+	}
+	if c.failed.CompareAndSwap(false, true) {
+		u.stats.errors.Add(1)
 	}
 }
-func (u *udpRule) associate(key string, client *net.UDPAddr, packet []byte, r Rule, generation uint64) {
-	defer u.wg.Done()
-	ctx, cancel := context.WithTimeout(u.forceCtx, u.opts.DialTimeout)
-	conn, err := (&net.Dialer{}).DialContext(ctx, "udp", address(r.TargetAddress, r.TargetPort))
-	cancel()
-	u.mu.Lock()
-	delete(u.pending, key)
+func (u *udpRule) send(c *udpClient, packet []byte) {
+	_ = u.sendUntil(c, packet, time.Now().Add(u.opts.DialTimeout))
+}
+func (u *udpRule) sendUntil(c *udpClient, packet []byte, deadline time.Time) error {
+	_ = c.conn.SetReadDeadline(time.Now().Add(u.opts.UDPIdleTimeout))
+	_ = c.conn.SetWriteDeadline(deadline)
+	_, err := c.conn.Write(packet)
+	if err != nil {
+		u.failed(c, err)
+		_ = c.conn.Close()
+	}
+	return err
+}
+
+// cancelSetups runs under mu. Running dials retain their admission slots until
+// they exit; queued work can release its slots immediately. Identity checks keep
+// an old generation from deleting a new setup for the same client.
+func (u *udpRule) cancelSetups() {
+	u.forceCancel()
+	for _, task := range u.pending {
+		if task.conn != nil {
+			_ = task.conn.Close()
+		}
+	}
+	for _, task := range u.setupQueue {
+		u.finishSetup(task)
+		u.finishAssociation()
+	}
+	u.setupQueue = nil
+	clear(u.pending)
+}
+func (u *udpRule) finishSetup(task *udpSetup) {
+	task.cancel()
+	if u.pending[task.key] == task {
+		delete(u.pending, task.key)
+	}
 	u.pendingCount--
-	if err != nil || u.stopping || u.generation != generation {
+	u.pendingBytes -= len(task.packet)
+}
+func (u *udpRule) setupWorker() {
+	defer u.wg.Done()
+	for {
+		u.mu.Lock()
+		if len(u.setupQueue) == 0 {
+			u.setupWorkers--
+			u.mu.Unlock()
+			return
+		}
+		task := u.setupQueue[0]
+		u.setupQueue[0] = nil
+		u.setupQueue = u.setupQueue[1:]
+		u.mu.Unlock()
+		u.associate(task)
+	}
+}
+
+// registerSetup makes a dialed socket cancelable before the first write. The
+// worker can be paused at this point without hiding a socket from update/stop.
+func (u *udpRule) registerSetup(task *udpSetup, conn *net.UDPConn) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.stopping || u.generation != task.generation || task.ctx.Err() != nil {
+		return false
+	}
+	task.conn = conn
+	return true
+}
+
+func (u *udpRule) associate(task *udpSetup) {
+	var conn net.Conn
+	var c *udpClient
+	var err error
+	if err = task.ctx.Err(); err == nil {
+		conn, err = (&net.Dialer{}).DialContext(task.ctx, "udp", address(task.rule.TargetAddress, task.rule.TargetPort))
+	}
+	if err == nil && u.registerSetup(task, conn.(*net.UDPConn)) {
+		c = &udpClient{conn: conn.(*net.UDPConn), client: task.client}
+		// Followups cannot overtake the first packet. Its deadline includes
+		// time already spent queued and dialing, rather than restarting it.
+		deadline, _ := task.ctx.Deadline()
+		err = u.sendUntil(c, task.packet, deadline)
+	}
+	u.completeSetup(task, c, conn, err)
+}
+
+func (u *udpRule) completeSetup(task *udpSetup, c *udpClient, conn net.Conn, err error) {
+	u.mu.Lock()
+	if err == nil {
+		err = task.ctx.Err()
+	}
+	valid := err == nil && c != nil && !u.stopping && u.generation == task.generation
+	u.finishSetup(task)
+	if !valid {
+		if err != nil && !u.stopping && u.generation == task.generation {
+			if c == nil {
+				u.stats.errors.Add(1)
+			} else {
+				u.failed(c, err)
+			}
+		}
+		u.finishAssociation()
 		u.mu.Unlock()
 		if conn != nil {
 			_ = conn.Close()
 		}
 		return
 	}
-	c := &udpClient{conn: conn.(*net.UDPConn), client: client}
-	_ = c.conn.SetReadDeadline(time.Now().Add(u.opts.UDPIdleTimeout))
-	u.clients[key] = c
-	u.active++
+	u.clients[task.key] = c
 	u.wg.Add(1)
-	go u.reply(key, c)
+	go u.reply(task.key, c)
 	u.mu.Unlock()
-	u.send(c, packet)
 }
 
 func (u *udpRule) reply(key string, c *udpClient) {
 	defer u.wg.Done()
+	defer u.finishAssociation()
 	defer func() {
 		u.mu.Lock()
-		u.active--
 		if u.clients[key] == c {
 			delete(u.clients, key)
 		}
@@ -522,6 +813,9 @@ func (u *udpRule) reply(key string, c *udpClient) {
 	for {
 		n, _, flags, _, err := c.conn.ReadMsgUDP(buf, nil)
 		if err != nil {
+			if e, ok := err.(net.Error); !ok || !e.Timeout() {
+				u.failed(c, err)
+			}
 			return
 		}
 		if flags&syscall.MSG_TRUNC != 0 {
@@ -539,6 +833,7 @@ func (u *udpRule) reply(key string, c *udpClient) {
 		_, err = u.listener.WriteToUDP(buf[:n], c.client)
 		u.writeMu.Unlock()
 		if err != nil {
+			u.failed(c, err)
 			return
 		}
 	}

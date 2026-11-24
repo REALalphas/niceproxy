@@ -1,114 +1,126 @@
-# Alpha UI — integration and use
+# Alpha's UI — подключение и использование
 
-## Integration
+## Статус этих правил
 
-1. Install core and the adapter from one release:
-   node /path/to/release/install.mjs --project . --framework react
-   For Qwik use --framework qwik. If the installer is local, pass a remote release with --from https://<server>/releases/X.Y.Z/.
-2. Import the styles once at the entry point:
+Это инженерные инструкции для агентов, работающих с Alpha's UI в приложении: они задают порядок интеграции, изменений и проверки общего интерфейса. Они не изменяют `LICENSE` и не создают дополнительных юридических запретов или условий лицензирования. Права на использование, модификацию и распространение определяются `LICENSE`; разрешённые ею изменения сохраняются. В этом workflow изменение компонента оформляется в исходниках библиотеки с обновлением пакета и проверкой приложения. Условия поддержки, если они согласованы отдельно, также не изменяют лицензию автоматически.
+
+## Подключение
+
+1. Установи core и адаптер одним выпуском:
+   `node /путь/к/выпуску/install.mjs --project . --framework react`
+   Для Qwik используй `--framework qwik`. Если установщик уже находится локально, удалённый выпуск можно передать через `--from https://<сервер>/releases/X.Y.Z/`.
+2. Подключи один раз в точке входа:
+   ```tsx
    import '@alpha/core/fonts.css';
    import '@alpha/core/styles.css';
-3. Import components from @alpha/react or @alpha/qwik. Put regular components inside .alpha-ui; AppShell creates .as-shell. Use the installed adapter's props and types. The catalog is in @alpha/core/dist/catalog.json.
-4. Call installControlMotion() from @alpha/core once in the browser entry point. Call the returned cleanup function when the area is destroyed. Do not install handlers during SSR or on every render.
-5. Link this file from the root AGENTS.md created by the installer. Update it with the package.
+   ```
+3. Импортируй компоненты из `@alpha/react` или `@alpha/qwik`. Обычные компоненты помещай в `.alpha-ui`; `AppShell` создаёт `.as-shell` самостоятельно. Используй свойства и типы установленного адаптера; состав компонентов доступен через экспорт `@alpha/core/catalog.json` (физический файл после установки — `node_modules/@alpha/core/dist/catalog.json`).
+4. В браузерной точке входа установи `installControlMotion()` из `@alpha/core` один раз. При уничтожении области вызови возвращённую функцию очистки. Не устанавливай обработчики при SSR или каждом рендере.
+5. Добавь в корневой `AGENTS.md` ссылку на `ALPHA_UI_AGENT_RULES.md`, который создаёт установщик. Обновляй этот файл вместе с пакетом.
 
-## Release updates
+## Обновление без привязки к выпуску
 
-- Configure updates with the release catalog URL provided for the project. The current format has latest.json with version and X.Y.Z/manifest.json with package archives and SHA-512 values.
-- Resolve the release through latest.json on every start. Do not pin an old archive or fixed version as the update source. Update core and the selected adapter together.
-- A verified install and lockfile may pin exact versions for reproducibility. They must not block release selection by the bootstrap script. Do not use star dependencies. These packages are distributed as release archives, not as public npm updates.
-- Update in a separate build copy or staging directory. Verify the manifest, checksums, matching versions, install, build, and output. Activate only a ready build. Keep the previous working build for offline fallback and update failures.
-- Do not edit installed package files or replace individual JS/QRL files in a running app.
+- Источник обновлений задавай URL каталога выпусков в конфигурации проекта. Не придумывай адрес: используй предоставленный сервер. В текущем формате он содержит `latest.json` с полем `version`, а `X.Y.Z/manifest.json` — архивы пакетов и SHA-512.
+- При каждом запуске определяй выпуск через `latest.json`. Не закрепляй URL старого архива или конкретную версию как постоянный источник обновлений. Core и выбранный адаптер обновляй вместе до одной версии.
+- Отдельная проверенная установка и lock-файл могут фиксировать точные версии для воспроизводимости. Они не должны блокировать выбор нового выпуска bootstrap-скриптом. Не заменяй зависимости на `*`: пакеты распространяются архивами выпусков, публичного npm-пакета для такого обновления нет.
+- Обновление выполняй в отдельной сборочной копии или staging-каталоге. Проверь manifest, контрольные суммы, совпадение версий, установку, сборку и доступность результата. Только готовую проверенную сборку делай активной. Предыдущую рабочую сборку сохраняй для запуска без интернета и при ошибке обновления.
+- Не редактируй файлы установленного пакета и не подменяй отдельные JS/QRL в уже работающем приложении.
 
-## Startup bootstrap
+## Bootstrap при запуске
 
-Add scripts/alpha-bootstrap.mjs to the app and route startup through it, for example start: node scripts/alpha-bootstrap.mjs. Use the app's real startup command and configuration. Running install.mjs alone is not a bootstrap.
+**Готовой реализации bootstrap в этом репозитории нет.** Ниже описаны требования к скрипту запуска приложения-потребителя.
 
-The bootstrap must:
+Создай такой скрипт в подключаемом приложении, выбрав имя и расположение по его структуре. Направь команду запуска приложения через этот скрипт; используй реальную конфигурацию и команду запуска самого приложения. Библиотека и обычный установщик не создают bootstrap автоматически.
 
-1. Record the last successfully installed and built local version, then try to fetch a newer release.
-2. Enforce one 20-second deadline for the complete update attempt, including requests, downloads, installation, and build preparation.
-3. Start a fully ready new release within the deadline. If unchanged, start the ready local build.
-4. On network failure, update failure, or timeout, start the last working local build if one exists. A partial download is never a working build.
-5. Stop unfinished requests and update processes. A late result must not switch the active version after local fallback starts. Clear timers and temporary files.
-6. If no working local version exists, report that package installation is required and show the manual command. Do not serve an empty UI or wait without a deadline.
-7. Log the selected version and result: updated, up to date, local fallback after error/timeout, or manual installation required.
+Поведение bootstrap:
 
-For a manual update, use the installer from the target release:
-node /path/to/release/install.mjs --project . --framework react
-Then build the app and record the result as the local working version. Use --framework qwik for Qwik. Offline updates may use a local release directory. Dependencies must be available locally or in the package manager cache.
+1. Зафиксируй последнюю успешно установленную и собранную локальную версию. Начни попытку получить свежий выпуск из интернета.
+2. Ограничь всю попытку обновления общим сроком **20 секунд**, включая запросы, скачивание, установку и подготовку новой сборки. Не выделяй по 20 секунд каждому шагу.
+3. Если новый выпуск полностью готов в пределах срока — запускай его. Если выпуск не изменился — запускай готовую локальную сборку.
+4. При недоступности сети, ошибке обновления или истечении 20 секунд запускай последнюю рабочую локальную сборку, если она есть. Здесь «последняя» означает последнюю успешно подготовленную, а не частично скачанную.
+5. Останови незавершённые запросы и процессы обновления. Не допускай, чтобы опоздавший результат переключил активную версию после запуска локальной. Таймер и временные ресурсы освободи.
+6. Если рабочей локальной версии нет, сообщи, что запуск требует установки пакета, и покажи команду ручной установки. Не создавай пустой интерфейс и не продолжай ожидание без ограничения.
+7. В выводе укажи выбранную версию и результат: обновлено, актуально, запуск локальной после ошибки/таймаута или требуется ручная установка. Не запрашивай подтверждение на каждую штатную попытку обновления.
 
-Test the bootstrap with a reachable server, no network, a response slower than 20 seconds, a corrupt archive, a build failure, and no local version. Do not claim automatic updates work before these cases pass.
+Для ручного обновления используй тот же установщик из нужного выпуска:
+`node /путь/к/выпуску/install.mjs --project . --framework react`.
+Затем выполни сборку приложения и сохрани её как рабочую локальную версию. Для Qwik укажи `--framework qwik`. При отсутствии интернета используй локальный каталог выпуска; необходимые зависимости должны быть доступны локально или в кэше менеджера пакетов.
 
-## Do not modify library components in the app
+Bootstrap проверяй с доступным сервером, без сети, с медленным ответом дольше 20 секунд, повреждённым архивом, ошибкой сборки и отсутствующей локальной версией. Не объявляй автообновление работающим, пока эти сценарии не проверены.
 
-A local CSS override is a component modification, even when Alpha UI sources are unchanged. This applies to Button, Card, navigation, fields, and every other library component.
+## Не модифицируй компоненты в приложении
 
-- Allowed: choose public props and variants, provide content and handlers, and compose ready components. App CSS may lay out outer containers with grids, direction, gaps, width, and responsive placement.
-- Forbidden: tune a component with local classes, style, global selectors, .as-* selectors, nested elements, pseudo-elements, !important, or --as-* overrides. Do not change a control's background, color, font, padding, size, shape, radius, border, shadow, icons, animation, or states.
-- className does not grant permission to restyle a component. A wrapper cannot add a border, backdrop, overlay, or handler to simulate a missing variant or behavior.
-- Rules such as button selectors and page token overrides must not change library components. Do not hide a local modification behind tokens.
-- A request to match a layout does not authorize component changes. If the public API lacks a required variant, report it and create ui-unspec/<component_name>.md. The solution must be a reusable Alpha UI extension, not an app CSS patch.
-- Remove existing local overrides, restore library states, and record the actual missing capability.
+**Локальное CSS-переопределение — тоже модификация компонента, даже если исходники Alpha's UI не менялись.** Запрет относится к Button, Card, навигации, полям и всем остальным библиотечным компонентам.
 
-Allowed layout example:
+- Разрешено: выбирать публичные свойства и варианты, передавать содержимое и обработчики, компоновать готовые компоненты. CSS приложения задаёт расположение внешних контейнеров: сетку, направление, промежутки между компонентами, доступную ширину и адаптивное размещение.
+- Запрещено: подгонять компонент под макет через локальные классы, `style`, глобальные селекторы, `.as-*`, вложенные элементы, псевдоэлементы, `!important` или переопределение `--as-*` переменных. Не меняй так фон, цвет, шрифт, внутренние отступы, размеры и форму самого контрола, радиус, рамку, тень, иконки, анимацию и состояния.
+- `className` не даёт разрешения менять оформление компонента. Обёртка также не является обходом запрета: не добавляй через неё рамку, подложку, наложенный слой или обработчик для имитации недостающего варианта и поведения.
+- Общие правила вроде `button { ... }`, `aside button { ... }` и переопределения токенов на странице не должны менять библиотечные компоненты. Не используй токены как способ скрыть локальную модификацию.
+- Просьба собрать экран или приблизить его к макету не означает разрешение менять компоненты. Если нужного варианта нет в публичном API, сообщи об этом и создай `ui-unspec/<component_name>.md`. Решение должно быть универсальным расширением Alpha's UI, а не патчем CSS приложения.
+- Если локальные переопределения уже добавлены, убери их, верни штатные состояния и зафиксируй реально недостающую возможность. Не описывай такую работу как «менял только компоновку».
 
+Пример допустимой компоновки:
+
+```css
 .page-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--as-space-3);
 }
+```
 
-A rule that styles a library button, card, or navigation item changes a component and is forbidden.
+Правило `.page-actions .as-button { padding: ...; background: ...; }` уже меняет компонент и запрещено. То же касается карточек и элементов боковой или нижней навигации.
 
-## Components and styling
+## Компоненты и оформление
 
-- Build screens from public components. Custom composition and layout CSS are allowed. Do not copy implementations, edit internal markup, or add another UI library to bypass a missing capability.
-- Use --as-* tokens for colors, spacing, sizes, radii, and motion. Do not duplicate token values in screen CSS.
-- Body text uses Noto Sans. Headings, buttons, navigation, and the service name use Manrope. Technical values use Fira Code. Weights are 400 regular, 500 for emphasis and headings, and 600 for the service name. Minimum text size is 1rem.
-- Use rem from a 16 px base. Use relative container units and aspect-ratio for resources. Maximum content width is --as-size-content-max.
-- Use Lucide UI icons through Icon. Size is 1.5rem, regular stroke 0.09375rem, bold stroke 0.125rem. Logos, photos, and illustrations are separate resources.
-- Use canvas for the main background, surface/overlay for cards, and navigation for navigation layers. Use canvasDeep only when explicitly required.
-- Use inset box-shadow for borders. border: 0 is allowed for resets. Library exceptions are Button's Disabled dash and Profile's Loading state.
-- Use corner-shape: superellipse(1.2) with a border-radius fallback. Chat corners use corner-shape: round.
-- Preserve library motion and motion tokens. Support reduced motion. Keep hover, press, release, focus, and active states distinct. Buttons and navigation must not look like body links. Read-only fields must remain copyable.
-- Qwik handlers use a $ suffix. Do not override the container q:base. Test lazy handlers in production and when deployed in a subfolder.
+- Собирай экраны из публичных компонентов. Собственные композиции и CSS компоновки допустимы; копирование реализации, вмешательство во внутреннюю разметку и подключение другой UI-библиотеки для обхода отсутствующей возможности — нет.
+- Используй `--as-*` токены для цветов, интервалов, размеров, радиусов и движения. Не дублируй значения токенов в CSS экрана.
+- Основной текст — Noto Sans; заголовки, кнопки, навигация и название сервиса — Manrope; технические значения — Fira Code. Жирность: обычная 400, выделенный текст и заголовки 500, название сервиса 600. Минимальный текст — `1rem`.
+- Размеры — в `rem` от базы `16px`, контейнеры — в относительных единицах, ресурсы — с `aspect-ratio`. Максимальная ширина — `--as-size-content-max`.
+- UI-иконки — Lucide через `Icon`; размер `1.5rem`, stroke regular `0.09375rem`, bold `0.125rem`. Логотипы, фотографии и иллюстрации — отдельные ресурсы.
+- Основной фон — canvas; карточки — surface/overlay; навигационные слои — navigation. canvasDeep используй только при явно заданной необходимости.
+- Рамки — `box-shadow: inset`; `border: 0` допустим для сброса. Штатные исключения: пунктир Disabled у Button и Loading у Profile.
+- Углы — `corner-shape: superellipse(1.2)` с fallback через `border-radius`; круглые углы чата — `corner-shape: round`.
+- Сохраняй библиотечное движение и его токены, учитывай reduced motion. Не смешивай hover, удержание, отпускание, фокус и активный выбор. Кнопки и навигация не выделяются как текст; в полях только для чтения копирование сохраняется.
+- Qwik: обработчики QRL с суффиксом `$`, контейнерный `q:base` не переопределять. Проверяй ленивые обработчики в production и при размещении в подпапке.
 
-## Missing components: required feedback
+## Нехватка компонентов: обязательная обратная связь
 
-If a component, prop, state, or behavior is missing, tell the user immediately what is needed, where it is needed, and why the current API is insufficient. Do not create a local replacement or hidden workaround.
+Если отсутствует компонент, свойство, состояние или поведение, **сразу сообщи пользователю**, что именно нужно, где и почему существующего API недостаточно. Не создавай локальную замену или скрытый костыль в приложении.
 
-Create or update ui-unspec/<component_name>.md in the app root. Use one file per reusable component and merge requirements from different screens. Keep the filename stable, for example ui-unspec/DatePicker.md. Extend an existing component under its name.
+Создай или обнови `ui-unspec/<component_name>.md` в корне приложения. Один файл — один универсальный компонент; требования из разных экранов объединяй в нём. Имя файла должно быть стабильным, например `ui-unspec/DatePicker.md`; для расширения существующего компонента используй его имя.
 
-The document must support implementation for different apps:
+Документ должен позволять реализовать компонент в Alpha's UI для разных приложений:
 
+```md
 # ComponentName
 
-## Task
-Screen, user action, and the exact gap.
-Installed Alpha UI version and current API limits.
+## Задача
+Экран, действие пользователя и конкретная нехватка.
+Установленная версия Alpha's UI и ограничения текущего API.
 
-## Universal behavior
-Domain-independent behavior.
-Scenarios, states, keyboard, focus, and accessibility.
+## Универсальное поведение
+Что компонент делает независимо от предметной области.
+Сценарии, состояния, клавиатура, фокус и доступность.
 
-## Proposed API
-Props, data, events, and controlled state.
-React/Qwik contract. Qwik handlers use a $ suffix.
+## Предлагаемый API
+Свойства, данные, события и управляемое состояние.
+Одинаковый контракт React/Qwik; обработчики Qwik имеют суффикс $.
 
-## Composition and styling
-Existing components and tokens.
-Sizes, responsive behavior, long content, and needed variants.
+## Композиция и оформление
+Какие существующие компоненты и токены используются.
+Размеры, адаптивность, длинное содержимое и необходимые варианты.
 
-## Checks
-Observable acceptance criteria and usage examples.
+## Проверка
+Наблюдаемые критерии готовности и примеры использования.
 
-## Status
-Proposed / in progress / available in X.Y.Z / verified in the app.
-Open decisions.
+## Статус
+Предложен / реализуется / доступен в X.Y.Z / проверен в приложении.
+Вопросы, требующие решения.
+```
 
-Keep the API independent of one screen name, data shape, or service. Describe a reusable component that can enter the Alpha UI catalog. Continue independent work and do not mark blocked work complete. After library implementation, update the package, verify the app scenario, and record the result in the same file.
+Не привязывай API к названию текущего экрана, конкретным данным или единственному сервису. Опиши универсальный компонент, который можно включить в каталог Alpha's UI. Продолжай независимые части задачи; заблокированную часть готовой не объявляй. После реализации в библиотеке обнови пакет, проверь сценарий в приложении и отметь результат в том же файле.
 
-## Verification
+## Проверка результата
 
-Use app commands for build, type checks, and tests. Check changed screens at wide and 320 px widths, real actions, keyboard use, long labels, and required states. Report completed work, checks, and remaining ui-unspec entries.
+Используй команды приложения для сборки, типов и тестов. Проверь изменённые экраны на широкой ширине и `320px`, реальные действия, клавиатуру, длинные подписи и необходимые состояния. В итоговом ответе укажи выполненное, проверки и оставшиеся записи `ui-unspec`.

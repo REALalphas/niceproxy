@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -22,10 +21,6 @@ import (
 	"niceproxy/internal/proxy"
 	"niceproxy/internal/store"
 )
-
-// version is set by release builds with -ldflags. Keep a usable value for
-// local development builds as well.
-var version = "0.1.0"
 
 func env(key, fallback string) string {
 	if s := os.Getenv(key); s != "" {
@@ -45,10 +40,6 @@ func envInt(key string, fallback int) int {
 	return n
 }
 func main() {
-	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version") {
-		fmt.Println(version)
-		return
-	}
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		if err := healthcheck(); err != nil {
 			log.Print(err)
@@ -159,22 +150,28 @@ func run() error {
 	if err := os.Chmod(socket, 0600); err != nil {
 		return err
 	}
-	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(os.Getenv("NICEPROXY_DOMAIN")), "."))
-	caddyOptions := caddy.Options{Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir, PanelListen: *panel, PanelDomain: domain, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort}
-	cm := caddy.New(caddyOptions)
 	good, err := db.LastGood()
 	if err != nil {
 		return err
 	}
+	panelDomain := cfg.PanelDomain
+	if good.PanelDomain != "" {
+		panelDomain = good.PanelDomain
+	}
+	if panelDomain == "" {
+		panelDomain = os.Getenv("NICEPROXY_DOMAIN")
+	}
+	caddyOptions := caddy.Options{Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir, PanelListen: *panel, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort, PanelDomain: panelDomain, PanelDomainProxied: good.PanelDomainProxied || cfg.PanelDomainProxied}
+	cm := caddy.New(caddyOptions)
 	startedRoutes := good.HTTPRoutes
-	if err := cm.Start(ctx, startedRoutes); err != nil {
+	if err := cm.Start(ctx, startedRoutes, good.PortOwners); err != nil {
 		log.Printf("last-good Caddy startup failed; starting management panel only: %v", err)
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = cm.Close(closeCtx)
 		closeCancel()
 		cm = caddy.New(caddyOptions)
 		startedRoutes = nil
-		if err := cm.Start(ctx, startedRoutes); err != nil {
+		if err := cm.Start(ctx, startedRoutes, good.PortOwners); err != nil {
 			return fmt.Errorf("start Caddy management panel: %w", err)
 		}
 	}
@@ -194,13 +191,20 @@ func run() error {
 		return err
 	}
 	app.SetHTTPActive(startedRoutes)
-	cfRedirect := ""
-	if domain != "" {
-		cfRedirect = "https://" + domain + "/api/cloudflare/callback"
-	} else {
+	initialDomain := cfg.PanelDomain
+	if initialDomain == "" {
+		initialDomain = os.Getenv("NICEPROXY_DOMAIN")
+	}
+	if err := app.ConfigurePanelDomain(initialDomain); err != nil {
+		log.Printf("panel domain configuration unavailable: %v", err)
+	}
+	cfRedirect := os.Getenv("NICEPROXY_CF_REDIRECT_URL")
+	if initialDomain != "" {
+		cfRedirect = "https://" + initialDomain + "/api/cloudflare/callback"
+	}
+	if cfRedirect == "" {
 		host, _, _ := net.SplitHostPort(*panel)
-		ip := net.ParseIP(host)
-		if host == "localhost" || ip != nil && ip.IsLoopback() {
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 			cfRedirect = "http://" + *panel + "/api/cloudflare/callback"
 		}
 	}

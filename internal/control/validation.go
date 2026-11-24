@@ -56,6 +56,15 @@ func validHostname(s string) bool {
 	}
 	return true
 }
+func validatePanelDomain(s string) error {
+	if s == "" {
+		return nil
+	}
+	if !validHostname(s) || net.ParseIP(s) != nil {
+		return fmt.Errorf("panel domain %q must be a DNS hostname", s)
+	}
+	return nil
+}
 func validateDirect(r *model.DirectRule, reserved map[int]bool) error {
 	r.Protocol = strings.ToLower(strings.TrimSpace(r.Protocol))
 	if r.Protocol != "tcp" && r.Protocol != "udp" {
@@ -73,6 +82,7 @@ func validateDirect(r *model.DirectRule, reserved map[int]bool) error {
 	if reserved[r.ListenPort] {
 		return fmt.Errorf("port %d is reserved for Caddy or the management panel", r.ListenPort)
 	}
+	r.ListenHost = net.ParseIP(r.ListenHost).String()
 	r.TargetHost = strings.TrimSpace(r.TargetHost)
 	if net.ParseIP(r.TargetHost) == nil && !validHostname(strings.ToLower(r.TargetHost)) {
 		return fmt.Errorf("targetHost must be an IP address or hostname")

@@ -3,8 +3,6 @@ package caddy
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -14,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,86 +47,25 @@ func New(o Options) *Manager {
 // is always reaped, and this channel closes once it has exited.
 func (m *Manager) Done() <-chan error { return m.done }
 
-// CertificateStatus reports the certificate Caddy has stored for a managed domain.
-// Caddy may need a short period after startup to complete ACME issuance.
 func (m *Manager) CertificateStatus(domain string) model.CertificateStatus {
-	status := model.CertificateStatus{Domain: domain}
+	status := model.CertificateStatus{Configured: domain != "", Domain: domain, State: "not_configured"}
 	if domain == "" {
-		status.State = "not_configured"
 		return status
 	}
-	status.Configured = true
+	state, err := m.CertificateState(context.Background(), domain)
 	status.State = "pending"
-	m.mu.Lock()
-	if !m.running() {
-		m.mu.Unlock()
-		status.State = "error"
-		status.Error = "Caddy is not running"
-		return status
-	}
-	port := m.options.HTTPSPort
-	m.mu.Unlock()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 2*time.Second)
-	if err == nil {
-		// This probe is local and only reads the certificate Caddy presents.
-		tlsConn := tls.Client(conn, &tls.Config{ServerName: domain, InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
-		err = tlsConn.Handshake()
-		state := tlsConn.ConnectionState()
-		_ = tlsConn.Close()
-		if err == nil && len(state.PeerCertificates) > 0 {
-			cert := state.PeerCertificates[0]
-			status.ExpiresAt = &cert.NotAfter
-			if time.Now().After(cert.NotAfter) {
-				status.State = "expired"
-			} else {
-				status.State = "issued"
-			}
-			return status
-		}
-	}
-	if err != nil {
-		status.State = "error"
-		status.Error = "Caddy HTTPS certificate probe failed: " + err.Error()
-		return status
-	}
-	root := filepath.Join(m.options.DataDir, "caddy", "certificates")
-	var certPath string
-	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || filepath.Base(path) != domain+".crt" {
-			return nil
-		}
-		if filepath.Base(filepath.Dir(path)) == domain {
-			certPath = path
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	if certPath == "" {
-		return status
-	}
-	b, err := os.ReadFile(certPath)
-	if err != nil {
-		status.State = "error"
-		status.Error = "cannot read the Caddy certificate"
-		return status
-	}
-	block, _ := pem.Decode(b)
-	if block == nil {
-		status.State = "error"
-		status.Error = "Caddy certificate is not valid PEM"
-		return status
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		status.State = "error"
-		status.Error = "Caddy certificate is not valid X.509"
-		return status
-	}
-	status.ExpiresAt = &cert.NotAfter
-	if time.Now().After(cert.NotAfter) {
-		status.State = "expired"
-	} else {
+	switch state {
+	case "valid":
 		status.State = "issued"
+	case "expired":
+		status.State = "expired"
+	case "missing", "not_yet_issued":
+		status.State = "pending"
+	default:
+		status.State = "error"
+	}
+	if err != nil {
+		status.Error = err.Error()
 	}
 	return status
 }
@@ -215,11 +151,14 @@ func (m *Manager) persist(name string) error {
 	return nil
 }
 
-func (m *Manager) Start(ctx context.Context, routes []model.HTTPRoute) error {
+func (m *Manager) Start(ctx context.Context, routes []model.HTTPRoute, owners ...model.PortOwners) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed || m.cmd != nil {
 		return errors.New("Caddy manager already started or closed")
+	}
+	if len(owners) > 0 {
+		m.options.PortOwners = owners[0]
 	}
 	config, err := BuildConfig(m.options, routes)
 	if err != nil {
@@ -317,12 +256,112 @@ func (m *Manager) Start(ctx context.Context, routes []model.HTTPRoute) error {
 }
 
 func (m *Manager) Apply(ctx context.Context, routes []model.HTTPRoute) error {
+	return m.apply(ctx, routes, nil)
+}
+func (m *Manager) ApplyConfig(ctx context.Context, cfg model.Config) error {
+	m.mu.Lock()
+	m.options.PanelDomain = cfg.PanelDomain
+	m.options.PanelDomainProxied = cfg.PanelDomainProxied
+	m.mu.Unlock()
+	return m.apply(ctx, cfg.HTTPRoutes, &cfg.PortOwners)
+}
+func (m *Manager) ValidateConfig(cfg model.Config) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o := m.options
+	o.PortOwners = cfg.PortOwners
+	o.PanelDomain = cfg.PanelDomain
+	o.PanelDomainProxied = cfg.PanelDomainProxied
+	_, err := BuildConfig(o, cfg.HTTPRoutes)
+	return err
+}
+func (m *Manager) PublicPorts() (int, int) { return m.options.HTTPPort, m.options.HTTPSPort }
+func (m *Manager) SetPanelDomain(domain string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.options.PanelDomain = domain
+}
+
+// CertificateState inspects Caddy's persisted certificate store. It never
+// treats an unrelated certificate as valid for the requested SNI.
+func (m *Manager) CertificateState(ctx context.Context, host string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var found bool
+	var firstErr error
+	var firstState string
+	root := filepath.Join(m.options.DataDir, "caddy")
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if d.IsDir() || (filepath.Ext(path) != ".crt" && filepath.Ext(path) != ".pem") {
+			return nil
+		}
+		if strings.Contains(path, string(filepath.Separator)+"authorities"+string(filepath.Separator)) || strings.EqualFold(filepath.Base(path), "root.crt") {
+			return nil
+		}
+		b, e := os.ReadFile(path)
+		if e != nil {
+			return nil
+		}
+		block, _ := pem.Decode(b)
+		if block == nil || block.Type != "CERTIFICATE" {
+			return nil
+		}
+		found = true
+		key, _ := os.ReadFile(strings.TrimSuffix(path, filepath.Ext(path)) + ".key")
+		if len(key) == 0 {
+			// Caddy also stores local/root CA certificates without private
+			// keys. Only a leaf candidate for this SNI is an invalid missing-key
+			// condition.
+			if strings.Contains(strings.ToLower(path), string(filepath.Separator)+strings.ToLower(host)+string(filepath.Separator)) {
+				found = true
+				if firstErr == nil {
+					firstState = "invalid"
+					firstErr = errors.New("certificate private key is missing")
+				}
+			}
+			return nil
+		}
+		state, e := ValidateCertificate(b, key, host, time.Now())
+		if state == "valid" {
+			return filepath.SkipAll
+		}
+		if firstErr == nil {
+			firstErr = e
+			firstState = state
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, filepath.SkipAll) {
+		return "invalid", err
+	}
+	if !found {
+		return "missing", nil
+	}
+	if firstErr != nil {
+		return firstState, firstErr
+	}
+	return "invalid", errors.New("no certificate matches requested SNI")
+}
+func (m *Manager) apply(ctx context.Context, routes []model.HTTPRoute, owners *model.PortOwners) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed || !m.running() {
 		return errors.New("Caddy is not running")
 	}
-	config, err := BuildConfig(m.options, routes)
+	o := m.options
+	if owners != nil {
+		o.PortOwners = *owners
+	}
+	config, err := BuildConfig(o, routes)
 	if err != nil {
 		return err
 	}

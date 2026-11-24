@@ -160,12 +160,15 @@ test("available trusted release builds staged packages and activates completed d
     await cp(resolve(f), join(root, f), { recursive: true, force: true });
   const pkg = JSON.parse(await readFile("package.json", "utf8"));
   await writeFile(join(root, "package.json"), JSON.stringify(pkg));
-  const release = resolve("../assets/alpha/0.4.11");
+  const { version } = JSON.parse(
+    await readFile("node_modules/@alpha/core/package.json", "utf8"),
+  );
+  const release = resolve(`../assets/alpha/${version}`);
   const url = await server(t, async (req, res) => {
     try {
       res.end(
         req.url === "/latest.json"
-          ? JSON.stringify({ version: "0.4.11" })
+          ? JSON.stringify({ version })
           : await readFile(join(release, req.url.split("/").at(-1))),
       );
     } catch {
@@ -175,8 +178,8 @@ test("available trusted release builds staged packages and activates completed d
   });
   const path = await prepare({ releaseRoot: url });
   const selected = JSON.parse(await readFile(marker, "utf8"));
-  assert.equal(selected.version, "0.4.11");
-  assert.match(selected.directory, /release-0.4.11/);
+  assert.equal(selected.version, version);
+  assert.ok(selected.directory.startsWith(`release-${version}-`));
   assert.ok(
     (await readFile(join(path, "index.html"), "utf8")).includes("assets/"),
   );
@@ -193,12 +196,116 @@ test("production 20 second deadline cancels a slow server", async (t) => {
 });
 
 test("a new bundled app build replaces persisted UI even at the same Alpha version", async (t) => {
-  const {root,prepare}=await fixture(t);
-  await writeFile(join(root,"dist/.app-build.json"),JSON.stringify({digest:"first",version:"0.4.11"}));
-  const first=await prepare({releaseRoot:""});
-  await writeFile(join(root,"dist/index.html"),"new application build");
-  await writeFile(join(root,"dist/.app-build.json"),JSON.stringify({digest:"second",version:"0.4.11"}));
-  const second=await prepare({releaseRoot:""});
-  assert.notEqual(first,second);
-  assert.equal(await readFile(join(second,"index.html"),"utf8"),"new application build");
+  const { root, prepare } = await fixture(t);
+  await writeFile(
+    join(root, "dist/.app-build.json"),
+    JSON.stringify({ digest: "first", version: "0.4.9" }),
+  );
+  const first = await prepare({ releaseRoot: "" });
+  await writeFile(join(root, "dist/index.html"), "new application build");
+  await writeFile(
+    join(root, "dist/.app-build.json"),
+    JSON.stringify({ digest: "second", version: "0.4.9" }),
+  );
+  const second = await prepare({ releaseRoot: "" });
+  assert.notEqual(first, second);
+  assert.equal(
+    await readFile(join(second, "index.html"), "utf8"),
+    "new application build",
+  );
+});
+
+test("a stale persisted UI never wins over a newer bundled manifest", async (t) => {
+  const { root, prepare } = await fixture(t);
+  const state = join(root, ".alpha-state");
+  await writeFile(join(root, "dist/.app-build.json"), JSON.stringify({ schema: 1, digest: "bundled-new", version: "2.0.0" }));
+  await mkdir(join(state, "builds", "release-old", "dist", "assets"), { recursive: true });
+  await writeFile(join(state, "builds", "release-old", "dist", "index.html"), "stale persisted UI");
+  await writeFile(join(state, "builds", "release-old", "dist", ".app-build.json"), JSON.stringify({ schema: 1, digest: "release-old", version: "1.0.0" }));
+  await writeFile(join(state, "active.json"), JSON.stringify({ directory: "release-old", version: "1.0.0", digest: "release-old" }));
+  const selected = await prepare({ releaseRoot: "" });
+  assert.equal(await readFile(join(selected, "index.html"), "utf8"), "working");
+  assert.match(await readFile(join(state, "active.json"), "utf8"), /bundled-new/);
+});
+
+test("legacy bundled images win when persisted UI has no matching image identity", async (t) => {
+  const { root, prepare } = await fixture(t);
+  const state = join(root, ".alpha-state");
+  await mkdir(join(state, "builds", "release-newer", "dist", "assets"), { recursive: true });
+  await writeFile(join(state, "builds", "release-newer", "dist", "index.html"), "persisted release");
+  await writeFile(join(state, "builds", "release-newer", "dist", ".app-build.json"), JSON.stringify({ schema: 1, digest: "release-digest", version: "9.0.0" }));
+  await writeFile(join(state, "active.json"), JSON.stringify({ directory: "release-newer", version: "9.0.0", digest: "release-digest" }));
+  const selected = await prepare({ releaseRoot: "" });
+  assert.equal(await readFile(join(selected, "index.html"), "utf8"), "working");
+});
+
+test("a ready migration marker is committed after an interrupted startup", async (t) => {
+  const { root, prepare } = await fixture(t);
+  const state = join(root, ".alpha-state");
+  const directory = "bundled-interrupted";
+  await writeFile(join(root, "dist/.app-build.json"), JSON.stringify({ schema: 1, digest: "interrupted", version: "1.2.3" }));
+  await mkdir(join(state, "builds", directory, "dist", "assets"), { recursive: true });
+  await writeFile(join(state, "builds", directory, "dist", "index.html"), "interrupted but complete");
+  await writeFile(join(state, "builds", directory, "dist", ".app-build.json"), JSON.stringify({ schema: 1, digest: "interrupted", version: "1.2.3" }));
+  await writeFile(join(state, "migration.json"), JSON.stringify({ schema: 1, phase: "ready", directory, digest: "interrupted", version: "1.2.3" }));
+  const selected = await prepare({ releaseRoot: "" });
+  assert.equal(await readFile(join(selected, "index.html"), "utf8"), "interrupted but complete");
+  assert.match(await readFile(join(state, "active.json"), "utf8"), /interrupted/);
+  await assert.rejects(readFile(join(state, "migration.json"), "utf8"), { code: "ENOENT" });
+});
+
+test("an interrupted staging phase removes its partial build", async (t) => {
+  const { root, prepare } = await fixture(t);
+  const state = join(root, ".alpha-state");
+  const directory = "bundled-partial";
+  await mkdir(join(state, "builds", `.staging-${directory}`, "dist", "assets"), { recursive: true });
+  await writeFile(join(state, "builds", `.staging-${directory}`, "dist", "index.html"), "partial");
+  await writeFile(join(state, "migration.json"), JSON.stringify({ schema: 1, phase: "staging", directory, digest: "partial", version: "1.0.0" }));
+  const selected = await prepare({ releaseRoot: "" });
+  assert.equal(await readFile(join(selected, "index.html"), "utf8"), "working");
+  await assert.rejects(readFile(join(state, "builds", `.staging-${directory}`, "dist", "index.html"), "utf8"), { code: "ENOENT" });
+});
+
+test("corrupt marker and stale lock are safely ignored", async (t) => {
+  const { root, prepare } = await fixture(t);
+  const state = join(root, ".alpha-state");
+  await mkdir(state, { recursive: true });
+  await writeFile(join(state, "active.json"), "{not-json");
+  await writeFile(join(state, "migration.lock"), JSON.stringify({ pid: 2147483647, startedAt: 1, token: "stale" }));
+  const selected = await prepare({ releaseRoot: "" });
+  assert.equal(await readFile(join(selected, "index.html"), "utf8"), "working");
+  await assert.rejects(readFile(join(state, "migration.lock"), "utf8"), { code: "ENOENT" });
+});
+
+test("an invalid ready migration is rolled back before selecting a build", async (t) => {
+  const { root, prepare } = await fixture(t);
+  const state = join(root, ".alpha-state");
+  const directory = "broken-target";
+  await mkdir(join(state, "builds", directory, "dist"), { recursive: true });
+  await writeFile(join(state, "builds", directory, "dist", "index.html"), "partial");
+  await writeFile(join(state, "migration.json"), JSON.stringify({ schema: 1, phase: "ready", directory, digest: "expected", version: "1.0.0" }));
+  const selected = await prepare({ releaseRoot: "" });
+  assert.equal(await readFile(join(selected, "index.html"), "utf8"), "working");
+  await assert.rejects(readFile(join(state, "builds", directory, "dist", "index.html"), "utf8"), { code: "ENOENT" });
+});
+
+test("release lookup rejects malformed versions before fetching manifests", async (t) => {
+  const { prepare } = await fixture(t);
+  const local = await prepare({ releaseRoot: "" });
+  for (const version of [
+    "1.2.3-01",
+    "01.2.3",
+    "1.2.3-alpha.01",
+    "1.2.3-",
+    "1.2.3-..",
+    "../1.2.3",
+  ]) {
+    let manifestRequests = 0;
+    const url = await server(t, (req, res) => {
+      if (req.url !== "/latest.json") manifestRequests++;
+      res.end(JSON.stringify({ version }));
+    });
+    assert.equal(await prepare({ releaseRoot: url }), local);
+    assert.equal(manifestRequests, 0, version);
+  }
 });

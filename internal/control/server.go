@@ -43,8 +43,13 @@ type App struct {
 	applied               int64
 	active                map[string]model.DirectRule
 	httpActive            []model.HTTPRoute
+	httpOwners            model.PortOwners
+	caddyUnconfirmed      bool
+	httpPort, httpsPort   int
 	ruleErrors            map[string]string
 	httpError, applyError string
+	state                 string
+	startupError          string
 	reserved              map[int]bool
 	authMu                sync.Mutex
 	authWindow            time.Time
@@ -64,7 +69,7 @@ type authBucket struct {
 }
 
 func New(db *store.Store, c Caddy, p *proxy.Manager, reserved map[int]bool) (*App, error) {
-	cfg, _, err := db.Load()
+	cfg, persistedApplied, err := db.Load()
 	if err != nil {
 		return nil, err
 	}
@@ -74,11 +79,28 @@ func New(db *store.Store, c Caddy, p *proxy.Manager, reserved map[int]bool) (*Ap
 	if cfg.DirectRules == nil {
 		cfg.DirectRules = []model.DirectRule{}
 	}
-	a := &App{db: db, caddy: c, proxy: p, config: cfg, active: map[string]model.DirectRule{}, ruleErrors: map[string]string{}, reserved: reserved, authByClient: map[string]authBucket{}}
+	cfg.ApplyDefaults()
+	reservedCopy := map[int]bool{}
+	for port, value := range reserved {
+		reservedCopy[port] = value
+	}
+	hp, sp := 80, 443
+	if ports, ok := c.(interface{ PublicPorts() (int, int) }); ok {
+		hp, sp = ports.PublicPorts()
+	}
+	delete(reservedCopy, hp)
+	delete(reservedCopy, sp)
+	a := &App{httpPort: hp, httpsPort: sp, db: db, caddy: c, proxy: p, config: cfg, applied: persistedApplied, active: map[string]model.DirectRule{}, ruleErrors: map[string]string{}, reserved: reservedCopy, authByClient: map[string]authBucket{}, state: "ready"}
+	if err := a.panelDomainConflict(cfg); err != nil {
+		a.startupError = err.Error()
+		a.state = "unrecoverable_corruption"
+		a.applied = -1
+	}
 	good, err := db.LastGood()
 	if err != nil {
 		return nil, err
 	}
+	a.httpOwners = good.PortOwners
 	a.httpActive = append([]model.HTTPRoute{}, good.HTTPRoutes...)
 	for _, r := range good.DirectRules {
 		if !r.Enabled {
@@ -104,15 +126,58 @@ func (a *App) SetHTTPActive(routes []model.HTTPRoute) {
 	defer a.mu.Unlock()
 	a.httpActive = append([]model.HTTPRoute{}, routes...)
 }
+
+// ConfigurePanelDomain applies the deployment-provided initial domain only
+// when no domain has been persisted yet. Subsequent changes go through the
+// authenticated /api/panel-domain endpoint so every path uses one reconciler.
+func (a *App) ConfigurePanelDomain(domain string) error {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if domain == "" {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.config.PanelDomain != "" {
+		return nil
+	}
+	if err := validatePanelDomain(domain); err != nil {
+		return err
+	}
+	c := a.config
+	c.PanelDomain = domain
+	if err := a.commit(context.Background(), c); err != nil {
+		a.startupError = err.Error()
+		a.state = "unrecoverable_corruption"
+		a.applyError = err.Error()
+		return err
+	}
+	return nil
+}
 func (a *App) reconcile(ctx context.Context) error {
 	var errs []error
-	a.httpError = ""
-	if !reflect.DeepEqual(a.httpActive, a.config.HTTPRoutes) || !a.caddy.Healthy(ctx) {
-		if err := a.caddy.Apply(ctx, a.config.HTTPRoutes); err != nil {
+	a.ruleErrors = map[string]string{}
+	if a.startupError != "" {
+		a.applyError = a.startupError
+		a.state = "unrecoverable_corruption"
+		a.applied = -1
+		return errors.New(a.startupError)
+	}
+	if v, ok := a.caddy.(interface{ ValidateConfig(model.Config) error }); ok {
+		if err := v.ValidateConfig(a.config); err != nil {
 			a.httpError = err.Error()
-			errs = append(errs, fmt.Errorf("Caddy: %w", err))
-		} else {
-			a.httpActive = append([]model.HTTPRoute{}, a.config.HTTPRoutes...)
+			a.applyError = err.Error()
+			a.applied = -1
+			a.state = classifyState(err.Error())
+			return err
+		}
+	}
+	if a.config.PanelDomain != "" && a.config.PanelDomainProxied {
+		certificate := a.certificateState()
+		if certificate != "valid" {
+			a.state = "waiting_acme"
+			a.applyError = fmt.Sprintf("panel domain %q is Cloudflare-proxied and has no valid origin certificate (%s); configure DNS-01 or install a certificate for this SNI", a.config.PanelDomain, certificate)
+			a.applied = -1
+			return errors.New(a.applyError)
 		}
 	}
 	wanted := map[string]bool{}
@@ -121,21 +186,45 @@ func (a *App) reconcile(ctx context.Context) error {
 			wanted[r.ID] = true
 		}
 	}
-	for id := range a.active {
-		if !wanted[id] {
-			drain, cancel := context.WithTimeout(context.Background(), time.Second)
-			_ = a.proxy.Remove(drain, id)
-			cancel()
+	for id, old := range a.active {
+		if !a.proxy.HasListener(id) {
 			delete(a.active, id)
+			continue
+		}
+		if !wanted[id] || a.ownershipConflict(model.Config{PortOwners: a.config.PortOwners, DirectRules: []model.DirectRule{old}}) != nil {
+			if err := a.retire(id); err != nil {
+				a.ruleErrors[id] = err.Error()
+				errs = append(errs, err)
+			} else {
+				delete(a.active, id)
+			}
 		}
 	}
-	a.ruleErrors = map[string]string{}
+	a.httpError = ""
+	if a.caddyUnconfirmed || a.httpOwners != a.config.PortOwners || !reflect.DeepEqual(a.httpActive, a.config.HTTPRoutes) || !a.caddy.Healthy(ctx) {
+		if err := a.applyCaddy(ctx); err != nil {
+			// An admin request can fail after Caddy changed its listeners.
+			// Even reverting to the prior desired config needs a confirmed load.
+			a.caddyUnconfirmed = true
+			a.httpError = err.Error()
+			errs = append(errs, fmt.Errorf("Caddy: %w", err))
+		} else {
+			a.caddyUnconfirmed = false
+			a.httpOwners = a.config.PortOwners
+			a.httpActive = append([]model.HTTPRoute{}, a.config.HTTPRoutes...)
+		}
+	}
 	for _, r := range a.config.DirectRules {
 		if !r.Enabled {
 			continue
 		}
 		pr := proxy.Rule{Protocol: r.Protocol, ListenAddress: r.ListenHost, ListenPort: r.ListenPort, TargetAddress: r.TargetHost, TargetPort: r.TargetPort}
 		previous, exists := a.active[r.ID]
+		if exists && !a.proxy.HasListener(r.ID) {
+			// A replacement and its rollback may both fail to bind.
+			delete(a.active, r.ID)
+			exists = false
+		}
 		if exists && reflect.DeepEqual(previous, r) {
 			continue
 		}
@@ -149,6 +238,9 @@ func (a *App) reconcile(ctx context.Context) error {
 			_, err = a.proxy.Add(r.ID, pr)
 		}
 		if err != nil {
+			if !a.proxy.HasListener(r.ID) {
+				delete(a.active, r.ID)
+			}
 			a.ruleErrors[r.ID] = err.Error()
 			errs = append(errs, fmt.Errorf("%s: %w", r.ID, err))
 		} else {
@@ -160,6 +252,7 @@ func (a *App) reconcile(ctx context.Context) error {
 			errs = append(errs, err)
 		} else {
 			a.applied = a.config.Revision
+			a.state = "ready"
 		}
 	}
 	err := errors.Join(errs...)
@@ -169,6 +262,7 @@ func (a *App) reconcile(ctx context.Context) error {
 		// truthfully describe a mixed runtime state.
 		a.applied = -1
 		a.applyError = err.Error()
+		a.state = classifyState(err.Error())
 	}
 	return err
 }
@@ -191,12 +285,18 @@ func (a *App) snapshot() model.Config {
 	}
 	for i := range c.DirectRules {
 		r := &c.DirectRules[i]
+		r.Stats = nil
+		if stats, ok := a.proxy.Stats(r.ID); ok {
+			r.Stats = &model.ConnectionStats{Accepted: stats.Accepted, Active: stats.Active, Closed: stats.Closed, Errors: stats.Errors, Rejects: stats.Rejects, StartedAt: stats.StartedAt.UTC().Format(time.RFC3339Nano)}
+		}
 		r.Status = "unknown"
+		if msg := a.ruleErrors[r.ID]; msg != "" {
+			r.Status = "error"
+			r.Error = msg
+			continue
+		}
 		if r.Enabled {
-			if msg := a.ruleErrors[r.ID]; msg != "" {
-				r.Status = "error"
-				r.Error = msg
-			} else if _, ok := a.active[r.ID]; ok {
+			if _, ok := a.active[r.ID]; ok {
 				r.Status = "healthy"
 			}
 		}
@@ -209,11 +309,19 @@ func (a *App) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 		defer cancel()
-		if !a.caddy.Healthy(ctx) {
-			fail(w, 503, "Caddy unavailable")
+		a.mu.Lock()
+		state := a.state
+		applyError := a.applyError
+		a.mu.Unlock()
+		if !a.caddy.Healthy(ctx) || applyError != "" || state != "ready" {
+			message := applyError
+			if message == "" {
+				message = "niceproxy state: " + state
+			}
+			fail(w, 503, message)
 			return
 		}
-		write(w, 200, map[string]bool{"ok": true})
+		write(w, 200, map[string]any{"ok": true, "state": state})
 	})
 	mux.HandleFunc("/api/", a.api)
 	mux.Handle("/", static)
@@ -268,7 +376,14 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	if net.ParseIP(host) == nil && host != "localhost" && a.cfCallbackHost.Load() != r.Host {
+	a.mu.Lock()
+	panelDomain := a.config.PanelDomain
+	a.mu.Unlock()
+	callbackHost := ""
+	if value := a.cfCallbackHost.Load(); value != nil {
+		callbackHost, _ = value.(string)
+	}
+	if net.ParseIP(host) == nil && host != "localhost" && !strings.EqualFold(host, panelDomain) && !strings.EqualFold(r.Host, callbackHost) {
 		fail(w, 403, "management API requires an IP address or localhost host")
 		return
 	}
@@ -322,6 +437,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if r.URL.Path == "/api/port-owners" {
+		a.portOwners(w, r)
+		return
+	}
 	if r.URL.Path == "/api/config" && r.Method == "GET" {
 		write(w, 200, a.snapshot())
 		return
@@ -330,11 +449,27 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 		defer cancel()
 		ok := a.caddy.Healthy(ctx)
+		state := a.state
+		certificate := a.certificateState()
+		if a.config.PanelDomain != "" && certificate != "valid" && certificate != "unknown" && a.applyError == "" {
+			if certificate == "missing" || certificate == "not_yet_issued" {
+				state = "waiting_acme"
+			} else {
+				state = "invalid_certificate"
+			}
+		}
 		status := "healthy"
-		if !ok || a.applyError != "" {
+		if !ok || a.applyError != "" || state != "ready" {
 			status = "error"
 		}
-		write(w, 200, model.Health{Status: status, Caddy: ok, Revision: a.config.Revision, AppliedRevision: a.applied, Error: a.applyError})
+		if state == "" {
+			state = "ready"
+		}
+		write(w, 200, model.Health{Status: status, State: state, Caddy: ok, Revision: a.config.Revision, AppliedRevision: a.applied, Error: a.applyError, PanelDomain: a.config.PanelDomain, Certificate: a.certificateState()})
+		return
+	}
+	if r.URL.Path == "/api/panel-domain" {
+		a.panelDomainAPI(w, r)
 		return
 	}
 	if r.URL.Path == "/api/certificate" && r.Method == "GET" {
@@ -482,9 +617,29 @@ func resourceID(path, base string) (string, bool) {
 	return id, id != "" && !strings.Contains(id, "/")
 }
 func (a *App) commit(ctx context.Context, c model.Config) error {
+	if err := a.ownershipConflict(c); err != nil {
+		return err
+	}
+	// A valid authenticated edit is the recovery path for a legacy or
+	// interrupted state that was discovered during startup.
+	a.startupError = ""
 	c.Revision = a.config.Revision + 1
 	if err := a.db.Save(c); err != nil {
 		return err
+	}
+	retained := make(map[string]bool, len(c.DirectRules))
+	for _, rule := range c.DirectRules {
+		retained[rule.ID] = true
+	}
+	for _, previous := range a.config.DirectRules {
+		if !retained[previous.ID] {
+			// Accepted streams keep their counters until their last generation
+			// finishes; deleted IDs then release their statistics completely.
+			a.proxy.ForgetStats(previous.ID)
+		}
+	}
+	if setter, ok := a.caddy.(interface{ SetPanelDomain(string) }); ok && c.PanelDomain != a.config.PanelDomain {
+		setter.SetPanelDomain(c.PanelDomain)
 	}
 	a.config = c
 	_ = a.reconcile(ctx)
@@ -534,9 +689,10 @@ func (a *App) direct(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		item.ID = randomID()
 	}
+	item.Stats = nil
 	item.Status = ""
 	item.Error = ""
-	if err := validateDirect(&item, a.reserved); err != nil {
+	if err := validateDirect(&item, nil); err != nil {
 		fail(w, 400, err.Error())
 		return
 	}
@@ -544,11 +700,9 @@ func (a *App) direct(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "maximum 1024 direct rules")
 		return
 	}
-	for _, other := range c.DirectRules {
-		if other.ID != item.ID && other.Enabled && item.Enabled && other.Protocol == item.Protocol && other.ListenPort == item.ListenPort && (other.ListenHost == item.ListenHost || other.ListenHost == "0.0.0.0" || item.ListenHost == "0.0.0.0" || other.ListenHost == "::" || item.ListenHost == "::") {
-			fail(w, 409, "listener conflicts with another enabled rule")
-			return
-		}
+	if a.reserved[item.ListenPort] {
+		fail(w, 409, "port is reserved for the management panel")
+		return
 	}
 	if index < 0 {
 		c.DirectRules = append(c.DirectRules, item)
@@ -556,7 +710,7 @@ func (a *App) direct(w http.ResponseWriter, r *http.Request) {
 		c.DirectRules[index] = item
 	}
 	if err := a.commit(r.Context(), c); err != nil {
-		fail(w, 500, err.Error())
+		mutationFail(w, err)
 		return
 	}
 	for _, saved := range a.snapshot().DirectRules {
@@ -621,7 +775,7 @@ func (a *App) httpRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, other := range c.HTTPRoutes {
-		if other.ID != item.ID && other.Host == item.Host {
+		if other.ID != item.ID && strings.EqualFold(strings.TrimSuffix(other.Host, "."), strings.TrimSuffix(item.Host, ".")) {
 			otherPath, _ := model.NormalizeRoutePath(other.Path)
 			if otherPath == item.Path {
 				fail(w, 409, "domain and path already configured")
@@ -639,7 +793,7 @@ func (a *App) httpRoute(w http.ResponseWriter, r *http.Request) {
 		c.HTTPRoutes[index] = item
 	}
 	if err := a.commit(r.Context(), c); err != nil {
-		fail(w, 500, err.Error())
+		mutationFail(w, err)
 		return
 	}
 	for _, saved := range a.snapshot().HTTPRoutes {

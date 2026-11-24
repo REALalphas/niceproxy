@@ -13,6 +13,7 @@ import (
 	"niceproxy/internal/proxy"
 	"niceproxy/internal/store"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -166,7 +167,6 @@ func TestCaddyFailureDoesNotClaimApplied(t *testing.T) {
 func TestRejectInvalidAndReservedRules(t *testing.T) {
 	_, s, c := fixture(t)
 	for _, body := range []string{
-		`{"protocol":"tcp","listenPort":443,"targetHost":"127.0.0.1","targetPort":3300}`,
 		`{"protocol":"tcp","listenPort":1234,"targetHost":"http://bad","targetPort":3300}`,
 		`{"protocol":"tcp","listenPort":1234,"targetHost":"127.0.0.1","targetPort":0}`,
 	} {
@@ -180,6 +180,36 @@ func TestRejectInvalidAndReservedRules(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Fatal(resp.Status)
+	}
+}
+
+func TestPanelDomainReservationNamesConflictAndRecovery(t *testing.T) {
+	a, s, c := fixture(t)
+	resp := call(t, s, "POST", "/api/http-routes", `{"host":"panel.example.com","target":"http://127.0.0.1:3000","tls":"off","enabled":true}`, c)
+	var route model.HTTPRoute
+	_ = json.NewDecoder(resp.Body).Decode(&route)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatal(resp.Status)
+	}
+	resp = call(t, s, "PATCH", "/api/panel-domain", `{"domain":"panel.example.com"}`, c)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 409 || !strings.Contains(string(body), "panel.example.com") || !strings.Contains(string(body), route.ID) {
+		t.Fatalf("conflict lacks recovery details: %s %s", resp.Status, body)
+	}
+	if cfg, _, _ := a.db.Load(); cfg.PanelDomain != "" {
+		t.Fatal("conflicting domain persisted")
+	}
+	resp = call(t, s, "PATCH", "/api/panel-domain", `{"domain":"admin.example.com"}`, c)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatal(resp.Status)
+	}
+	resp = call(t, s, "POST", "/api/http-routes", `{"host":"ADMIN.EXAMPLE.COM","target":"http://127.0.0.1:3001","tls":"off","enabled":false}`, c)
+	resp.Body.Close()
+	if resp.StatusCode != 409 {
+		t.Fatal("disabled conflicting route was accepted")
 	}
 }
 

@@ -48,6 +48,7 @@ func (s *Store) Load() (model.Config, int64, error) {
 	var applied int64
 	err := s.db.QueryRow("SELECT body, applied FROM configuration WHERE id=1").Scan(&body, &applied)
 	if errors.Is(err, sql.ErrNoRows) {
+		c.ApplyDefaults()
 		return c, 0, nil
 	}
 	if err == nil {
@@ -57,14 +58,16 @@ func (s *Store) Load() (model.Config, int64, error) {
 	return c, applied, err
 }
 func (s *Store) Save(c model.Config) error {
+	c = persistent(c)
 	body, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec("INSERT INTO configuration(id,body) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body", string(body))
+	_, err = s.db.Exec("INSERT INTO configuration(id,body,applied) VALUES(1,?,-1) ON CONFLICT(id) DO UPDATE SET body=excluded.body,applied=-1", string(body))
 	return err
 }
 func (s *Store) MarkApplied(c model.Config) error {
+	c = persistent(c)
 	body, err := json.Marshal(c)
 	if err != nil {
 		return err
@@ -87,6 +90,7 @@ func (s *Store) LastGood() (model.Config, error) {
 	var body string
 	err := s.db.QueryRow("SELECT body FROM last_good WHERE id=1").Scan(&body)
 	if errors.Is(err, sql.ErrNoRows) {
+		c.ApplyDefaults()
 		return c, nil
 	}
 	if err != nil {
@@ -143,4 +147,21 @@ func (s *Store) SetIntegration(name string, body []byte) error {
 	}
 	_, err := s.db.Exec("INSERT INTO integrations(name,body) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET body=excluded.body", name, body)
 	return err
+}
+
+// Runtime observations never belong in durable desired or last-good state.
+func persistent(c model.Config) model.Config {
+	c.ApplyDefaults()
+	c.DirectRules = append([]model.DirectRule{}, c.DirectRules...)
+	for i := range c.DirectRules {
+		c.DirectRules[i].Stats = nil
+		c.DirectRules[i].Status = ""
+		c.DirectRules[i].Error = ""
+	}
+	c.HTTPRoutes = append([]model.HTTPRoute{}, c.HTTPRoutes...)
+	for i := range c.HTTPRoutes {
+		c.HTTPRoutes[i].Status = ""
+		c.HTTPRoutes[i].Error = ""
+	}
+	return c
 }

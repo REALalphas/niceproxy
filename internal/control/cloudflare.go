@@ -22,44 +22,84 @@ type cloudflareSettings struct {
 	Scopes   []string `json:"scopes"`
 }
 
-func (a *App) setCloudflareCallback(redirectURL string) {
-	a.cfCallbackHost.Store("")
-	a.cfHTTPSCallback.Store(false)
-	if validateCloudflareRedirect(redirectURL) == nil {
-		u, _ := url.Parse(redirectURL)
-		a.cfCallbackHost.Store(u.Host)
-		a.cfHTTPSCallback.Store(u.Scheme == "https")
-	}
-}
-
 // ConfigureCloudflare loads public client settings. OAuth tokens remain inside
 // the provider manager; the control API never serializes them.
 func (a *App) ConfigureCloudflare(options cloudflare.Options) error {
 	a.cfMu.Lock()
 	defer a.cfMu.Unlock()
+	a.cfOptions = options
 	a.cfDefaultRedirect = options.RedirectURL
-	a.setCloudflareCallback(options.RedirectURL)
+	a.cfCallbackHost.Store("")
+	a.cfHTTPSCallback.Store(false)
+	if validateCloudflareRedirect(options.RedirectURL) == nil {
+		u, _ := url.Parse(options.RedirectURL)
+		a.cfCallbackHost.Store(u.Host)
+		a.cfHTTPSCallback.Store(u.Scheme == "https")
+	}
 	body, err := a.db.Integration(cfSettingsName)
 	if err != nil {
-		a.cfInitError = "Could not read Cloudflare settings from storage."
+		a.cfInitError = "Не удалось прочитать настройки Cloudflare из хранилища."
 		return err
 	}
 	if len(body) > 0 {
 		var settings cloudflareSettings
 		if err := json.Unmarshal(body, &settings); err != nil {
-			a.cfInitError = "Saved Cloudflare settings are invalid. Set up the OAuth app again."
+			a.cfInitError = "Сохранённые настройки Cloudflare повреждены. Настройте OAuth-приложение заново."
 			return fmt.Errorf("invalid Cloudflare settings")
 		}
 		options.ClientID = settings.ClientID
 		options.Scopes = settings.Scopes
 	}
-	a.cfOptions = options
-	a.setCloudflareCallback(options.RedirectURL)
 	a.cf, err = cloudflare.New(options, a.db)
 	if err != nil {
-		a.cfInitError = "Could not load the Cloudflare connection. Check the app settings and encryption key."
+		a.cfInitError = "Не удалось загрузить подключение Cloudflare. Проверьте настройки приложения и сохранённый ключ шифрования."
 	}
 	return err
+}
+
+func (a *App) syncCloudflareRedirect(domain string) error {
+	a.cfMu.Lock()
+	defer a.cfMu.Unlock()
+	redirect := a.cfDefaultRedirect
+	if domain != "" {
+		redirect = "https://" + domain + "/api/cloudflare/callback"
+	}
+	if redirect == "" {
+		// A deployment without an explicitly configured callback can remove a
+		// public panel domain cleanly. Do not leave the old public host trusted.
+		a.cfOptions.RedirectURL = ""
+		a.cfCallbackHost.Store("")
+		a.cfHTTPSCallback.Store(false)
+		a.cf = nil
+		_ = a.db.SetIntegration("cloudflare", nil)
+		a.cfInitError = ""
+		return nil
+	}
+	if err := validateCloudflareRedirect(redirect); err != nil {
+		return err
+	}
+	a.cfOptions.RedirectURL = redirect
+	if parsed, _ := url.Parse(redirect); parsed != nil {
+		a.cfCallbackHost.Store(parsed.Host)
+		a.cfHTTPSCallback.Store(parsed.Scheme == "https")
+	}
+	if a.cf == nil {
+		if a.cfOptions.ClientID != "" && len(a.cfOptions.Scopes) > 0 {
+			manager, err := cloudflare.New(a.cfOptions, a.db)
+			if err != nil {
+				a.cfInitError = "Не удалось восстановить Cloudflare после смены домена: " + err.Error()
+				return err
+			}
+			a.cf = manager
+		}
+		return nil
+	}
+	if err := a.cf.SetRedirectURL(redirect); err != nil {
+		a.cfInitError = "Callback URL не синхронизирован с доменом панели: " + err.Error()
+		return err
+	}
+	a.cfInitError = ""
+	return nil
 }
 
 func (a *App) cloudflareStatus() cloudflare.Status {
@@ -91,18 +131,18 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		settings.ClientID = strings.TrimSpace(settings.ClientID)
 		if settings.ClientID == "" || len(settings.ClientID) > 256 || strings.ContainsAny(settings.ClientID, " \t\r\n") || len(settings.Scopes) < 1 || len(settings.Scopes) > 32 {
-			fail(w, 400, "Enter a public client ID and allowed OAuth scope IDs.")
+			fail(w, 400, "Укажите публичный Client ID и разрешённые OAuth scope ID.")
 			return
 		}
 		unique := map[string]bool{}
 		for i, scope := range settings.Scopes {
 			scope = strings.TrimSpace(scope)
 			if scope == "" || len(scope) > 128 || strings.ContainsAny(scope, " \t\r\n,:/\\") {
-				fail(w, 400, "Each OAuth scope ID must be a single value without spaces.")
+				fail(w, 400, "Каждый OAuth scope ID должен быть отдельной строкой без пробелов.")
 				return
 			}
 			if unique[scope] {
-				fail(w, 400, "OAuth scope IDs must be unique.")
+				fail(w, 400, "OAuth scope ID не должны повторяться.")
 				return
 			}
 			unique[scope] = true
@@ -111,7 +151,6 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		options := a.cfOptions
 		options.ClientID = settings.ClientID
 		options.Scopes = settings.Scopes
-		options.RedirectURL = a.cfDefaultRedirect
 		if err := validateCloudflareRedirect(options.RedirectURL); err != nil {
 			fail(w, 400, err.Error())
 			return
@@ -132,17 +171,15 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		manager, err := cloudflare.New(options, a.db)
 		if err != nil {
-			fail(w, 400, "Could not configure Cloudflare OAuth. Check the client ID, scope IDs, and callback URL.")
+			fail(w, 400, "Не удалось настроить OAuth Cloudflare. Проверьте Client ID, scope ID и callback URL.")
 			return
 		}
 		body, _ := json.Marshal(settings)
 		if err := a.db.SetIntegration(cfSettingsName, body); err != nil {
-			fail(w, 500, "Could not save Cloudflare settings.")
+			fail(w, 500, "Не удалось сохранить настройки Cloudflare.")
 			return
 		}
 		a.cf = manager
-		a.cfOptions = options
-		a.setCloudflareCallback(options.RedirectURL)
 		a.cfInitError = revokeWarning
 		write(w, 200, a.cloudflareStatus())
 		return
@@ -154,7 +191,7 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 			err := a.cf.Disconnect(ctx)
 			cancel()
 			if err != nil {
-				response["warning"] = "The local connection was removed. Check access revocation in Cloudflare."
+				response["warning"] = "Локальное подключение удалено. Проверьте отзыв доступа в Cloudflare."
 			}
 		}
 		if !a.cloudflareCredentialsCleared(w) {
@@ -165,13 +202,13 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.cf == nil || !a.cf.Status().Configured {
-		fail(w, 409, "Register a Cloudflare OAuth app and save its public settings first.")
+		fail(w, 409, "Сначала зарегистрируйте OAuth-приложение Cloudflare и сохраните публичные настройки.")
 		return
 	}
 	if r.URL.Path == "/api/cloudflare/connect" && r.Method == "POST" {
 		redirect, _ := url.Parse(a.cf.Status().RedirectURL)
 		if redirect == nil || redirect.Host != r.Host {
-			fail(w, 400, "Open the panel at the address configured in the OAuth app callback URL.")
+			fail(w, 400, "Откройте панель по адресу, указанному в callback URL OAuth-приложения.")
 			return
 		}
 		cookie, err := r.Cookie("niceproxy_session")
@@ -181,7 +218,7 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		authorization, state, err := a.cf.Begin(hash(cookie.Value))
 		if err != nil {
-			fail(w, 400, "Could not start the Cloudflare connection.")
+			fail(w, 400, "Не удалось начать подключение Cloudflare.")
 			return
 		}
 		http.SetCookie(w, &http.Cookie{Name: "niceproxy_cf_oauth", Value: state, Path: "/api/cloudflare/callback", HttpOnly: true, Secure: redirect.Scheme == "https", SameSite: http.SameSiteLaxMode, MaxAge: 600})
@@ -243,7 +280,7 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 func (a *App) cloudflareCredentialsCleared(w http.ResponseWriter) bool {
 	body, err := a.db.Integration("cloudflare")
 	if err != nil || len(body) > 0 {
-		fail(w, 500, "Could not remove the saved Cloudflare connection. Check storage access and try disconnecting again.")
+		fail(w, 500, "Не удалось удалить сохранённое подключение Cloudflare. Проверьте доступ к хранилищу и повторите отключение.")
 		return false
 	}
 	return true
@@ -262,8 +299,6 @@ func (a *App) cloudflareCallback(w http.ResponseWriter, r *http.Request) {
 		u, _ := url.Parse(a.cf.Status().RedirectURL)
 		query := r.URL.Query()
 		state := query.Get("state")
-		// A callback from an older window must leave a newer attempt's
-		// cookie and status intact.
 		if u != nil && u.Host == r.Host && len(query["state"]) == 1 && subtle.ConstantTimeCompare([]byte(state), []byte(cookie.Value)) == 1 {
 			http.SetCookie(w, &http.Cookie{Name: "niceproxy_cf_oauth", Value: "", Path: "/api/cloudflare/callback", HttpOnly: true, Secure: u.Scheme == "https", SameSite: http.SameSiteLaxMode, MaxAge: -1})
 			code := query.Get("code")
@@ -277,7 +312,7 @@ func (a *App) cloudflareCallback(w http.ResponseWriter, r *http.Request) {
 			}
 			a.cfInitError = ""
 			if result == "error" {
-				a.cfInitError = "Cloudflare is not connected. Sign-in was cancelled, expired, or failed validation. Try again."
+				a.cfInitError = "Cloudflare не подключён: вход отменён, истёк или не прошёл проверку. Повторите подключение."
 			}
 		}
 	}
@@ -287,12 +322,12 @@ func (a *App) cloudflareCallback(w http.ResponseWriter, r *http.Request) {
 func validateCloudflareRedirect(value string) error {
 	u, err := url.Parse(value)
 	if err != nil || u.Host == "" || u.Path != "/api/cloudflare/callback" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.RawPath != "" || u.Fragment != "" {
-		return errors.New("Set NICEPROXY_DOMAIN or configure a valid panel callback URL.")
+		return errors.New("Задайте NICEPROXY_CF_REDIRECT_URL с адресом панели и путём /api/cloudflare/callback.")
 	}
 	host := u.Hostname()
 	ip := net.ParseIP(host)
 	if u.Scheme != "https" && !(u.Scheme == "http" && (host == "localhost" || ip != nil && ip.IsLoopback())) {
-		return errors.New("Remote callbacks require HTTPS. HTTP is allowed only on localhost.")
+		return errors.New("Для удалённого callback требуется HTTPS; HTTP допустим только на localhost.")
 	}
 	return nil
 }

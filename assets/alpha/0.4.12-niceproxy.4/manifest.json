@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "version": "0.4.12-niceproxy.4",
+  "createdAt": "2026-11-12T01:35:31.610Z",
+  "packages": {
+    "@alpha/core": {
+      "file": "alpha-core-0.4.12-niceproxy.4.tgz",
+      "integrity": "sha512-KCi6AR5ZtHGWRq2ihYDUmkCUzXS75NmGCK1fOVhvLkzlDLyKK4G/1kdTP3WnSTIIbzjUr1CNadGYAujvGwscIQ==",
+      "size": 85252
+    },
+    "@alpha/react": {
+      "file": "alpha-react-0.4.12-niceproxy.4.tgz",
+      "integrity": "sha512-CHmRGW34k+glksS87P90xVHu93RPEfbaV353R3CRBFI90vWNNIMz/nvmpCmy2SpyoqqcPMMqmOXvL/usi5RM0A==",
+      "size": 20535
+    },
+    "@alpha/qwik": {
+      "file": "alpha-qwik-0.4.12-niceproxy.4.tgz",
+      "integrity": "sha512-DKmKnHpFF91zTPzLW1Vv02iMB1aWRXUgWQCYn6fG+PDgKG4KkBi8MBLgMGJkQdcld7dhXTdfot45gTudNhH0Ow==",
+      "size": 20384
+    },
+    "@alpha/project-server": {
+      "file": "alpha-project-server-0.4.12-niceproxy.4.tgz",
+      "integrity": "sha512-8Ea8H0NkfZ0qGzScu0JpazvEo2zLmn9njiEbexOQdk26fumYmzfNNj3NPlf+8YbrxIViof37H3a2PMWfRw9IOQ==",
+      "size": 13193
+    }
+  },
+  "source": {
+    "file": "alpha-ui-source-0.4.12-niceproxy.4.tar.gz",
+    "integrity": "sha512-gHHMwAilOM6Xmk5TMtrSGUU3mY9z5TQbIZjhfJT+/9n8wByWqnmtn7uSczn4B3VqzBOUnqsQY4U4Ff3Xiur3kg==",
+    "size": 357934
+  }
+}
