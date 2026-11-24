@@ -11,13 +11,13 @@ Choose one deployment mode before configuring Cloudflare.
 ### 1. Public domain with SSL
 
 ```dotenv
-NICEPROXY_DOMAIN=cf.toxl.fun
+NICEPROXY_DOMAIN=cf.example.com
 NICEPROXY_PANEL_LISTEN=10.0.3.1:19080
 NICEPROXY_HTTP_PORT=18080
 NICEPROXY_HTTPS_PORT=18443
 ```
 
-Create DNS for `cf.toxl.fun`, forward public TCP 80 to `18080` and public TCP 443 to `18443`, then restart the container. Caddy requests the certificate and serves the panel at `https://cf.toxl.fun`.
+Create DNS for `cf.example.com`, forward public TCP 80 to `18080` and public TCP 443 to `18443`, then restart the container. Caddy requests the certificate and serves the panel at `https://cf.example.com`.
 
 ### 2. Fully local without SSL
 
@@ -93,7 +93,7 @@ The panel reports the configured proxy mode at `/api/panel-domain` and exposes t
 - [ ] **Proxy status**: `Proxied` when Cloudflare should sit in front of the panel, or `DNS only` while testing direct origin access.
 - [ ] **TTL**: `Auto`.
 
-The resulting hostname must match `NICEPROXY_DOMAIN`, such as `cf.toxl.fun`. Do not put `http://`, a port, or `/api/cloudflare/callback` into the DNS record.
+The resulting hostname must match `NICEPROXY_DOMAIN`, such as `cf.example.com`. Do not put `http://`, a port, or `/api/cloudflare/callback` into the DNS record.
 
 ### SSL/TLS → Overview
 
