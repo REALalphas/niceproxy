@@ -3,6 +3,7 @@ package caddy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,6 +60,38 @@ func (m *Manager) CertificateStatus(domain string) model.CertificateStatus {
 	}
 	status.Configured = true
 	status.State = "pending"
+	m.mu.Lock()
+	if !m.running() {
+		m.mu.Unlock()
+		status.State = "error"
+		status.Error = "Caddy is not running"
+		return status
+	}
+	port := m.options.HTTPSPort
+	m.mu.Unlock()
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 2*time.Second)
+	if err == nil {
+		// This probe is local and only reads the certificate Caddy presents.
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: domain, InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
+		err = tlsConn.Handshake()
+		state := tlsConn.ConnectionState()
+		_ = tlsConn.Close()
+		if err == nil && len(state.PeerCertificates) > 0 {
+			cert := state.PeerCertificates[0]
+			status.ExpiresAt = &cert.NotAfter
+			if time.Now().After(cert.NotAfter) {
+				status.State = "expired"
+			} else {
+				status.State = "issued"
+			}
+			return status
+		}
+	}
+	if err != nil {
+		status.State = "error"
+		status.Error = "Caddy HTTPS certificate probe failed: " + err.Error()
+		return status
+	}
 	root := filepath.Join(m.options.DataDir, "caddy", "certificates")
 	var certPath string
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
