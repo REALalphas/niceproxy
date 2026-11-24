@@ -1,0 +1,167 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  go-test:
+    name: Go tests with race detector
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run race-enabled tests
+        run: go test -race ./...
+
+  go-vet:
+    name: Go vet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run go vet
+        run: go vet ./...
+
+  go-splice:
+    name: Verify TCP splice
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install strace if missing
+        run: |
+          if ! command -v strace >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+
+      - name: Verify TCP splice transfers data
+        run: |
+          go test -c -o "$RUNNER_TEMP/proxy.test" ./internal/proxy
+          strace -f -qq -e trace=splice -o "$RUNNER_TEMP/splice.log" \
+            "$RUNNER_TEMP/proxy.test" -test.run '^TestTCPMapping$'
+          if ! grep -E 'splice(\(| resumed>).* = [1-9][0-9]*$' "$RUNNER_TEMP/splice.log"; then
+            cat "$RUNNER_TEMP/splice.log"
+            echo 'The TCP proxy test transferred no bytes with splice.' >&2
+            exit 1
+          fi
+
+  web-test:
+    name: Frontend ${{ matrix.task }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [typecheck, test]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22.x"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm --prefix web ci
+
+      - name: Run frontend check
+        run: npm --prefix web run ${{ matrix.task }}
+
+  integration:
+    name: Build and integration smoke tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22.x"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm --prefix web ci
+
+      - name: Build frontend
+        run: npm --prefix web run build
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build niceproxy
+        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/niceproxy ./cmd/niceproxy
+
+      - name: Download pinned Caddy
+        env:
+          CADDY_VERSION: "2.10.2"
+          CADDY_SHA512: 747df7ee74de188485157a383633a1a963fd9233b71fbb4a69ddcbcc589ce4e2cc82dacf5dbbe136cb51d17e14c59daeb5d9bc92487610b0f3b93680b2646546
+        run: |
+          mkdir -p bin
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz" \
+            --output bin/caddy.tar.gz
+          printf '%s  %s\n' "$CADDY_SHA512" bin/caddy.tar.gz | sha512sum --check --strict
+          tar --extract --file bin/caddy.tar.gz --directory bin caddy
+          bin/caddy version
+
+      - name: Test real Caddy configuration and reloads
+        env:
+          NICEPROXY_CADDY_TEST_BINARY: ${{ github.workspace }}/bin/caddy
+        run: go test ./internal/caddy -run '^TestRealCaddy$' -count=1
+
+      - name: Run HTTP, HTTPS, TCP and UDP smoke test
+        run: python3 scripts/smoke.py --caddy bin/caddy --binary bin/niceproxy

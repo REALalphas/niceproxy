@@ -1,8 +1,8 @@
 # TrueNAS SCALE
 
-niceproxy проверен как Custom App на SCALE 25.10.4: сборка исходного Dockerfile на NAS, host network и NAS-local bind mount для `/data`. Docker socket и привилегированный режим приложению не нужны.
+niceproxy was verified as a Custom App on SCALE 25.10.4 with the original Dockerfile, host networking, and a NAS-local bind mount for `/data`. Docker socket and privileged mode are not required.
 
-Перед установкой создайте отдельный dataset и каталог данных с владельцем UID/GID 1000 и правами 0700. Для сборки перенесите исходники на NAS без `.git`, данных, `.env`, node_modules и локальных бинарников; `build.context` должен быть абсолютным NAS-путём. Настройки этого примера предназначены для первоначального запуска из доверенной LAN:
+Create a dedicated dataset and data directory owned by UID/GID 1000 with mode 0700. Copy source to the NAS without `.git`, data, `.env`, `node_modules`, or local binaries. Use an absolute NAS path for `build.context`.
 
 ```yaml
 services:
@@ -18,7 +18,9 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       HOME: /data
+      NICEPROXY_ALPHA_STATE_DIR: /tmp/niceproxy-ui
       NICEPROXY_PANEL_LISTEN: "YOUR_LAN_IP:19080"
+      NICEPROXY_DOMAIN: "cf.example.com" # optional public panel and Cloudflare callback hostname
       NICEPROXY_HTTP_PORT: "18080"
       NICEPROXY_HTTPS_PORT: "18443"
     volumes:
@@ -29,6 +31,7 @@ services:
           create_host_path: false
     tmpfs:
       - /run/niceproxy:uid=1000,gid=1000,mode=0700
+      - /tmp:mode=1777
     ulimits:
       nofile:
         soft: 262144
@@ -36,10 +39,10 @@ services:
     stop_grace_period: 20s
 ```
 
-Замените POOL, пути и YOUR_LAN_IP. После успешной сборки сохраните отдельный build compose для обновлений, а в рабочем compose удалите `build` и замените `pull_policy` на `never`. Тогда обычный запуск использует уже собранный образ без registry и пересборки. Следующие сборки требуют доступа NAS к базовым образам, Go/npm и Debian repositories.
+Replace `POOL`, paths, and `YOUR_LAN_IP`. Keep a separate build compose file for updates. Remove `build` and set `pull_policy: never` in the runtime compose so normal starts use the existing image. Future builds need NAS access to base images, Go/npm, and Debian repositories.
 
-Такой запуск без capabilities поддерживает listeners от порта 1024. Для стандартных внешних портов можно настроить роутер: внешний 80/TCP → NAS:18080, внешний 443/TCP → NAS:18443 и внешний 443/UDP → NAS:18443 для HTTP/3. HTTP(S) listeners появляются при добавлении маршрутов. Публичный ACME дополнительно требует правильного DNS и прохождения challenge до Caddy. Панель NAS на 80/443 и панель niceproxy на 19080 имеют отдельное назначение; панель niceproxy оставляйте в доверенной административной сети.
+Without capabilities, listeners from port 1024 are supported. For standard public ports, forward external 80/TCP to NAS:18080, 443/TCP to NAS:18443, and 443/UDP to NAS:18443 for HTTP/3. HTTP(S) listeners appear when routes are added or `NICEPROXY_DOMAIN` is set. Public ACME also needs correct DNS and a reachable challenge path. Keep the NAS and niceproxy panels on their separate trusted networks.
 
-Host networking разделяет порты со всеми службами NAS; проверяйте конфликты при создании правил. Контейнер может быть healthy при ошибке отдельного маршрута: сверяйте desired/applied revision и ошибки в UI. Перед обновлением сохраняйте весь `/data` через snapshot или остановку с копированием, включая SQLite WAL, сертификаты и ключ шифрования Cloudflare. Используйте новый тег для релиза и сохраняйте предыдущий до проверки.
+Host networking shares ports with every NAS service. Check conflicts when creating rules. A container can be healthy while one route fails, so check desired/applied revisions and UI errors. Back up all of `/data`, including SQLite WAL, certificates, and the Cloudflare key, before updates. Use a new release tag and keep the previous image until verification.
 
-В upstream-образе Caddy есть file capabilities; Dockerfile устанавливает бинарник как новый файл, чтобы запуск с `cap_drop: ALL` не завершался `operation not permitted`. Не заменяйте этот шаг прямым COPY поверх исполняемого файла без проверки запуска.
+The upstream Caddy image has file capabilities. Dockerfile copies the binary as a new file so `cap_drop: ALL` does not fail with `operation not permitted`. Keep this step and verify startup after image changes.
