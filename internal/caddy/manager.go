@@ -47,6 +47,29 @@ func New(o Options) *Manager {
 // is always reaped, and this channel closes once it has exited.
 func (m *Manager) Done() <-chan error { return m.done }
 
+func (m *Manager) CertificateStatus(domain string) model.CertificateStatus {
+	status := model.CertificateStatus{Configured: domain != "", Domain: domain, State: "not_configured"}
+	if domain == "" {
+		return status
+	}
+	state, err := m.CertificateState(context.Background(), domain)
+	status.State = "pending"
+	switch state {
+	case "valid":
+		status.State = "issued"
+	case "expired":
+		status.State = "expired"
+	case "missing", "not_yet_issued":
+		status.State = "pending"
+	default:
+		status.State = "error"
+	}
+	if err != nil {
+		status.Error = err.Error()
+	}
+	return status
+}
+
 func (m *Manager) running() bool {
 	if m.cmd == nil {
 		return false

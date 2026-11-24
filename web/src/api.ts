@@ -182,7 +182,7 @@ async function performRequest<T>(
     }
     ++sessionVersion;
     window.dispatchEvent(new Event("niceproxy:unauthorized"));
-    throw new Unauthorized("Your session has expired. Sign in again.");
+    throw new Unauthorized("Сессия завершена. Войдите снова.");
   }
   if (!response.ok)
     throw new Error(
@@ -191,7 +191,7 @@ async function performRequest<T>(
         : `Server error: HTTP ${response.status}`,
     );
   if (!valid(body))
-    throw new Error("The server returned an invalid response.");
+    throw new Error("Сервер вернул данные в неизвестном формате.");
   return body;
 }
 // All mutations share one queue, including actions from different cards.

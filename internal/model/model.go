@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type HTTPRoute struct {
@@ -107,4 +108,12 @@ type Health struct {
 	Error           string `json:"error,omitempty"`
 	PanelDomain     string `json:"panelDomain,omitempty"`
 	Certificate     string `json:"certificate,omitempty"`
+}
+
+type CertificateStatus struct {
+	Configured bool       `json:"configured"`
+	Domain     string     `json:"domain"`
+	State      string     `json:"state"`
+	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+	Error      string     `json:"error,omitempty"`
 }
