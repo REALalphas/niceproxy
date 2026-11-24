@@ -97,9 +97,9 @@ func (a *App) panelDomainAPI(w http.ResponseWriter, r *http.Request) {
 		warning := ""
 		if a.config.PanelDomain != "" && a.certificateState() != "valid" {
 			if a.config.PanelDomainProxied {
-				warning = "Cloudflare proxy is enabled. Install an origin certificate or configure DNS-01 before expecting a public certificate."
+				warning = "The local setting says Cloudflare Proxied. Use Full (strict) after provisioning a trusted origin certificate. For Caddy HTTP-01/TLS-ALPN-01, issue the certificate in DNS-only mode."
 			} else {
-				warning = "DNS-only is configured locally, but the current Cloudflare record cannot be verified here. Confirm that the record is DNS-only for HTTP-01/TLS-ALPN and that TCP 443 reaches the origin."
+				warning = "The local setting says DNS-only. Check the actual Cloudflare record and public forwarding of TCP 80 for HTTP-01 or TCP 443 for TLS-ALPN-01."
 			}
 		}
 		write(w, 200, map[string]any{"panelDomain": a.config.PanelDomain, "proxied": a.config.PanelDomainProxied, "proxyWarning": warning})
@@ -110,35 +110,39 @@ func (a *App) panelDomainAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		PanelDomain string `json:"panelDomain"`
-		Domain      string `json:"domain"`
-		Proxied     *bool  `json:"proxied"`
+		PanelDomain *string `json:"panelDomain"`
+		Domain      *string `json:"domain"`
+		Proxied     *bool   `json:"proxied"`
 	}
 	if err := decode(w, r, &body); err != nil {
 		fail(w, 400, err.Error())
 		return
 	}
+	c := a.config
 	domain := body.PanelDomain
-	if domain == "" {
+	if domain == nil {
 		domain = body.Domain
 	}
-	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
-	if err := validatePanelDomain(domain); err != nil {
+	if domain != nil {
+		c.PanelDomain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(*domain), "."))
+	}
+	if err := validatePanelDomain(c.PanelDomain); err != nil {
 		fail(w, 400, err.Error())
 		return
 	}
-	c := a.config
-	c.PanelDomain = domain
 	if body.Proxied != nil {
 		c.PanelDomainProxied = *body.Proxied
 	}
+	previousDomain := a.config.PanelDomain
 	if err := a.commit(r.Context(), c); err != nil {
 		mutationFail(w, err)
 		return
 	}
-	if err := a.syncCloudflareRedirect(domain); err != nil {
-		a.state = "waiting_acme"
-		a.applyError = err.Error()
+	if previousDomain != c.PanelDomain {
+		if err := a.syncCloudflareRedirect(c.PanelDomain); err != nil {
+			a.state = "waiting_acme"
+			a.applyError = err.Error()
+		}
 	}
 	write(w, 200, a.snapshot())
 }
@@ -165,7 +169,7 @@ func (a *App) certificateState() string {
 		CertificateState(context.Context, string) (string, error)
 	}); ok {
 		state, err := c.CertificateState(context.Background(), a.config.PanelDomain)
-		if err != nil {
+		if err != nil && state == "" {
 			return "invalid"
 		}
 		return state

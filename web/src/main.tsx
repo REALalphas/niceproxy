@@ -904,7 +904,7 @@ function App() {
     !!health &&
     health.appliedRevision === config.revision &&
     health.revision === config.revision;
-  const applied = converged && health?.state === "ready";
+  const applied = converged && health?.status === "healthy";
   const renderEpoch = epoch.current;
   const saved = (kind: "http" | "direct", item: HttpRoute | DirectRule) => {
     if (renderEpoch !== epoch.current || !authenticated.current) return;
@@ -1257,13 +1257,15 @@ function App() {
                 <Text as="h2" size="xl" font="heading">
                   {!health
                     ? "Состояние недоступно"
-                    : health.state === "waiting_acme" && converged
-                      ? "Ожидание публичного сертификата"
-                      : applied
-                        ? "Конфигурация применена"
-                        : health.status === "error"
-                          ? "Ошибка применения"
-                          : "Конфигурация применена частично"}
+                    : health.state === "invalid_certificate" && converged
+                      ? "Недействительный сертификат панели"
+                      : health.state === "waiting_acme" && converged
+                        ? "Ожидание публичного сертификата"
+                        : applied
+                          ? "Конфигурация применена"
+                          : health.status === "error"
+                            ? "Ошибка применения"
+                            : "Конфигурация применена частично"}
                 </Text>
                 <Text tone="secondary">
                   Сохранено:{" "}
@@ -1291,7 +1293,7 @@ function App() {
                       : String(health.caddy)}
               </Text>
               {health?.error && <ErrorMessage>{health.error}</ErrorMessage>}
-              {certificate && (
+              {certificate?.configured && (
                 <Text tone="secondary">
                   Сертификат{" "}
                   {certificate.domain || health?.panelDomain || "панели"}:{" "}
@@ -1301,6 +1303,27 @@ function App() {
                       ? "выдан"
                       : certificate.state}
                   {certificate.error ? `. ${certificate.error}` : ""}
+                </Text>
+              )}
+              {certificate?.dnsState && (
+                <Text tone="secondary">
+                  Системный резолвер, включая hosts:{" "}
+                  {certificate.addresses?.join(", ") ||
+                    certificate.dnsError ||
+                    "нет адресов"}
+                </Text>
+              )}
+              {certificate?.tlsState && (
+                <Text tone="secondary">
+                  TLS на локальном origin:{" "}
+                  {certificate.tlsState === "bootstrap"
+                    ? "сертификат Caddy Local Authority"
+                    : certificate.tlsState === "served"
+                      ? "доверенный сертификат"
+                      : certificate.tlsState === "cloudflare_origin"
+                        ? "Cloudflare Origin CA для Full (strict)"
+                        : certificate.tlsState}
+                  {certificate.tlsError ? `. ${certificate.tlsError}` : ""}
                 </Text>
               )}
               {panelDomainSettings?.proxyWarning && (

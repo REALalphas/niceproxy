@@ -31,7 +31,7 @@ type Caddy interface {
 }
 
 type certificateReporter interface {
-	CertificateStatus(string) model.CertificateStatus
+	CertificateStatus(context.Context, string) model.CertificateStatus
 }
 
 type App struct {
@@ -44,6 +44,8 @@ type App struct {
 	active                map[string]model.DirectRule
 	httpActive            []model.HTTPRoute
 	httpOwners            model.PortOwners
+	activePanelDomain     string
+	activePanelProxied    bool
 	caddyUnconfirmed      bool
 	httpPort, httpsPort   int
 	ruleErrors            map[string]string
@@ -103,8 +105,7 @@ func New(db *store.Store, c Caddy, p *proxy.Manager, reserved map[int]bool) (*Ap
 	if err != nil {
 		return nil, err
 	}
-	a.httpOwners = good.PortOwners
-	a.httpActive = append([]model.HTTPRoute{}, good.HTTPRoutes...)
+	a.setCaddyActive(good)
 	for _, r := range good.DirectRules {
 		if !r.Enabled {
 			continue
@@ -123,11 +124,18 @@ func (a *App) Reconcile(ctx context.Context) error {
 	return a.reconcile(ctx)
 }
 
-// SetHTTPActive records the exact routes used by Caddy during startup.
-func (a *App) SetHTTPActive(routes []model.HTTPRoute) {
+// SetCaddyActive records the public configuration loaded during startup.
+func (a *App) SetCaddyActive(cfg model.Config) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.httpActive = append([]model.HTTPRoute{}, routes...)
+	a.setCaddyActive(cfg)
+}
+
+func (a *App) setCaddyActive(cfg model.Config) {
+	a.httpActive = append([]model.HTTPRoute{}, cfg.HTTPRoutes...)
+	a.httpOwners = cfg.PortOwners
+	a.activePanelDomain = cfg.PanelDomain
+	a.activePanelProxied = cfg.PanelDomainProxied
 }
 
 // ConfigurePanelDomain applies the deployment-provided initial domain only
@@ -174,12 +182,6 @@ func (a *App) reconcile(ctx context.Context) error {
 			return err
 		}
 	}
-	if a.config.PanelDomain != "" && a.config.PanelDomainProxied {
-		certificate := a.certificateState()
-		if certificate != "valid" && certificate != "unknown" {
-			a.state = "waiting_acme"
-		}
-	}
 	wanted := map[string]bool{}
 	for _, r := range a.config.DirectRules {
 		if r.Enabled {
@@ -201,7 +203,9 @@ func (a *App) reconcile(ctx context.Context) error {
 		}
 	}
 	a.httpError = ""
-	if a.caddyUnconfirmed || a.httpOwners != a.config.PortOwners || !reflect.DeepEqual(a.httpActive, a.config.HTTPRoutes) || !a.caddy.Healthy(ctx) {
+	if a.caddyUnconfirmed || a.httpOwners != a.config.PortOwners ||
+		a.activePanelDomain != a.config.PanelDomain || a.activePanelProxied != a.config.PanelDomainProxied ||
+		!reflect.DeepEqual(a.httpActive, a.config.HTTPRoutes) || !a.caddy.Healthy(ctx) {
 		if err := a.applyCaddy(ctx); err != nil {
 			// An admin request can fail after Caddy changed its listeners.
 			// Even reverting to the prior desired config needs a confirmed load.
@@ -210,8 +214,7 @@ func (a *App) reconcile(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("Caddy: %w", err))
 		} else {
 			a.caddyUnconfirmed = false
-			a.httpOwners = a.config.PortOwners
-			a.httpActive = append([]model.HTTPRoute{}, a.config.HTTPRoutes...)
+			a.setCaddyActive(a.config)
 		}
 	}
 	for _, r := range a.config.DirectRules {
@@ -252,16 +255,7 @@ func (a *App) reconcile(ctx context.Context) error {
 			errs = append(errs, err)
 		} else {
 			a.applied = a.config.Revision
-			if a.config.PanelDomain != "" {
-				certificate := a.certificateState()
-				if certificate != "valid" && certificate != "unknown" {
-					a.state = "waiting_acme"
-				} else {
-					a.state = "ready"
-				}
-			} else {
-				a.state = "ready"
-			}
+			a.state = "ready"
 		}
 	}
 	err := errors.Join(errs...)
@@ -323,7 +317,7 @@ func (a *App) snapshot() model.Config {
 			Status:        "healthy",
 		}
 		if certificate != "valid" && certificate != "unknown" {
-			route.Status = "waiting_acme"
+			route.Status = panelCertificateLifecycle(certificate)
 			route.Error = panelCertificateDiagnostic(c.PanelDomain, certificate, c.PanelDomainProxied)
 		}
 		c.HTTPRoutes = append([]model.HTTPRoute{route}, c.HTTPRoutes...)
@@ -331,17 +325,29 @@ func (a *App) snapshot() model.Config {
 	return c
 }
 
+func panelCertificateLifecycle(certificate string) string {
+	switch certificate {
+	case "bootstrap", "missing", "not_yet_issued":
+		return "waiting_acme"
+	default:
+		return "invalid_certificate"
+	}
+}
+
 func panelCertificateDiagnostic(domain, certificate string, proxied bool) string {
 	if certificate == "valid" {
 		return ""
 	}
 	if certificate == "expired" || certificate == "wrong_host" || certificate == "invalid" {
-		return fmt.Sprintf("Origin certificate for %q is %s. Install a certificate containing this SNI and matching private key, then reconcile.", domain, certificate)
+		return fmt.Sprintf("Origin certificate for %q is %s. Check the hostname, expiry, private key and issuer. Apply the corrected certificate and restart niceproxy.", domain, certificate)
+	}
+	if certificate == "bootstrap" {
+		return fmt.Sprintf("Caddy has a local TLS certificate for %q. Cloudflare Full (strict) requires a publicly trusted certificate or a mounted Cloudflare Origin CA certificate. With DNS-only, check public TCP 80 or 443 forwarding for ACME.", domain)
 	}
 	if proxied {
-		return fmt.Sprintf("Certificate for %q is missing while the panel record is Cloudflare-proxied. Install a Cloudflare Origin certificate or configure DNS-01 credentials for this hostname.", domain)
+		return fmt.Sprintf("Public certificate for %q is pending. Obtain it with DNS-only and public TCP 80 or 443 forwarding, or provide a trusted origin certificate before using Full (strict).", domain)
 	}
-	return fmt.Sprintf("Certificate for %q is missing. Verify that DNS resolves to this host and the router forwards TCP 443 to the HTTPS listener. Keep the Cloudflare record DNS-only for HTTP-01/TLS-ALPN, or install an origin certificate.", domain)
+	return fmt.Sprintf("Public certificate for %q is pending. Verify that public DNS points to this origin, that TCP 80 reaches Caddy for HTTP-01 or TCP 443 for TLS-ALPN-01, and that the proxy is DNS-only during ACME validation.", domain)
 }
 
 func (a *App) Handler(static http.Handler) http.Handler {
@@ -384,22 +390,23 @@ func (a *App) authenticated(r *http.Request) bool {
 }
 func hash(s string) string { d := sha256.Sum256([]byte(s)); return hex.EncodeToString(d[:]) }
 
-func (a *App) certificateStatus() model.CertificateStatus {
-	a.cfMu.Lock()
-	defer a.cfMu.Unlock()
-	u, err := url.Parse(a.cfOptions.RedirectURL)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
-		return model.CertificateStatus{State: "not_configured", Error: "HTTPS domain is not configured"}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if !a.caddy.Healthy(ctx) {
-		return model.CertificateStatus{Configured: true, Domain: u.Hostname(), State: "error", Error: "Caddy is not running"}
+func (a *App) certificateStatus(ctx context.Context) model.CertificateStatus {
+	a.mu.Lock()
+	domain := a.config.PanelDomain
+	a.mu.Unlock()
+	if domain == "" {
+		a.cfMu.Lock()
+		u, err := url.Parse(a.cfOptions.RedirectURL)
+		a.cfMu.Unlock()
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+			return model.CertificateStatus{State: "not_configured", Error: "HTTPS domain is not configured"}
+		}
+		domain = u.Hostname()
 	}
 	if reader, ok := a.caddy.(certificateReporter); ok {
-		return reader.CertificateStatus(u.Hostname())
+		return reader.CertificateStatus(ctx, domain)
 	}
-	return model.CertificateStatus{Configured: true, Domain: u.Hostname(), State: "unknown", Error: "Caddy certificate status is unavailable"}
+	return model.CertificateStatus{Configured: true, Domain: domain, State: "unknown", Error: "Caddy certificate status is unavailable"}
 }
 
 func randomID() string {
@@ -475,6 +482,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		write(w, 200, map[string]bool{"ok": true})
 		return
 	}
+	if r.URL.Path == "/api/certificate" && r.Method == "GET" {
+		write(w, 200, a.certificateStatus(r.Context()))
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if r.URL.Path == "/api/port-owners" {
@@ -493,11 +504,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		certificate := a.certificateState()
 		healthError := a.applyError
 		if a.config.PanelDomain != "" && certificate != "valid" && certificate != "unknown" && a.applyError == "" {
-			if certificate == "missing" || certificate == "not_yet_issued" {
-				state = "waiting_acme"
-			} else {
-				state = "invalid_certificate"
-			}
+			state = panelCertificateLifecycle(certificate)
 			healthError = panelCertificateDiagnostic(a.config.PanelDomain, certificate, a.config.PanelDomainProxied)
 		}
 		status := "healthy"
@@ -512,10 +519,6 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/panel-domain" {
 		a.panelDomainAPI(w, r)
-		return
-	}
-	if r.URL.Path == "/api/certificate" && r.Method == "GET" {
-		write(w, 200, a.certificateStatus())
 		return
 	}
 	if r.URL.Path == "/api/reconcile" && r.Method == "POST" {
@@ -679,9 +682,6 @@ func (a *App) commit(ctx context.Context, c model.Config) error {
 			// finishes; deleted IDs then release their statistics completely.
 			a.proxy.ForgetStats(previous.ID)
 		}
-	}
-	if setter, ok := a.caddy.(interface{ SetPanelDomain(string) }); ok && c.PanelDomain != a.config.PanelDomain {
-		setter.SetPanelDomain(c.PanelDomain)
 	}
 	a.config = c
 	_ = a.reconcile(ctx)

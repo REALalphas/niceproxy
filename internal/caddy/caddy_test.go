@@ -150,6 +150,122 @@ func TestBuildConfigReservesPanelDomain(t *testing.T) {
 	}
 }
 
+func TestPanelRedirectDoesNotExposeInternalHTTPSPort(t *testing.T) {
+	o := options(t)
+	o.PanelDomain = "panel.example.com"
+	o.HTTPSPort = 18443
+	b, err := BuildConfig(o, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	if strings.Contains(text, "https://panel.example.com:18443") {
+		t.Fatalf("internal HTTPS port leaked into public redirect: %s", text)
+	}
+	if !strings.Contains(text, "https://panel.example.com{http.request.uri}") {
+		t.Fatalf("public redirects missing: %s", text)
+	}
+}
+
+func TestPanelBootstrapOnRealOrigin(t *testing.T) {
+	binary := os.Getenv("NICEPROXY_CADDY_TEST_BINARY")
+	if binary == "" {
+		t.Skip("set NICEPROXY_CADDY_TEST_BINARY for integration")
+	}
+	o := options(t)
+	o.Binary = binary
+	o.HTTPPort, o.HTTPSPort = freePort(t), freePort(t)
+	o.PanelListen = net.JoinHostPort("127.0.0.1", strconv.Itoa(freePort(t)))
+	o.PanelDomain = "localhost"
+	o.PanelDomainProxied = true
+	m := New(o)
+	defer m.Close(context.Background())
+	if err := m.Start(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:"+strconv.Itoa(o.HTTPPort)+"/status?check=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = o.PanelDomain
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusPermanentRedirect || res.Header.Get("Location") != "https://localhost/status?check=1" {
+		t.Fatalf("HTTP redirect: %d %s", res.StatusCode, res.Header.Get("Location"))
+	}
+	req.Header.Set("X-Forwarded-Proto", "https")
+	res, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(res.Body)
+	res.Body.Close()
+	if readErr != nil || res.StatusCode != http.StatusServiceUnavailable || res.Header.Get("Location") != "" || !strings.Contains(string(body), "Full (strict)") {
+		t.Fatalf("HTTPS forwarded over HTTP: %d %q (%v)", res.StatusCode, body, readErr)
+	}
+	var status model.CertificateStatus
+	for ctx.Err() == nil {
+		status = m.CertificateStatus(ctx, o.PanelDomain)
+		if status.TLSState == "bootstrap" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if status.State != "pending" || status.TLSState != "bootstrap" || status.ExpiresAt == nil {
+		t.Fatalf("live SNI certificate status: %+v", status)
+	}
+}
+
+func TestPanelLoadsMountedCertificate(t *testing.T) {
+	binary := os.Getenv("NICEPROXY_CADDY_TEST_BINARY")
+	if binary == "" {
+		t.Skip("set NICEPROXY_CADDY_TEST_BINARY for integration")
+	}
+	o := options(t)
+	o.Binary = binary
+	o.PanelDomain, o.PanelDomainProxied = "panel.example.test", true
+	o.HTTPPort, o.HTTPSPort = freePort(t), freePort(t)
+	o.PanelListen = net.JoinHostPort("127.0.0.1", strconv.Itoa(freePort(t)))
+	o.PanelCertFile = filepath.Join(t.TempDir(), "certificate.pem")
+	o.PanelKeyFile = filepath.Join(filepath.Dir(o.PanelCertFile), "key.pem")
+	now := time.Now()
+	cert, key := testCertificatePair(t, []string{o.PanelDomain}, now.Add(-time.Hour), now.Add(time.Hour))
+	if err := os.WriteFile(o.PanelCertFile, cert, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(o.PanelKeyFile, key, 0600); err != nil {
+		t.Fatal(err)
+	}
+	wrongHost := o
+	wrongHost.PanelDomain = "other.example.test"
+	otherRoute := model.HTTPRoute{Host: "route.example.test", Target: "http://localhost:9000", TLS: "off", Enabled: true}
+	fallback, err := BuildConfig(wrongHost, []model.HTTPRoute{otherRoute})
+	if err != nil || strings.Contains(string(fallback), `"load_files"`) || !strings.Contains(string(fallback), otherRoute.Host) {
+		t.Fatalf("wrong-host certificate must be ignored without disabling other routes: %v %s", err, fallback)
+	}
+	m := New(o)
+	defer m.Close(context.Background())
+	if err := m.Start(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(cert) {
+		t.Fatal("test certificate cannot be used as a trust anchor")
+	}
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(o.HTTPSPort))
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 2 * time.Second}, "tcp", addr, &tls.Config{ServerName: o.PanelDomain, RootCAs: roots, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatalf("Caddy did not serve the mounted certificate for panel SNI: %v", err)
+	}
+	conn.Close()
+}
+
 func TestPathPriorityAndDomainPolicy(t *testing.T) {
 	o := options(t)
 	routes := []model.HTTPRoute{

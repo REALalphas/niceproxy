@@ -15,6 +15,12 @@ export type CertificateStatus = {
   state: "not_configured" | "pending" | "issued" | "expired" | "error" | "unknown";
   expiresAt?: string;
   error?: string;
+  storedState?: string;
+  dnsState?: string;
+  dnsError?: string;
+  addresses?: string[];
+  tlsState?: string;
+  tlsError?: string;
 };
 export type Zone = { id: string; name: string; status: string; account: { id: string; name: string } };
 export type DNSRecord = { id: string; type: string; name: string; content: string; proxied: boolean; ttl: number };
@@ -30,7 +36,13 @@ const certificateStatus = (v: unknown): v is CertificateStatus => object(v) &&
   typeof v.configured === "boolean" && typeof v.domain === "string" &&
   ["not_configured", "pending", "issued", "expired", "error", "unknown"].includes(String(v.state)) &&
   (v.expiresAt === undefined || typeof v.expiresAt === "string") &&
-  (v.error === undefined || typeof v.error === "string");
+  (v.error === undefined || typeof v.error === "string") &&
+  (v.storedState === undefined || typeof v.storedState === "string") &&
+  (v.dnsState === undefined || typeof v.dnsState === "string") &&
+  (v.dnsError === undefined || typeof v.dnsError === "string") &&
+  (v.addresses === undefined || strings(v.addresses)) &&
+  (v.tlsState === undefined || typeof v.tlsState === "string") &&
+  (v.tlsError === undefined || typeof v.tlsError === "string");
 const zone = (v: unknown): v is Zone => object(v) && typeof v.id === "string" &&
   typeof v.name === "string" && typeof v.status === "string" && object(v.account) &&
   typeof v.account.id === "string" && typeof v.account.name === "string";

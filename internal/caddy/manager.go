@@ -3,7 +3,6 @@ package caddy
 import (
 	"bytes"
 	"context"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -46,29 +45,6 @@ func New(o Options) *Manager {
 // Done reports an unexpected child exit (including a successful exit). The child
 // is always reaped, and this channel closes once it has exited.
 func (m *Manager) Done() <-chan error { return m.done }
-
-func (m *Manager) CertificateStatus(domain string) model.CertificateStatus {
-	status := model.CertificateStatus{Configured: domain != "", Domain: domain, State: "not_configured"}
-	if domain == "" {
-		return status
-	}
-	state, err := m.CertificateState(context.Background(), domain)
-	status.State = "pending"
-	switch state {
-	case "valid":
-		status.State = "issued"
-	case "expired":
-		status.State = "expired"
-	case "missing", "not_yet_issued":
-		status.State = "pending"
-	default:
-		status.State = "error"
-	}
-	if err != nil {
-		status.Error = err.Error()
-	}
-	return status
-}
 
 func (m *Manager) running() bool {
 	if m.cmd == nil {
@@ -259,11 +235,7 @@ func (m *Manager) Apply(ctx context.Context, routes []model.HTTPRoute) error {
 	return m.apply(ctx, routes, nil)
 }
 func (m *Manager) ApplyConfig(ctx context.Context, cfg model.Config) error {
-	m.mu.Lock()
-	m.options.PanelDomain = cfg.PanelDomain
-	m.options.PanelDomainProxied = cfg.PanelDomainProxied
-	m.mu.Unlock()
-	return m.apply(ctx, cfg.HTTPRoutes, &cfg.PortOwners)
+	return m.apply(ctx, cfg.HTTPRoutes, &cfg)
 }
 func (m *Manager) ValidateConfig(cfg model.Config) error {
 	m.mu.Lock()
@@ -276,90 +248,17 @@ func (m *Manager) ValidateConfig(cfg model.Config) error {
 	return err
 }
 func (m *Manager) PublicPorts() (int, int) { return m.options.HTTPPort, m.options.HTTPSPort }
-func (m *Manager) SetPanelDomain(domain string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.options.PanelDomain = domain
-}
-
-// CertificateState inspects Caddy's persisted certificate store. It never
-// treats an unrelated certificate as valid for the requested SNI.
-func (m *Manager) CertificateState(ctx context.Context, host string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var found bool
-	var firstErr error
-	var firstState string
-	root := filepath.Join(m.options.DataDir, "caddy")
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if d.IsDir() || (filepath.Ext(path) != ".crt" && filepath.Ext(path) != ".pem") {
-			return nil
-		}
-		if strings.Contains(path, string(filepath.Separator)+"authorities"+string(filepath.Separator)) || strings.EqualFold(filepath.Base(path), "root.crt") {
-			return nil
-		}
-		b, e := os.ReadFile(path)
-		if e != nil {
-			return nil
-		}
-		block, _ := pem.Decode(b)
-		if block == nil || block.Type != "CERTIFICATE" {
-			return nil
-		}
-		found = true
-		key, _ := os.ReadFile(strings.TrimSuffix(path, filepath.Ext(path)) + ".key")
-		if len(key) == 0 {
-			// Caddy also stores local/root CA certificates without private
-			// keys. Only a leaf candidate for this SNI is an invalid missing-key
-			// condition.
-			if strings.Contains(strings.ToLower(path), string(filepath.Separator)+strings.ToLower(host)+string(filepath.Separator)) {
-				found = true
-				if firstErr == nil {
-					firstState = "invalid"
-					firstErr = errors.New("certificate private key is missing")
-				}
-			}
-			return nil
-		}
-		state, e := ValidateCertificate(b, key, host, time.Now())
-		if state == "valid" {
-			return filepath.SkipAll
-		}
-		if firstErr == nil {
-			firstErr = e
-			firstState = state
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, filepath.SkipAll) {
-		return "invalid", err
-	}
-	if !found {
-		return "missing", nil
-	}
-	if firstErr != nil {
-		return firstState, firstErr
-	}
-	return "invalid", errors.New("no certificate matches requested SNI")
-}
-func (m *Manager) apply(ctx context.Context, routes []model.HTTPRoute, owners *model.PortOwners) error {
+func (m *Manager) apply(ctx context.Context, routes []model.HTTPRoute, desired *model.Config) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed || !m.running() {
 		return errors.New("Caddy is not running")
 	}
 	o := m.options
-	if owners != nil {
-		o.PortOwners = *owners
+	if desired != nil {
+		o.PortOwners = desired.PortOwners
+		o.PanelDomain = desired.PanelDomain
+		o.PanelDomainProxied = desired.PanelDomainProxied
 	}
 	config, err := BuildConfig(o, routes)
 	if err != nil {
@@ -377,6 +276,9 @@ func (m *Manager) apply(ctx context.Context, routes []model.HTTPRoute, owners *m
 		// Keep last-good untouched and avoid claiming that the live config reverted.
 		return fmt.Errorf("Caddy load not confirmed; last-good config retained: %w", err)
 	}
+	m.options.PortOwners = o.PortOwners
+	m.options.PanelDomain = o.PanelDomain
+	m.options.PanelDomainProxied = o.PanelDomainProxied
 	return m.persist(name)
 }
 

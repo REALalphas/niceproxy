@@ -112,9 +112,15 @@ type Health struct {
 }
 
 type CertificateStatus struct {
-	Configured bool       `json:"configured"`
-	Domain     string     `json:"domain"`
-	State      string     `json:"state"`
-	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
-	Error      string     `json:"error,omitempty"`
+	Configured  bool       `json:"configured"`
+	Domain      string     `json:"domain"`
+	State       string     `json:"state"`
+	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	StoredState string     `json:"storedState,omitempty"`
+	DNSState    string     `json:"dnsState,omitempty"`
+	Addresses   []string   `json:"addresses,omitempty"`
+	TLSState    string     `json:"tlsState,omitempty"`
+	DNSError    string     `json:"dnsError,omitempty"`
+	TLSError    string     `json:"tlsError,omitempty"`
 }

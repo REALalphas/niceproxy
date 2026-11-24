@@ -18,7 +18,7 @@ import (
 type Options struct {
 	PortOwners                                              model.PortOwners
 	Binary, RuntimeDir, DataDir, PanelListen, BackendSocket string
-	PanelDomain                                             string
+	PanelDomain, PanelCertFile, PanelKeyFile                string
 	PanelDomainProxied                                      bool
 	HTTPPort, HTTPSPort                                     int
 }
@@ -40,6 +40,8 @@ func defaults(o Options) Options {
 }
 
 type object = map[string]any
+
+const panelOriginCertTag = "niceproxy-panel-origin"
 
 func hostname(s string) bool {
 	if s == "" || len(s) > 253 {
@@ -95,6 +97,7 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 	servers := object{"panel": object{"listen": []string{o.PanelListen}, "automatic_https": object{"disable": true}, "routes": []object{{"handle": []object{proxy("unix/"+o.BackendSocket, nil)}}}}}
 	var plain, secure []object
 	var policies []object
+	var panelCertificate object
 	hasInternal := false
 	seen := map[string]bool{}
 	domainTLS := map[string]string{}
@@ -105,21 +108,38 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 			"handle":   []object{proxy("unix/"+o.BackendSocket, nil)},
 			"terminal": true,
 		})
-		issuerConfig := object{"module": "acme", "challenges": object{
-			// Caddy's challenge handler runs before user routes. Keeping both
-			// challenge methods enabled avoids redirect loops for DNS-only records.
-			"http":     object{"disabled": o.PanelDomainProxied || owners.HTTP != "caddy"},
-			"tls-alpn": object{"disabled": o.PanelDomainProxied || owners.HTTPS != "caddy"},
-		}}
-		// Keep a local certificate available while ACME is pending. This makes
-		// the origin speak TLS during bootstrap, while health still reports the
-		// public certificate prerequisite explicitly.
-		policies = append(policies, object{"subjects": []string{panelDomain}, "issuers": []object{issuerConfig, object{"module": "internal"}}})
-		if owners.HTTP == "caddy" && owners.HTTPS == "caddy" {
-			location := "https://" + panelDomain
-			if o.HTTPSPort != 443 {
-				location += ":" + strconv.Itoa(o.HTTPSPort)
+		if o.PanelCertFile != "" || o.PanelKeyFile != "" {
+			// An invalid panel pair must not block unrelated routes. The
+			// certificate endpoint reports the pair validation error.
+			if _, _, err := importedPanelCertificate(o.PanelCertFile, o.PanelKeyFile, panelDomain); err == nil {
+				panelCertificate = object{"certificate": o.PanelCertFile, "key": o.PanelKeyFile, "tags": []string{panelOriginCertTag}}
 			}
+		}
+		if panelCertificate == nil {
+			hasInternal = true
+			issuerConfig := object{"module": "acme", "challenges": object{
+				// Caddy's challenge handler runs before user routes. Keeping both
+				// challenge methods enabled avoids redirect loops for DNS-only records.
+				"http":     object{"disabled": o.PanelDomainProxied || owners.HTTP != "caddy"},
+				"tls-alpn": object{"disabled": o.PanelDomainProxied || owners.HTTPS != "caddy"},
+			}}
+			// Keep a local certificate available while ACME is pending. This makes
+			// the origin speak TLS during bootstrap, while health still reports the
+			// public certificate prerequisite explicitly.
+			policies = append(policies, object{"subjects": []string{panelDomain}, "issuers": []object{issuerConfig, object{"module": "internal"}}})
+		}
+		if owners.HTTP == "caddy" && owners.HTTPS == "caddy" {
+			// An HTTPS request forwarded over plain HTTP would otherwise loop
+			// back to the same public URL (for example with Cloudflare Flexible).
+			plain = append(plain, object{
+				"match": []object{{"host": []string{panelDomain}, "header": object{"X-Forwarded-Proto": []string{"https"}}}},
+				"handle": []object{{"handler": "static_response", "status_code": 503,
+					"headers": object{"Cache-Control": []string{"no-store"}},
+					"body":    "The HTTPS request reached the panel origin over HTTP. Configure the proxy to use HTTPS to the origin. For Cloudflare, use Full (strict) with a trusted origin certificate.\n",
+				}},
+				"terminal": true,
+			})
+			location := "https://" + panelDomain
 			plain = append(plain, object{"match": []object{{"host": []string{panelDomain}}}, "handle": []object{{"handler": "static_response", "status_code": 308, "headers": object{"Location": []string{location + "{http.request.uri}"}}}}, "terminal": true})
 		}
 	}
@@ -254,11 +274,27 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 		} else if owners.HTTPS != "caddy" {
 			protocols = []string{"h3"}
 		}
-		servers["public_https"] = object{"protocols": protocols, "listen": []string{":" + strconv.Itoa(o.HTTPSPort)}, "automatic_https": object{"disable_redirects": true}, "tls_connection_policies": []object{{}}, "routes": secure}
+		autoHTTPS := object{"disable_redirects": true}
+		connectionPolicies := []object{{}}
+		if panelCertificate != nil {
+			autoHTTPS["skip_certificates"] = []string{panelDomain}
+			connectionPolicies = []object{{
+				"match":                 object{"sni": []string{panelDomain}},
+				"certificate_selection": object{"any_tag": []string{panelOriginCertTag}},
+			}, {}}
+		}
+		servers["public_https"] = object{"protocols": protocols, "listen": []string{":" + strconv.Itoa(o.HTTPSPort)}, "automatic_https": autoHTTPS, "tls_connection_policies": connectionPolicies, "routes": secure}
 	}
 	apps := object{"http": object{"http_port": o.HTTPPort, "https_port": o.HTTPSPort, "servers": servers}}
+	tlsApp := object{}
 	if len(policies) > 0 {
-		apps["tls"] = object{"automation": object{"policies": policies}}
+		tlsApp["automation"] = object{"policies": policies}
+	}
+	if panelCertificate != nil {
+		tlsApp["certificates"] = object{"load_files": []object{panelCertificate}}
+	}
+	if len(tlsApp) > 0 {
+		apps["tls"] = tlsApp
 	}
 	if hasInternal {
 		// A private issuer must not modify the container or host trust store.

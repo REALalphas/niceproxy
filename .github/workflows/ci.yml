@@ -161,7 +161,7 @@ jobs:
       - name: Test real Caddy configuration and reloads
         env:
           NICEPROXY_CADDY_TEST_BINARY: ${{ github.workspace }}/bin/caddy
-        run: go test ./internal/caddy -run '^TestRealCaddy$' -count=1
+        run: go test ./internal/caddy -run '^Test(RealCaddy|PanelBootstrapOnRealOrigin|PanelLoadsMountedCertificate)$' -count=1
 
       - name: Run HTTP, HTTPS, TCP and UDP smoke test
         run: python3 scripts/smoke.py --caddy bin/caddy --binary bin/niceproxy

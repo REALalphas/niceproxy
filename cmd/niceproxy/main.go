@@ -18,6 +18,7 @@ import (
 	"niceproxy/internal/caddy"
 	"niceproxy/internal/cloudflare"
 	"niceproxy/internal/control"
+	"niceproxy/internal/model"
 	"niceproxy/internal/proxy"
 	"niceproxy/internal/store"
 )
@@ -154,24 +155,24 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	panelDomain := cfg.PanelDomain
-	if good.PanelDomain != "" {
-		panelDomain = good.PanelDomain
+	caddyOptions := caddy.Options{
+		Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir,
+		PanelListen: *panel, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort,
+		PanelCertFile: os.Getenv("NICEPROXY_PANEL_CERT_FILE"), PanelKeyFile: os.Getenv("NICEPROXY_PANEL_KEY_FILE"),
 	}
-	if panelDomain == "" {
-		panelDomain = os.Getenv("NICEPROXY_DOMAIN")
-	}
-	caddyOptions := caddy.Options{Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir, PanelListen: *panel, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort, PanelDomain: panelDomain, PanelDomainProxied: good.PanelDomainProxied || cfg.PanelDomainProxied}
+	caddyOptions.PanelDomain, caddyOptions.PanelDomainProxied = good.PanelDomain, good.PanelDomainProxied
 	cm := caddy.New(caddyOptions)
-	startedRoutes := good.HTTPRoutes
-	if err := cm.Start(ctx, startedRoutes, good.PortOwners); err != nil {
+	startedConfig := good
+	if err := cm.Start(ctx, startedConfig.HTTPRoutes, startedConfig.PortOwners); err != nil {
 		log.Printf("last-good Caddy startup failed; starting management panel only: %v", err)
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = cm.Close(closeCtx)
 		closeCancel()
+		caddyOptions.PanelDomain = ""
+		caddyOptions.PanelDomainProxied = false
 		cm = caddy.New(caddyOptions)
-		startedRoutes = nil
-		if err := cm.Start(ctx, startedRoutes, good.PortOwners); err != nil {
+		startedConfig = model.Config{PortOwners: good.PortOwners}
+		if err := cm.Start(ctx, startedConfig.HTTPRoutes, startedConfig.PortOwners); err != nil {
 			return fmt.Errorf("start Caddy management panel: %w", err)
 		}
 	}
@@ -190,7 +191,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	app.SetHTTPActive(startedRoutes)
+	app.SetCaddyActive(startedConfig)
 	initialDomain := cfg.PanelDomain
 	if initialDomain == "" {
 		initialDomain = os.Getenv("NICEPROXY_DOMAIN")
