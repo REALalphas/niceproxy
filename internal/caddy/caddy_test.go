@@ -135,6 +135,7 @@ func TestBuildConfig(t *testing.T) {
 func TestBuildConfigPanelDomain(t *testing.T) {
 	o := options(t)
 	o.PanelDomain = "cf.example.com"
+	o.HTTPSPort = 18443
 	b, err := BuildConfig(o, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -144,6 +145,9 @@ func TestBuildConfigPanelDomain(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("panel domain config is missing %s: %s", want, text)
 		}
+	}
+	if strings.Contains(text, "https://cf.example.com:18443") {
+		t.Fatal("panel redirect exposed the internal HTTPS port")
 	}
 	if _, err := BuildConfig(o, []model.HTTPRoute{{Host: "cf.example.com", Target: "http://localhost", Enabled: true}}); err == nil {
 		t.Fatal("accepted a route on the reserved panel domain")

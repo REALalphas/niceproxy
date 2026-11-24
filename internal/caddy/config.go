@@ -88,6 +88,13 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 	hasInternal := false
 	seen := map[string]bool{}
 	domainTLS := map[string]string{}
+	publicHTTPSLocation := func(host string) string {
+		location := "https://" + host
+		if o.HTTPSPort != 443 && o.PanelDomain == "" {
+			location += ":" + strconv.Itoa(o.HTTPSPort)
+		}
+		return location
+	}
 	// Caddy JSON evaluates routes in order. Longer segment prefixes must win
 	// over /api and the root fallback regardless of creation order.
 	routes = append([]model.HTTPRoute{}, routes...)
@@ -185,11 +192,7 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 			hasInternal = true
 		}
 		policies = append(policies, object{"subjects": []string{host}, "issuers": []object{{"module": issuer}}})
-		location := "https://" + host
-		if o.HTTPSPort != 443 {
-			location += ":" + strconv.Itoa(o.HTTPSPort)
-		}
-		plain = append(plain, object{"match": []object{{"host": []string{host}}}, "handle": []object{{"handler": "static_response", "status_code": 308, "headers": object{"Location": []string{location + "{http.request.uri}"}}}}, "terminal": true})
+		plain = append(plain, object{"match": []object{{"host": []string{host}}}, "handle": []object{{"handler": "static_response", "status_code": 308, "headers": object{"Location": []string{publicHTTPSLocation(host) + "{http.request.uri}"}}}}, "terminal": true})
 	}
 	if o.PanelDomain != "" {
 		panelProxy := proxy("unix/"+o.BackendSocket, nil)

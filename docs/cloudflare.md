@@ -70,6 +70,8 @@ The resulting callback is `https://cf.example.com/api/cloudflare/callback`. Do n
 
 Create an A/AAAA record for the hostname pointing to the niceproxy origin. Forward external TCP 80 and 443 to the ports in `NICEPROXY_HTTP_PORT` and `NICEPROXY_HTTPS_PORT`. The domain must be reachable from the public Internet while Caddy completes ACME validation. Do not create a separate user HTTP route for this hostname because it is reserved for the panel.
 
+The internal HTTPS port is not part of the public URL. With `NICEPROXY_HTTPS_PORT=18443` and router forwarding public 443 to 18443, the browser URL remains `https://cf.example.com`, without `:18443`.
+
 The configured callback also appears as a separate card in **Routes**. This card identifies the reserved panel and OAuth hostname. It is not a user-created proxy rule.
 
 ### Scope IDs and saving settings

@@ -37,6 +37,20 @@ function ErrorMessage({ children }: { children: string }) {
     </div>
   );
 }
+function CertificateSummary({ status }: { status: CertificateStatus }) {
+  const text = status.state === "issued"
+    ? `Issued until ${status.expiresAt ? new Date(status.expiresAt).toLocaleString("en-US") : "an unknown date"}`
+    : status.state === "pending"
+      ? "Waiting for Caddy ACME issuance"
+      : status.state === "not_configured"
+        ? "HTTPS domain is not configured"
+        : status.error || status.state;
+  return <Card><Stack gap={2}>
+    <Text as="h2" size="xl" font="heading">Origin HTTPS certificate</Text>
+    {status.domain && <Text font="mono">{status.domain}</Text>}
+    <Text tone="secondary">{text}</Text>
+  </Stack></Card>;
+}
 function AuthScreen({
   initial,
   onAuthenticated,
@@ -621,6 +635,7 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
                 </Button>
               </Stack>
             </Card>
+            {certificateStatus && <CertificateSummary status={certificateStatus} />}
             <Card>
               <Text>HTTP/HTTPS routes: {config.httpRoutes.length}</Text>
               <Text>Direct rules: {config.directRules.length}</Text>
@@ -677,13 +692,13 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
                       <Text tone="secondary">Service endpoint for Cloudflare sign-in and the management panel. When NICEPROXY_DOMAIN is set, Caddy serves this hostname over HTTPS. Configure DNS and port forwarding separately.</Text>
                     </>
                     : <Text tone="secondary">Callback is not configured. Open Cloudflare and enter a local URL or a domain with a subdomain.</Text>}
-                  {certificateStatus && <Text tone="secondary">Origin certificate: {certificateStatus.state === "issued" ? `issued until ${certificateStatus.expiresAt ? new Date(certificateStatus.expiresAt).toLocaleString("en-US") : "unknown date"}` : certificateStatus.state === "pending" ? "waiting for Caddy ACME issuance" : certificateStatus.state === "not_configured" ? "not configured" : certificateStatus.error || certificateStatus.state}.</Text>}
                   <div className="actions">
                     <Button variant="simple" onPress={() => { setSection("cloudflare"); window.location.hash = "cloudflare"; setAdding(false); setEditing(null); }}>Configure in Cloudflare</Button>
                   </div>
                 </Stack>
               </Card>
             )}
+            {certificateStatus && <CertificateSummary status={certificateStatus} />}
             {mappings.length === 0 && (
               <Card><Text tone="muted">{filter === "all" ? "No routes yet." : "No routes of this type."}</Text></Card>
             )}
