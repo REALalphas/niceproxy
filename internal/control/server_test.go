@@ -290,3 +290,88 @@ func TestHTTPPathsCRUDAndCompatibility(t *testing.T) {
 		t.Fatal(resp.Status)
 	}
 }
+
+type pendingPanelCaddy struct{}
+
+func (pendingPanelCaddy) Apply(context.Context, []model.HTTPRoute) error { return nil }
+func (pendingPanelCaddy) Healthy(context.Context) bool                   { return true }
+func (pendingPanelCaddy) CertificateState(context.Context, string) (string, error) {
+	return "missing", nil
+}
+func (pendingPanelCaddy) CertificateStatus(domain string) model.CertificateStatus {
+	return model.CertificateStatus{Configured: true, Domain: domain, State: "pending", Error: "certificate is missing"}
+}
+
+func TestPanelDomainPendingCertificateIsAppliedAndActionable(t *testing.T) {
+	a, s, cookie := fixture(t)
+	a.mu.Lock()
+	a.caddy = pendingPanelCaddy{}
+	a.config = model.Config{
+		Revision:    27,
+		PanelDomain: "cf.toxl.fun",
+		PortOwners:  model.PortOwners{HTTP: "caddy", HTTPS: "caddy", HTTP3: "caddy"},
+		HTTPRoutes:  []model.HTTPRoute{{ID: "bb06b3a7983cc68ed29c554dc570b92076c977d8c6aebbb4", Host: "toxl.fun", Path: "/", Target: "http://10.0.2.1", TLS: "auto", Enabled: true}},
+		DirectRules: []model.DirectRule{},
+	}
+	a.applied = 27
+	a.state = "ready"
+	a.cfOptions.RedirectURL = "https://cf.toxl.fun/api/cloudflare/callback"
+	a.mu.Unlock()
+	if err := a.Reconcile(context.Background()); err != nil {
+		t.Fatalf("pending certificate should not make reconciliation fail: %v", err)
+	}
+
+	resp := call(t, s, http.MethodGet, "/api/config", "", cookie)
+	var config model.Config
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || len(config.HTTPRoutes) != 2 {
+		t.Fatalf("system panel route missing: %s %+v", resp.Status, config)
+	}
+	panel := config.HTTPRoutes[0]
+	if !panel.SystemManaged || panel.Host != "cf.toxl.fun" || panel.Status != "waiting_acme" || panel.Error == "" {
+		t.Fatalf("panel route diagnostics: %+v", panel)
+	}
+	if config.HTTPRoutes[1].Status != "healthy" {
+		t.Fatalf("user route changed status: %+v", config.HTTPRoutes[1])
+	}
+
+	resp = call(t, s, http.MethodGet, "/api/health", "", cookie)
+	var health model.Health
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || health.State != "waiting_acme" || health.Certificate != "missing" || health.Error == "" {
+		t.Fatalf("health diagnostics: %s %+v", resp.Status, health)
+	}
+	if health.Revision != 27 || health.AppliedRevision != 27 {
+		t.Fatalf("certificate wait changed applied revision: %+v", health)
+	}
+
+	resp = call(t, s, http.MethodGet, "/api/panel-domain", "", cookie)
+	var panelSettings struct {
+		PanelDomain  string `json:"panelDomain"`
+		Proxied      bool   `json:"proxied"`
+		ProxyWarning string `json:"proxyWarning"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&panelSettings); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || panelSettings.PanelDomain != "cf.toxl.fun" || panelSettings.Proxied || panelSettings.ProxyWarning == "" {
+		t.Fatalf("panel DNS diagnostics: %s %+v", resp.Status, panelSettings)
+	}
+
+	resp = call(t, s, http.MethodGet, "/api/certificate", "", cookie)
+	var certificate model.CertificateStatus
+	if err := json.NewDecoder(resp.Body).Decode(&certificate); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || certificate.Domain != "cf.toxl.fun" || certificate.State != "pending" {
+		t.Fatalf("certificate endpoint: %s %+v", resp.Status, certificate)
+	}
+}

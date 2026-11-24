@@ -7,15 +7,16 @@ import (
 )
 
 type HTTPRoute struct {
-	ID          string `json:"id"`
-	Host        string `json:"host"`
-	Path        string `json:"path"`
-	StripPrefix bool   `json:"stripPrefix"`
-	Target      string `json:"target"`
-	TLS         string `json:"tls"` // auto, internal, off
-	Enabled     bool   `json:"enabled"`
-	Status      string `json:"status,omitempty"`
-	Error       string `json:"error,omitempty"`
+	ID            string `json:"id"`
+	Host          string `json:"host"`
+	Path          string `json:"path"`
+	StripPrefix   bool   `json:"stripPrefix"`
+	Target        string `json:"target"`
+	TLS           string `json:"tls"` // auto, internal, off
+	Enabled       bool   `json:"enabled"`
+	SystemManaged bool   `json:"systemManaged,omitempty"`
+	Status        string `json:"status,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 // ApplyDefaults keeps configurations written before path routing compatible.

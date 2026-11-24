@@ -145,6 +145,9 @@ func TestBuildConfigReservesPanelDomain(t *testing.T) {
 	if !strings.Contains(string(b), "panel.example.com") {
 		t.Fatal("panel SNI route missing")
 	}
+	if !strings.Contains(string(b), `"module":"internal"`) {
+		t.Fatal("panel TLS bootstrap fallback missing")
+	}
 }
 
 func TestPathPriorityAndDomainPolicy(t *testing.T) {

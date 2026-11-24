@@ -63,6 +63,9 @@ type App struct {
 	cfCallbackHost        atomic.Value // explicit trusted callback host; never learned from a request
 	cfHTTPSCallback       atomic.Bool
 }
+
+const systemPanelRouteID = "system-panel-domain"
+
 type authBucket struct {
 	window   time.Time
 	attempts int
@@ -173,11 +176,8 @@ func (a *App) reconcile(ctx context.Context) error {
 	}
 	if a.config.PanelDomain != "" && a.config.PanelDomainProxied {
 		certificate := a.certificateState()
-		if certificate != "valid" {
+		if certificate != "valid" && certificate != "unknown" {
 			a.state = "waiting_acme"
-			a.applyError = fmt.Sprintf("panel domain %q is Cloudflare-proxied and has no valid origin certificate (%s); configure DNS-01 or install a certificate for this SNI", a.config.PanelDomain, certificate)
-			a.applied = -1
-			return errors.New(a.applyError)
 		}
 	}
 	wanted := map[string]bool{}
@@ -252,7 +252,16 @@ func (a *App) reconcile(ctx context.Context) error {
 			errs = append(errs, err)
 		} else {
 			a.applied = a.config.Revision
-			a.state = "ready"
+			if a.config.PanelDomain != "" {
+				certificate := a.certificateState()
+				if certificate != "valid" && certificate != "unknown" {
+					a.state = "waiting_acme"
+				} else {
+					a.state = "ready"
+				}
+			} else {
+				a.state = "ready"
+			}
 		}
 	}
 	err := errors.Join(errs...)
@@ -301,7 +310,38 @@ func (a *App) snapshot() model.Config {
 			}
 		}
 	}
+	if c.PanelDomain != "" {
+		certificate := a.certificateState()
+		route := model.HTTPRoute{
+			ID:            systemPanelRouteID,
+			Host:          c.PanelDomain,
+			Path:          "/",
+			Target:        "management panel",
+			TLS:           "auto",
+			Enabled:       true,
+			SystemManaged: true,
+			Status:        "healthy",
+		}
+		if certificate != "valid" && certificate != "unknown" {
+			route.Status = "waiting_acme"
+			route.Error = panelCertificateDiagnostic(c.PanelDomain, certificate, c.PanelDomainProxied)
+		}
+		c.HTTPRoutes = append([]model.HTTPRoute{route}, c.HTTPRoutes...)
+	}
 	return c
+}
+
+func panelCertificateDiagnostic(domain, certificate string, proxied bool) string {
+	if certificate == "valid" {
+		return ""
+	}
+	if certificate == "expired" || certificate == "wrong_host" || certificate == "invalid" {
+		return fmt.Sprintf("Origin certificate for %q is %s. Install a certificate containing this SNI and matching private key, then reconcile.", domain, certificate)
+	}
+	if proxied {
+		return fmt.Sprintf("Certificate for %q is missing while the panel record is Cloudflare-proxied. Install a Cloudflare Origin certificate or configure DNS-01 credentials for this hostname.", domain)
+	}
+	return fmt.Sprintf("Certificate for %q is missing. Verify that DNS resolves to this host and the router forwards TCP 443 to the HTTPS listener. Keep the Cloudflare record DNS-only for HTTP-01/TLS-ALPN, or install an origin certificate.", domain)
 }
 
 func (a *App) Handler(static http.Handler) http.Handler {
@@ -451,12 +491,14 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		ok := a.caddy.Healthy(ctx)
 		state := a.state
 		certificate := a.certificateState()
+		healthError := a.applyError
 		if a.config.PanelDomain != "" && certificate != "valid" && certificate != "unknown" && a.applyError == "" {
 			if certificate == "missing" || certificate == "not_yet_issued" {
 				state = "waiting_acme"
 			} else {
 				state = "invalid_certificate"
 			}
+			healthError = panelCertificateDiagnostic(a.config.PanelDomain, certificate, a.config.PanelDomainProxied)
 		}
 		status := "healthy"
 		if !ok || a.applyError != "" || state != "ready" {
@@ -465,7 +507,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		if state == "" {
 			state = "ready"
 		}
-		write(w, 200, model.Health{Status: status, State: state, Caddy: ok, Revision: a.config.Revision, AppliedRevision: a.applied, Error: a.applyError, PanelDomain: a.config.PanelDomain, Certificate: a.certificateState()})
+		write(w, 200, model.Health{Status: status, State: state, Caddy: ok, Revision: a.config.Revision, AppliedRevision: a.applied, Error: healthError, PanelDomain: a.config.PanelDomain, Certificate: certificate})
 		return
 	}
 	if r.URL.Path == "/api/panel-domain" {
@@ -725,6 +767,10 @@ func (a *App) httpRoute(w http.ResponseWriter, r *http.Request) {
 	id, ok := resourceID(r.URL.Path, "/api/http-routes")
 	if !ok {
 		fail(w, 404, "route not found")
+		return
+	}
+	if id == systemPanelRouteID {
+		fail(w, 409, "the panel domain route is system-managed and follows panel-domain settings")
 		return
 	}
 	c := a.config
