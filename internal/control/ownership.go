@@ -94,7 +94,15 @@ func (a *App) ownershipConflict(c model.Config) error {
 
 func (a *App) panelDomainAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		write(w, 200, map[string]any{"panelDomain": a.config.PanelDomain, "proxied": a.config.PanelDomainProxied})
+		warning := ""
+		if a.config.PanelDomain != "" && a.certificateState() != "valid" {
+			if a.config.PanelDomainProxied {
+				warning = "Cloudflare proxy is enabled. Install an origin certificate or configure DNS-01 before expecting a public certificate."
+			} else {
+				warning = "DNS-only is configured locally, but the current Cloudflare record cannot be verified here. Confirm that the record is DNS-only for HTTP-01/TLS-ALPN and that TCP 443 reaches the origin."
+			}
+		}
+		write(w, 200, map[string]any{"panelDomain": a.config.PanelDomain, "proxied": a.config.PanelDomainProxied, "proxyWarning": warning})
 		return
 	}
 	if r.Method != "PATCH" && r.Method != "PUT" {

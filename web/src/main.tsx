@@ -27,11 +27,13 @@ import { changeView } from "./view";
 import { validHttpPath } from "./http-path";
 import { isDirectIP, isDirectTarget } from "./direct-address";
 import { Cloudflare } from "./Cloudflare";
+import { cloudflareApi, type CertificateStatus } from "./cloudflare-api";
 import {
   api,
   type Auth,
   type DirectRule,
   type HttpRoute,
+  type PanelDomainSettings,
   type ProxyConfig,
   type PortOwners,
   type PortOwnerSettings,
@@ -122,9 +124,15 @@ function statusLabel(route: HttpRoute | DirectRule) {
     ? "Выключен"
     : route.status === "healthy"
       ? "Применён"
-      : route.status === "error"
-        ? "Ошибка применения"
-        : "Не подтверждён";
+      : route.status === "waiting_acme"
+        ? "Ожидание сертификата"
+        : route.status === "waiting_dns"
+          ? "Ожидание DNS"
+          : route.status === "invalid_certificate"
+            ? "Недействительный сертификат"
+            : route.status === "error"
+              ? "Ошибка применения"
+              : "Не подтверждён";
 }
 function endpoint(host: string, port: number) {
   return `${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}`;
@@ -633,6 +641,11 @@ function App() {
   const [auth, setAuth] = useState<Auth | null>(null);
   const [config, setConfig] = useState<ProxyConfig | null>(null);
   const [health, setHealth] = useState<ServiceHealth | null>(null);
+  const [certificate, setCertificate] = useState<CertificateStatus | null>(
+    null,
+  );
+  const [panelDomainSettings, setPanelDomainSettings] =
+    useState<PanelDomainSettings | null>(null);
   const [owners, setOwners] = useState<PortOwnerSettings | null>(null);
   const [ownersError, setOwnersError] = useState("");
   const [error, setError] = useState("");
@@ -671,16 +684,22 @@ function App() {
       do {
         refreshAgain.current = false;
         const readingVersion = dataVersion.current;
-        const [c, h, o] = await Promise.allSettled([
+        const [c, h, o, cert, panel] = await Promise.allSettled([
           api.config(),
           api.health(),
           api.portOwners(),
+          cloudflareApi.certificate(),
+          api.panelDomain(),
         ]);
         if (version !== epoch.current) return;
         if (readingVersion !== dataVersion.current) continue;
         if (c.status === "fulfilled") setConfig(c.value);
         if (h.status === "fulfilled") setHealth(h.value);
         else setHealth(null);
+        if (cert.status === "fulfilled") setCertificate(cert.value);
+        else setCertificate(null);
+        if (panel.status === "fulfilled") setPanelDomainSettings(panel.value);
+        else setPanelDomainSettings(null);
         if (o.status === "fulfilled") {
           setOwners(o.value);
           setOwnersError("");
@@ -881,8 +900,11 @@ function App() {
                     : mode === "delete"
                       ? "Удаление маршрута"
                       : "Маршрут";
-  const applied =
-    health?.status === "healthy" && health.appliedRevision === config.revision;
+  const converged =
+    !!health &&
+    health.appliedRevision === config.revision &&
+    health.revision === config.revision;
+  const applied = converged && health?.state === "ready";
   const renderEpoch = epoch.current;
   const saved = (kind: "http" | "direct", item: HttpRoute | DirectRule) => {
     if (renderEpoch !== epoch.current || !authenticated.current) return;
@@ -1083,7 +1105,8 @@ function App() {
         )}
         {routeScreen && mapping && (
           <Card>
-            {mode === "edit" ? (
+            {mode === "edit" &&
+            !("host" in mapping.route && mapping.route.systemManaged) ? (
               "host" in mapping.route ? (
                 <HttpForm
                   key={mapping.key}
@@ -1099,7 +1122,8 @@ function App() {
                   onCancel={() => navigate(`routes/view/${mapping.key}`)}
                 />
               )
-            ) : mode === "delete" ? (
+            ) : mode === "delete" &&
+              !("host" in mapping.route && mapping.route.systemManaged) ? (
               <Stack gap={4}>
                 <Text font="mono">{source(mapping.route)}</Text>
                 <Text>
@@ -1174,24 +1198,36 @@ function App() {
                       : "Статистика недоступна"}
                   </Text>
                 )}
-                <Switch
-                  id="route-enabled"
-                  label="Маршрут включён"
-                  checked={mapping.route.enabled}
-                  disabled={pending}
-                  onCheckedChange={(enabled) =>
-                    void mutate(() =>
-                      api.toggle(mapping.kind, mapping.route.id, enabled),
-                    )
-                  }
-                />
+                {!("host" in mapping.route && mapping.route.systemManaged) && (
+                  <Switch
+                    id="route-enabled"
+                    label="Маршрут включён"
+                    checked={mapping.route.enabled}
+                    disabled={pending}
+                    onCheckedChange={(enabled) =>
+                      void mutate(() =>
+                        api.toggle(mapping.kind, mapping.route.id, enabled),
+                      )
+                    }
+                  />
+                )}
+                {"host" in mapping.route && mapping.route.systemManaged && (
+                  <Text tone="secondary">
+                    Системный маршрут панели управляется настройкой домена
+                    панели.
+                  </Text>
+                )}
                 <Stack direction="row" gap={3}>
-                  <Button
-                    variant="simple"
-                    onPress={() => navigate(`routes/edit/${mapping.key}`)}
-                  >
-                    Изменить
-                  </Button>
+                  {!(
+                    "host" in mapping.route && mapping.route.systemManaged
+                  ) && (
+                    <Button
+                      variant="simple"
+                      onPress={() => navigate(`routes/edit/${mapping.key}`)}
+                    >
+                      Изменить
+                    </Button>
+                  )}
                   <Button
                     variant="blank"
                     onPress={() => void refresh(true)}
@@ -1199,12 +1235,16 @@ function App() {
                   >
                     Обновить
                   </Button>
-                  <Button
-                    variant="blank"
-                    onPress={() => navigate(`routes/delete/${mapping.key}`)}
-                  >
-                    Удалить
-                  </Button>
+                  {!(
+                    "host" in mapping.route && mapping.route.systemManaged
+                  ) && (
+                    <Button
+                      variant="blank"
+                      onPress={() => navigate(`routes/delete/${mapping.key}`)}
+                    >
+                      Удалить
+                    </Button>
+                  )}
                 </Stack>
               </Stack>
             )}
@@ -1217,11 +1257,13 @@ function App() {
                 <Text as="h2" size="xl" font="heading">
                   {!health
                     ? "Состояние недоступно"
-                    : applied
-                      ? "Конфигурация применена"
-                      : health.status === "error"
-                        ? "Ошибка применения"
-                        : "Конфигурация применена частично"}
+                    : health.state === "waiting_acme" && converged
+                      ? "Ожидание публичного сертификата"
+                      : applied
+                        ? "Конфигурация применена"
+                        : health.status === "error"
+                          ? "Ошибка применения"
+                          : "Конфигурация применена частично"}
                 </Text>
                 <Text tone="secondary">
                   Сохранено:{" "}
@@ -1249,8 +1291,23 @@ function App() {
                       : String(health.caddy)}
               </Text>
               {health?.error && <ErrorMessage>{health.error}</ErrorMessage>}
+              {certificate && (
+                <Text tone="secondary">
+                  Сертификат{" "}
+                  {certificate.domain || health?.panelDomain || "панели"}:{" "}
+                  {certificate.state === "pending"
+                    ? "ожидается выдача"
+                    : certificate.state === "issued"
+                      ? "выдан"
+                      : certificate.state}
+                  {certificate.error ? `. ${certificate.error}` : ""}
+                </Text>
+              )}
+              {panelDomainSettings?.proxyWarning && (
+                <ErrorMessage>{panelDomainSettings.proxyWarning}</ErrorMessage>
+              )}
               <Stack direction="row" gap={3}>
-                {!applied && health && (
+                {!converged && health && (
                   <Button
                     loading={pending}
                     onPress={() => void mutate(() => api.reconcile())}

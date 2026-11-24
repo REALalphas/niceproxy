@@ -18,7 +18,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       HOME: /data
-      NICEPROXY_ALPHA_STATE_DIR: /tmp/niceproxy-ui
+      NICEPROXY_ALPHA_STATE_DIR: /data/ui
       NICEPROXY_PANEL_LISTEN: "YOUR_LAN_IP:19080"
       NICEPROXY_DOMAIN: "cf.example.com" # optional public panel and Cloudflare callback hostname
       NICEPROXY_HTTP_PORT: "18080"
@@ -41,7 +41,7 @@ services:
 
 Replace `POOL`, paths, and `YOUR_LAN_IP`. Keep a separate build compose file for updates. Remove `build` and set `pull_policy: never` in the runtime compose so normal starts use the existing image. Future builds need NAS access to base images, Go/npm, and Debian repositories.
 
-Without capabilities, listeners from port 1024 are supported. For standard public ports, forward external 80/TCP to NAS:18080, 443/TCP to NAS:18443, and 443/UDP to NAS:18443 for HTTP/3. HTTP(S) listeners appear when routes are added or `NICEPROXY_DOMAIN` is set. Public ACME also needs correct DNS and a reachable challenge path. Keep the NAS and niceproxy panels on their separate trusted networks.
+Without capabilities, listeners from port 1024 are supported. For standard public ports, forward external 80/TCP to NAS:18080, 443/TCP to NAS:18443, and 443/UDP to NAS:18443 for HTTP/3. HTTP(S) listeners appear when routes are added or `NICEPROXY_DOMAIN` is set. Public ACME also needs correct DNS and a reachable challenge path. Check `/api/health`, `/api/certificate`, and the system-managed panel route in `/api/config` when the public certificate is pending. Keep the NAS and niceproxy panels on their separate trusted networks.
 
 Host networking shares ports with every NAS service. Check conflicts when creating rules. A container can be healthy while one route fails, so check desired/applied revisions and UI errors. Back up all of `/data`, including SQLite WAL, certificates, and the Cloudflare key, before updates. Use a new release tag and keep the previous image until verification.
 

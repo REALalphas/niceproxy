@@ -83,6 +83,8 @@ The configured callback also appears as a separate card in **Routes**. This card
 
 ## Cloudflare dashboard checklist
 
+The panel reports the configured proxy mode at `/api/panel-domain` and exposes the certificate state at `/api/certificate`. A `waiting_acme` health state with equal desired and applied revisions means Caddy has loaded the panel route and is waiting for the public certificate. Verify DNS resolution, router forwarding, and the record's actual Cloudflare proxy status. The local DNS-only setting cannot prove that an existing Cloudflare record is DNS-only, so the panel shows a warning until the origin certificate is available.
+
 ### DNS → Records
 
 - [ ] **Type**: `A` for an IPv4 origin or `AAAA` for an IPv6 origin.
@@ -129,6 +131,7 @@ The local mode is HTTP by design. A public callback domain uses HTTPS through Ca
 
 - **Cloudflare 521** means the origin is not accepting the connection. Check the router forwarding to `NICEPROXY_HTTP_PORT` and `NICEPROXY_HTTPS_PORT`, the host firewall, and Caddy logs.
 - **Cloudflare 525** means Cloudflare reached the origin but the TLS handshake failed. Check that Caddy is listening on the forwarded HTTPS port, that `NICEPROXY_DOMAIN` matches the requested hostname, and that Caddy has obtained a certificate.
+- A missing certificate on a DNS-only record requires public TCP 80 and 443 reachability for ACME. A proxied record requires a Cloudflare Origin certificate or DNS-01 credentials. The panel's system-managed route shows this prerequisite and keeps the local origin on a temporary TLS bootstrap certificate while ACME is pending.
 
 A private client is available to members of its account. A shared client for other accounts requires public visibility and publisher domain verification. Personal installations can remain private.
 

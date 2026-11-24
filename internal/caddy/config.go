@@ -111,7 +111,10 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 			"http":     object{"disabled": o.PanelDomainProxied || owners.HTTP != "caddy"},
 			"tls-alpn": object{"disabled": o.PanelDomainProxied || owners.HTTPS != "caddy"},
 		}}
-		policies = append(policies, object{"subjects": []string{panelDomain}, "issuers": []object{issuerConfig}})
+		// Keep a local certificate available while ACME is pending. This makes
+		// the origin speak TLS during bootstrap, while health still reports the
+		// public certificate prerequisite explicitly.
+		policies = append(policies, object{"subjects": []string{panelDomain}, "issuers": []object{issuerConfig, object{"module": "internal"}}})
 		if owners.HTTP == "caddy" && owners.HTTPS == "caddy" {
 			location := "https://" + panelDomain
 			if o.HTTPSPort != 443 {
