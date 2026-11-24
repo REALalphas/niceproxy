@@ -25,10 +25,15 @@ type cloudflareSettings struct {
 // ConfigureCloudflare loads public client settings. OAuth tokens remain inside
 // the provider manager; the control API never serializes them.
 func (a *App) ConfigureCloudflare(options cloudflare.Options) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.cfMu.Lock()
 	defer a.cfMu.Unlock()
-	a.cfOptions = options
 	a.cfDefaultRedirect = options.RedirectURL
+	if a.config.PanelDomain != "" {
+		options.RedirectURL = "https://" + a.config.PanelDomain + "/api/cloudflare/callback"
+	}
+	a.cfOptions = options
 	a.cfCallbackHost.Store("")
 	a.cfHTTPSCallback.Store(false)
 	if validateCloudflareRedirect(options.RedirectURL) == nil {
@@ -308,6 +313,7 @@ func (a *App) cloudflareCallback(w http.ResponseWriter, r *http.Request) {
 				cancel()
 				if err == nil {
 					result = "connected"
+					a.queuePanelAutomation()
 				}
 			}
 			a.cfInitError = ""

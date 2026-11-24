@@ -905,6 +905,20 @@ function App() {
     health.appliedRevision === config.revision &&
     health.revision === config.revision;
   const applied = converged && health?.status === "healthy";
+  const panelAutomation = panelDomainSettings?.automation;
+  const cloudflareSSLMode = panelAutomation?.zoneSSL;
+  const cloudflareSSLLabel =
+    cloudflareSSLMode === "strict"
+      ? "Full (strict)"
+      : cloudflareSSLMode === "full"
+        ? "Full"
+        : cloudflareSSLMode === "flexible"
+          ? "Flexible"
+          : cloudflareSSLMode === "off"
+            ? "Off"
+            : cloudflareSSLMode === "origin_pull"
+              ? "Strict (SSL-Only Origin Pull)"
+              : cloudflareSSLMode;
   const renderEpoch = epoch.current;
   const saved = (kind: "http" | "direct", item: HttpRoute | DirectRule) => {
     if (renderEpoch !== epoch.current || !authenticated.current) return;
@@ -1326,7 +1340,19 @@ function App() {
                   {certificate.tlsError ? `. ${certificate.tlsError}` : ""}
                 </Text>
               )}
-              {panelDomainSettings?.proxyWarning && (
+              {panelAutomation?.dnsMode && (
+                <Text>
+                  Cloudflare:{" "}
+                  {panelAutomation.dnsMode === "proxied" ? "Proxied" : "DNS Only"}
+                  {panelAutomation.sslSelection === "automatic" &&
+                    " · Automatic SSL/TLS"}
+                  {cloudflareSSLLabel && ` · режим зоны: ${cloudflareSSLLabel}`}
+                </Text>
+              )}
+              {panelAutomation?.detail && (
+                <Text tone="secondary">{panelAutomation.detail}</Text>
+              )}
+              {!panelAutomation?.dnsMode && panelDomainSettings?.proxyWarning && (
                 <ErrorMessage>{panelDomainSettings.proxyWarning}</ErrorMessage>
               )}
               <Stack direction="row" gap={3}>

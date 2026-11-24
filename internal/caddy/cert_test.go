@@ -46,7 +46,7 @@ func testCertificatePair(t *testing.T, names []string, notBefore, notAfter time.
 func TestStoredCertificateCandidates(t *testing.T) {
 	const host = "panel.example"
 	data := t.TempDir()
-	m := New(Options{DataDir: data, RuntimeDir: filepath.Join(data, "run")})
+	m := New(Options{DataDir: data, RuntimeDir: filepath.Join(data, "run"), PanelDomainProxied: true})
 	now := time.Now()
 	writePair := func(issuer, name, san string, expires time.Time) {
 		t.Helper()
@@ -73,6 +73,11 @@ func TestStoredCertificateCandidates(t *testing.T) {
 	check("missing", false)
 	writePair("local", host, host, now.Add(time.Hour))
 	check("bootstrap", false)
+	writePair("local", host, host, now.Add(-time.Hour))
+	m.panelDNS.Store(uint32(panelDNSOnly))
+	check("missing", false)
+	writePair("local", host, host, now.Add(time.Hour))
+	m.panelDNS.Store(uint32(panelDNSProxied))
 	writePair("acme.example", host, host, now.Add(-time.Minute))
 	check("expired", true)
 	writePair("acme.example", host, "other.example", now.Add(time.Hour))

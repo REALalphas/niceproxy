@@ -134,6 +134,7 @@ func TestBuildConfig(t *testing.T) {
 
 func TestBuildConfigReservesPanelDomain(t *testing.T) {
 	o := options(t)
+	o.PanelDomainProxied = true
 	o.PanelDomain = "Panel.Example.com."
 	if _, err := BuildConfig(o, []model.HTTPRoute{{ID: "route-1", Host: "panel.example.com", Target: "http://localhost", TLS: "off", Enabled: true}}); err == nil || !strings.Contains(err.Error(), "panel domain") {
 		t.Fatalf("panel domain conflict was not rejected: %v", err)

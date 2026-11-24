@@ -66,7 +66,7 @@ The resulting callback is `https://cf.example.com/api/cloudflare/callback`. Do n
 
 ### Public domain and Caddy HTTPS
 
-`NICEPROXY_DOMAIN` is optional. When set, it is both the panel hostname and the Cloudflare callback hostname. Caddy creates the HTTPS route to the management panel and requests a public ACME certificate. It also redirects HTTP to HTTPS.
+`NICEPROXY_DOMAIN` is optional. When set, it is both the panel hostname and the Cloudflare callback hostname. Caddy creates the HTTPS route to the management panel and redirects HTTP to HTTPS. DNS Only uses a publicly trusted ACME certificate. Proxied mode can use Cloudflare Origin CA.
 
 Create an A/AAAA record for the hostname pointing to the niceproxy origin. Forward external TCP 80 and 443 to the ports in `NICEPROXY_HTTP_PORT` and `NICEPROXY_HTTPS_PORT`. The domain must be reachable from the public Internet while Caddy completes ACME validation. Do not create a separate user HTTP route for this hostname because it is reserved for the panel.
 
@@ -79,9 +79,32 @@ curl --connect-to panel.example.com:443:192.0.2.10:18443 \
   --cacert ./origin-root.crt https://panel.example.com/
 ```
 
-This probe checks the origin route and the presented certificate. The system resolver diagnostics in **Service** include hosts-file overrides. Public DNS and the router forwarding used by the ACME CA require a separate check. With Proxied enabled, use Full (strict) once the origin serves a certificate Cloudflare trusts. If ACME fell back to a local certificate, Caddy can retain it until its renewal window even after switching the record to DNS-only.
+This probe checks the origin route and the presented certificate. The system resolver diagnostics in **Service** include hosts-file overrides. Public DNS and the router forwarding used by the ACME CA require a separate check. When switching from Proxied to DNS Only, niceproxy returns to Caddy's public ACME policy. A Cloudflare Origin CA certificate stays on disk for subsequent use in Proxied mode.
 
 The configured callback also appears as a separate card in **Routes**. This card identifies the reserved panel and OAuth hostname. It is not a user-created proxy rule.
+
+### Automatic panel TLS
+
+Mount a file containing one Cloudflare API token, readable by the container user, and set its path inside the container:
+
+```dotenv
+NICEPROXY_CF_AUTOMATION_TOKEN_FILE=/run/secrets/cloudflare-panel-token
+```
+
+In TrueNAS, add a read-only bind mount for the token file. Use a token scoped to the panel's zone with **Zone Read**, **DNS Read**, **Zone Settings Read**, **SSL and Certificates Edit**, and **Config Settings Read/Write**. This works before browser OAuth is configured. An existing OAuth connection can also be used when its grant has the required permissions. The token file is independent of browser sign-in and is read on every check.
+
+| Cloudflare mode | What niceproxy does |
+| --- | --- |
+| DNS Only | Uses public ACME with HTTP-01 / TLS-ALPN-01. Keep the challenge ports publicly reachable. |
+| Proxied with Flexible, Full, or Off | Verifies the origin certificate or issues a dedicated Origin CA certificate. Then sets Full (strict) with a Configuration Rule scoped to the panel hostname. |
+| Proxied with Automatic SSL/TLS | Uses the zone's current encryption mode and the same hostname-specific logic. Automatic stays enabled for the zone. |
+| Proxied with Full (strict) | Keeps the mode when Configuration Rules already preserve strict TLS for the panel. If a rule can weaken TLS for the panel, adds a hostname-specific strict rule. |
+
+niceproxy checks on startup, after applying panel settings, and once a minute. It preserves the DNS record and zone-wide SSL settings. It renews its Origin CA certificate before expiry. A public website behind Cloudflare still needs an active edge certificate and public TCP 443 forwarded to Caddy's HTTPS listener. While Flexible forwards a viewer's HTTPS request to origin HTTP, Caddy returns a diagnostic 503 so the panel never handles credentials over that connection.
+
+**Service** shows the last DNS mode read from Cloudflare, the zone's encryption mode, local SNI verification and any issue preventing the next step. A successful local verification checks Caddy's listener. To confirm public access and the OAuth callback, test HTTPS from outside the LAN. For a CNAME, ensure its target resolves directly when testing DNS Only. Cloudflare can proxy traffic when a target in the CNAME chain is proxied.
+
+The managed HTTPS route and callback follow the configured panel hostname. After changing the hostname, update the allowed redirect URL in the Cloudflare OAuth client and sign in again. Configure the scoped automation token independently to allow TLS setup before that sign-in.
 
 ### Use an Origin CA certificate with Proxied
 
@@ -94,7 +117,7 @@ NICEPROXY_PANEL_CERT_FILE: /data/tls/panel.crt
 NICEPROXY_PANEL_KEY_FILE: /data/tls/panel.key
 ```
 
-niceproxy checks the hostname, validity dates, and matching private key before loading the pair. If the pair is unusable, Caddy uses its managed panel policy and the certificate status reports the problem. In **Service**, verify that local origin TLS reports Cloudflare Origin CA, then use Full (strict) in Cloudflare. Restart niceproxy after replacing the files so Caddy reloads them. Browser trust during DNS-only access requires a publicly trusted certificate, or the Cloudflare Origin CA root explicitly supplied to a diagnostic client.
+niceproxy checks the hostname, validity dates, and matching private key before loading the pair. If the pair is unusable, Caddy uses its managed panel policy and the certificate status reports the problem. In **Service**, verify that local origin TLS reports Cloudflare Origin CA. With API access, niceproxy checks the SSL mode and configures Full (strict) when needed. For a manual setup, enable Full (strict) in Cloudflare. Restart niceproxy after replacing the files so Caddy reloads them.
 
 The DNS OAuth grant configures DNS records. Origin CA issuance through the Cloudflare API requires a token with **Zone → SSL and Certificates → Edit** or an Origin CA key. The file import works independently of the DNS grant. [Cloudflare Origin CA documentation](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)
 
@@ -107,7 +130,7 @@ The DNS OAuth grant configures DNS records. Origin CA issuance through the Cloud
 
 ## Cloudflare dashboard checklist
 
-The panel reports the configured proxy mode at `/api/panel-domain` and exposes the certificate state at `/api/certificate`. A `waiting_acme` health state with equal desired and applied revisions means Caddy has loaded the panel route and is waiting for the public certificate. Verify DNS resolution, router forwarding, and the record's actual Cloudflare proxy status. The local DNS-only setting cannot prove that an existing Cloudflare record is DNS-only, so the panel shows a warning until the origin certificate is available.
+The panel reports detected proxy mode and automation state at `/api/panel-domain` and exposes the certificate and SNI state at `/api/certificate`. A `waiting_acme` health state with equal desired and applied revisions means Caddy has loaded the panel route and is waiting for a trusted certificate. Without API access, verify the record's actual Cloudflare proxy status in the dashboard.
 
 ### DNS → Records
 
@@ -121,9 +144,7 @@ The resulting hostname must match `NICEPROXY_DOMAIN`, such as `cf.example.com`. 
 
 ### SSL/TLS → Overview
 
-- [ ] **Encryption mode**: `Full (strict)`.
-
-This is the SSL mode for `NICEPROXY_DOMAIN`. Caddy obtains a valid public certificate for the origin, so Cloudflare can verify it. `Flexible` is not suitable because it sends HTTP to an origin that redirects to HTTPS. `Full` is weaker than `Full (strict)` and is useful only while diagnosing a certificate problem.
+- [ ] **Encryption mode for the panel hostname**: `Full (strict)` when Proxied. Verify the hostname-specific rule or use the zone setting for a manual setup.
 
 ### SSL/TLS → Edge Certificates
 
@@ -155,7 +176,7 @@ The local mode is HTTP by design. A public callback domain uses HTTPS through Ca
 
 - **Cloudflare 521** means the origin is not accepting the connection. Check the router forwarding to `NICEPROXY_HTTP_PORT` and `NICEPROXY_HTTPS_PORT`, the host firewall, and Caddy logs.
 - **Cloudflare 525** means Cloudflare reached the origin but the TLS handshake failed. Check that Caddy is listening on the forwarded HTTPS port, that `NICEPROXY_DOMAIN` matches the requested hostname, and that Caddy has obtained a certificate.
-- A missing certificate on a DNS-only record requires public TCP 80 and 443 reachability for ACME. For a proxied record, use a certificate Cloudflare trusts. Built-in HTTP-01 and TLS-ALPN-01 work directly against the origin in DNS-only mode. The panel's system-managed route shows this prerequisite and keeps the local origin on a temporary TLS bootstrap certificate while ACME is pending.
+- A missing certificate on a DNS-only record requires public TCP 80 and 443 reachability for ACME. For a proxied record, use a certificate Cloudflare trusts. Built-in HTTP-01 and TLS-ALPN-01 work directly against the origin in DNS-only mode. The panel's system-managed route shows the prerequisite. While Proxied, Caddy uses a local bootstrap certificate until a trusted origin certificate is available.
 
 A private client is available to members of its account. A shared client for other accounts requires public visibility and publisher domain verification. Personal installations can remain private.
 

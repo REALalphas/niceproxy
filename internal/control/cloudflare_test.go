@@ -227,3 +227,35 @@ func TestExplicitHTTPSCallbackHostIsAllowed(t *testing.T) {
 		t.Fatal(resp.Status)
 	}
 }
+
+func TestPanelCallbackFollowsDomainAndReturnsToLocalOnRemoval(t *testing.T) {
+	a, s, session := fixture(t)
+	if err := a.ConfigurePanelDomain("first.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	local := s.URL + "/api/cloudflare/callback"
+	if err := a.ConfigureCloudflare(cloudflare.Options{DataDir: t.TempDir(), RedirectURL: local}); err != nil {
+		t.Fatal(err)
+	}
+	check := func(want string) {
+		t.Helper()
+		resp := call(t, s, http.MethodGet, "/api/cloudflare", "", session)
+		defer resp.Body.Close()
+		var status cloudflare.Status
+		if err := json.NewDecoder(resp.Body).Decode(&status); err != nil || status.RedirectURL != want {
+			t.Fatalf("OAuth callback = %q, want %q (%v)", status.RedirectURL, want, err)
+		}
+	}
+	check("https://first.example.com/api/cloudflare/callback")
+	for _, tc := range []struct{ body, callback string }{
+		{`{"panelDomain":"second.example.com"}`, "https://second.example.com/api/cloudflare/callback"},
+		{`{"panelDomain":""}`, local},
+	} {
+		resp := call(t, s, http.MethodPatch, "/api/panel-domain", tc.body, session)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatal(resp.Status)
+		}
+		check(tc.callback)
+	}
+}

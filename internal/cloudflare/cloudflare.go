@@ -34,6 +34,7 @@ type Persistence interface {
 }
 type Options struct {
 	ClientID, RedirectURL, DataDir        string
+	apiToken                              string
 	Scopes                                []string
 	HTTPClient                            *http.Client
 	AuthURL, TokenURL, RevokeURL, APIBase string
@@ -451,6 +452,9 @@ func readJSON(r io.Reader, limit int64, out any) error {
 	return json.Unmarshal(b, out)
 }
 func (m *Manager) tokenLocked(ctx context.Context) (string, error) {
+	if m.o.apiToken != "" {
+		return m.o.apiToken, nil
+	}
 	if m.dirty {
 		if err := m.saveLocked(m.tok); err != nil {
 			m.err = err.Error()

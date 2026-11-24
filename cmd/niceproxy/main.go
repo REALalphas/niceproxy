@@ -161,6 +161,7 @@ func run() error {
 		PanelCertFile: os.Getenv("NICEPROXY_PANEL_CERT_FILE"), PanelKeyFile: os.Getenv("NICEPROXY_PANEL_KEY_FILE"),
 	}
 	caddyOptions.PanelDomain, caddyOptions.PanelDomainProxied = good.PanelDomain, good.PanelDomainProxied
+	caddyOptions.PanelDNSObserved = good.PanelDNSObserved
 	cm := caddy.New(caddyOptions)
 	startedConfig := good
 	if err := cm.Start(ctx, startedConfig.HTTPRoutes, startedConfig.PortOwners); err != nil {
@@ -169,7 +170,7 @@ func run() error {
 		_ = cm.Close(closeCtx)
 		closeCancel()
 		caddyOptions.PanelDomain = ""
-		caddyOptions.PanelDomainProxied = false
+		caddyOptions.PanelDomainProxied, caddyOptions.PanelDNSObserved = false, false
 		cm = caddy.New(caddyOptions)
 		startedConfig = model.Config{PortOwners: good.PortOwners}
 		if err := cm.Start(ctx, startedConfig.HTTPRoutes, startedConfig.PortOwners); err != nil {
@@ -200,9 +201,6 @@ func run() error {
 		log.Printf("panel domain configuration unavailable: %v", err)
 	}
 	cfRedirect := os.Getenv("NICEPROXY_CF_REDIRECT_URL")
-	if initialDomain != "" {
-		cfRedirect = "https://" + initialDomain + "/api/cloudflare/callback"
-	}
 	if cfRedirect == "" {
 		host, _, _ := net.SplitHostPort(*panel)
 		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
@@ -235,6 +233,16 @@ func run() error {
 	server := &http.Server{Handler: app.Handler(static), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 16384}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
+	panelCtx, stopPanel := context.WithCancel(ctx)
+	panelDone := make(chan struct{})
+	go func() {
+		defer close(panelDone)
+		app.RunPanelAutomation(panelCtx, os.Getenv("NICEPROXY_CF_AUTOMATION_TOKEN_FILE"))
+	}()
+	defer func() {
+		stopPanel()
+		<-panelDone
+	}()
 	log.Printf("niceproxy ready: panel http://%s; TCP HTTP %d / HTTPS %d; config revision %d", *panel, *httpPort, *httpsPort, cfg.Revision)
 	var runErr error
 	select {

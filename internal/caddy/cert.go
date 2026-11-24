@@ -62,6 +62,10 @@ func importedPanelCertificate(certFile, keyFile, host string) ([]*x509.Certifica
 	if err != nil {
 		return nil, "invalid", fmt.Errorf("read panel private key: %w", err)
 	}
+	return panelCertificateChain(cert, key, host)
+}
+
+func panelCertificateChain(cert, key []byte, host string) ([]*x509.Certificate, string, error) {
 	pair, err := tls.X509KeyPair(cert, key)
 	if err != nil {
 		return nil, "invalid", fmt.Errorf("invalid panel certificate/private key pair: %w", err)

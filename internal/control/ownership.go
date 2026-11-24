@@ -95,14 +95,18 @@ func (a *App) ownershipConflict(c model.Config) error {
 func (a *App) panelDomainAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		warning := ""
-		if a.config.PanelDomain != "" && a.certificateState() != "valid" {
-			if a.config.PanelDomainProxied {
-				warning = "The local setting says Cloudflare Proxied. Use Full (strict) after provisioning a trusted origin certificate. For Caddy HTTP-01/TLS-ALPN-01, issue the certificate in DNS-only mode."
+		if a.config.PanelDomain != "" && (a.panelEdge.Domain != a.config.PanelDomain || a.panelEdge.DNSMode == "") && a.certificateState() != "valid" {
+			if a.effectiveCaddyConfig().PanelDomainProxied {
+				warning = "The local setting says Cloudflare Proxied. Configure Cloudflare API access to detect the record and provision Origin CA, or mount a trusted origin certificate and use Full (strict)."
 			} else {
 				warning = "The local setting says DNS-only. Check the actual Cloudflare record and public forwarding of TCP 80 for HTTP-01 or TCP 443 for TLS-ALPN-01."
 			}
 		}
-		write(w, 200, map[string]any{"panelDomain": a.config.PanelDomain, "proxied": a.config.PanelDomainProxied, "proxyWarning": warning})
+		response := map[string]any{"panelDomain": a.config.PanelDomain, "proxied": a.effectiveCaddyConfig().PanelDomainProxied, "proxyWarning": warning}
+		if a.panelEdge.Domain == a.config.PanelDomain && a.panelEdge.State != "" {
+			response["automation"] = a.panelEdge
+		}
+		write(w, 200, response)
 		return
 	}
 	if r.Method != "PATCH" && r.Method != "PUT" {
@@ -144,6 +148,7 @@ func (a *App) panelDomainAPI(w http.ResponseWriter, r *http.Request) {
 			a.applyError = err.Error()
 		}
 	}
+	a.queuePanelAutomation()
 	write(w, 200, a.snapshot())
 }
 
@@ -217,11 +222,11 @@ func (a *App) portOwners(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, a.snapshot())
 }
 
-func (a *App) applyCaddy(ctx context.Context) error {
+func (a *App) applyCaddy(ctx context.Context, cfg model.Config) error {
 	if c, ok := a.caddy.(interface {
 		ApplyConfig(context.Context, model.Config) error
 	}); ok {
-		return c.ApplyConfig(ctx, a.config)
+		return c.ApplyConfig(ctx, cfg)
 	}
 	return a.caddy.Apply(ctx, a.config.HTTPRoutes)
 }

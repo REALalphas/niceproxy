@@ -2,6 +2,7 @@
 package caddy
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -19,7 +20,7 @@ type Options struct {
 	PortOwners                                              model.PortOwners
 	Binary, RuntimeDir, DataDir, PanelListen, BackendSocket string
 	PanelDomain, PanelCertFile, PanelKeyFile                string
-	PanelDomainProxied                                      bool
+	PanelDomainProxied, PanelDNSObserved                    bool
 	HTTPPort, HTTPSPort                                     int
 }
 
@@ -98,6 +99,7 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 	var plain, secure []object
 	var policies []object
 	var panelCertificate object
+	var panelCertTag string
 	hasInternal := false
 	seen := map[string]bool{}
 	domainTLS := map[string]string{}
@@ -108,25 +110,21 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 			"handle":   []object{proxy("unix/"+o.BackendSocket, nil)},
 			"terminal": true,
 		})
-		if o.PanelCertFile != "" || o.PanelKeyFile != "" {
-			// An invalid panel pair must not block unrelated routes. The
-			// certificate endpoint reports the pair validation error.
-			if _, _, err := importedPanelCertificate(o.PanelCertFile, o.PanelKeyFile, panelDomain); err == nil {
-				panelCertificate = object{"certificate": o.PanelCertFile, "key": o.PanelKeyFile, "tags": []string{panelOriginCertTag}}
-			}
+		certFile, keyFile, chain, _, err := panelCertificateFiles(o.DataDir, o.PanelCertFile, o.PanelKeyFile, panelDomain, o.panelDNSMode())
+		if err == nil && len(chain) != 0 {
+			panelCertTag = fmt.Sprintf("%s-%x", panelOriginCertTag, sha256.Sum256(chain[0].Raw))
+			panelCertificate = object{"certificate": certFile, "key": keyFile, "tags": []string{panelCertTag}}
 		}
 		if panelCertificate == nil {
-			hasInternal = true
-			issuerConfig := object{"module": "acme", "challenges": object{
-				// Caddy's challenge handler runs before user routes. Keeping both
-				// challenge methods enabled avoids redirect loops for DNS-only records.
-				"http":     object{"disabled": o.PanelDomainProxied || owners.HTTP != "caddy"},
-				"tls-alpn": object{"disabled": o.PanelDomainProxied || owners.HTTPS != "caddy"},
+			issuer := object{"module": "acme", "challenges": object{
+				"http":     object{"disabled": owners.HTTP != "caddy"},
+				"tls-alpn": object{"disabled": owners.HTTPS != "caddy"},
 			}}
-			// Keep a local certificate available while ACME is pending. This makes
-			// the origin speak TLS during bootstrap, while health still reports the
-			// public certificate prerequisite explicitly.
-			policies = append(policies, object{"subjects": []string{panelDomain}, "issuers": []object{issuerConfig, object{"module": "internal"}}})
+			if o.PanelDomainProxied {
+				hasInternal = true
+				issuer = object{"module": "internal"}
+			}
+			policies = append(policies, object{"subjects": []string{panelDomain}, "issuers": []object{issuer}})
 		}
 		if owners.HTTP == "caddy" && owners.HTTPS == "caddy" {
 			// An HTTPS request forwarded over plain HTTP would otherwise loop
@@ -280,7 +278,7 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 			autoHTTPS["skip_certificates"] = []string{panelDomain}
 			connectionPolicies = []object{{
 				"match":                 object{"sni": []string{panelDomain}},
-				"certificate_selection": object{"any_tag": []string{panelOriginCertTag}},
+				"certificate_selection": object{"any_tag": []string{panelCertTag}},
 			}, {}}
 		}
 		servers["public_https"] = object{"protocols": protocols, "listen": []string{":" + strconv.Itoa(o.HTTPSPort)}, "automatic_https": autoHTTPS, "tls_connection_policies": connectionPolicies, "routes": secure}

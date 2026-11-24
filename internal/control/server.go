@@ -35,35 +35,38 @@ type certificateReporter interface {
 }
 
 type App struct {
-	mu                    sync.Mutex
-	db                    *store.Store
-	caddy                 Caddy
-	proxy                 *proxy.Manager
-	config                model.Config
-	applied               int64
-	active                map[string]model.DirectRule
-	httpActive            []model.HTTPRoute
-	httpOwners            model.PortOwners
-	activePanelDomain     string
-	activePanelProxied    bool
-	caddyUnconfirmed      bool
-	httpPort, httpsPort   int
-	ruleErrors            map[string]string
-	httpError, applyError string
-	state                 string
-	startupError          string
-	reserved              map[int]bool
-	authMu                sync.Mutex
-	authWindow            time.Time
-	authAttempts          int
-	authByClient          map[string]authBucket
-	cfMu                  sync.Mutex
-	cf                    *cloudflare.Manager
-	cfOptions             cloudflare.Options
-	cfDefaultRedirect     string
-	cfInitError           string
-	cfCallbackHost        atomic.Value // explicit trusted callback host; never learned from a request
-	cfHTTPSCallback       atomic.Bool
+	mu                     sync.Mutex
+	db                     *store.Store
+	caddy                  Caddy
+	proxy                  *proxy.Manager
+	config                 model.Config
+	applied                int64
+	active                 map[string]model.DirectRule
+	httpActive             []model.HTTPRoute
+	httpOwners             model.PortOwners
+	activePanelDomain      string
+	activePanelProxied     bool
+	activePanelDNSObserved bool
+	panelEdge              panelEdgeStatus
+	panelEdgeWake          chan struct{}
+	caddyUnconfirmed       bool
+	httpPort, httpsPort    int
+	ruleErrors             map[string]string
+	httpError, applyError  string
+	state                  string
+	startupError           string
+	reserved               map[int]bool
+	authMu                 sync.Mutex
+	authWindow             time.Time
+	authAttempts           int
+	authByClient           map[string]authBucket
+	cfMu                   sync.Mutex
+	cf                     *cloudflare.Manager
+	cfOptions              cloudflare.Options
+	cfDefaultRedirect      string
+	cfInitError            string
+	cfCallbackHost         atomic.Value // explicit trusted callback host; never learned from a request
+	cfHTTPSCallback        atomic.Bool
 }
 
 const systemPanelRouteID = "system-panel-domain"
@@ -95,7 +98,7 @@ func New(db *store.Store, c Caddy, p *proxy.Manager, reserved map[int]bool) (*Ap
 	}
 	delete(reservedCopy, hp)
 	delete(reservedCopy, sp)
-	a := &App{httpPort: hp, httpsPort: sp, db: db, caddy: c, proxy: p, config: cfg, applied: persistedApplied, active: map[string]model.DirectRule{}, ruleErrors: map[string]string{}, reserved: reservedCopy, authByClient: map[string]authBucket{}, state: "ready"}
+	a := &App{httpPort: hp, httpsPort: sp, db: db, caddy: c, proxy: p, config: cfg, applied: persistedApplied, active: map[string]model.DirectRule{}, ruleErrors: map[string]string{}, reserved: reservedCopy, authByClient: map[string]authBucket{}, state: "ready", panelEdgeWake: make(chan struct{}, 1)}
 	if err := a.panelDomainConflict(cfg); err != nil {
 		a.startupError = err.Error()
 		a.state = "unrecoverable_corruption"
@@ -106,6 +109,13 @@ func New(db *store.Store, c Caddy, p *proxy.Manager, reserved map[int]bool) (*Ap
 		return nil, err
 	}
 	a.setCaddyActive(good)
+	if cfg.PanelDomain != "" && cfg.PanelDomain == good.PanelDomain && good.PanelDNSObserved {
+		mode := "dns_only"
+		if good.PanelDomainProxied {
+			mode = "proxied"
+		}
+		a.panelEdge = panelEdgeStatus{Domain: cfg.PanelDomain, DNSMode: mode, State: "checking_tls"}
+	}
 	for _, r := range good.DirectRules {
 		if !r.Enabled {
 			continue
@@ -136,6 +146,7 @@ func (a *App) setCaddyActive(cfg model.Config) {
 	a.httpOwners = cfg.PortOwners
 	a.activePanelDomain = cfg.PanelDomain
 	a.activePanelProxied = cfg.PanelDomainProxied
+	a.activePanelDNSObserved = cfg.PanelDNSObserved
 }
 
 // ConfigurePanelDomain applies the deployment-provided initial domain only
@@ -165,6 +176,7 @@ func (a *App) ConfigurePanelDomain(domain string) error {
 	return nil
 }
 func (a *App) reconcile(ctx context.Context) error {
+	caddyConfig := a.effectiveCaddyConfig()
 	var errs []error
 	a.ruleErrors = map[string]string{}
 	if a.startupError != "" {
@@ -174,7 +186,7 @@ func (a *App) reconcile(ctx context.Context) error {
 		return errors.New(a.startupError)
 	}
 	if v, ok := a.caddy.(interface{ ValidateConfig(model.Config) error }); ok {
-		if err := v.ValidateConfig(a.config); err != nil {
+		if err := v.ValidateConfig(caddyConfig); err != nil {
 			a.httpError = err.Error()
 			a.applyError = err.Error()
 			a.applied = -1
@@ -204,9 +216,10 @@ func (a *App) reconcile(ctx context.Context) error {
 	}
 	a.httpError = ""
 	if a.caddyUnconfirmed || a.httpOwners != a.config.PortOwners ||
-		a.activePanelDomain != a.config.PanelDomain || a.activePanelProxied != a.config.PanelDomainProxied ||
+		a.activePanelDomain != caddyConfig.PanelDomain || a.activePanelProxied != caddyConfig.PanelDomainProxied ||
+		a.activePanelDNSObserved != caddyConfig.PanelDNSObserved ||
 		!reflect.DeepEqual(a.httpActive, a.config.HTTPRoutes) || !a.caddy.Healthy(ctx) {
-		if err := a.applyCaddy(ctx); err != nil {
+		if err := a.applyCaddy(ctx, caddyConfig); err != nil {
 			// An admin request can fail after Caddy changed its listeners.
 			// Even reverting to the prior desired config needs a confirmed load.
 			a.caddyUnconfirmed = true
@@ -214,7 +227,7 @@ func (a *App) reconcile(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("Caddy: %w", err))
 		} else {
 			a.caddyUnconfirmed = false
-			a.setCaddyActive(a.config)
+			a.setCaddyActive(caddyConfig)
 		}
 	}
 	for _, r := range a.config.DirectRules {
@@ -251,7 +264,7 @@ func (a *App) reconcile(ctx context.Context) error {
 		}
 	}
 	if len(errs) == 0 {
-		if err := a.db.MarkApplied(a.config); err != nil {
+		if err := a.db.MarkApplied(caddyConfig); err != nil {
 			errs = append(errs, err)
 		} else {
 			a.applied = a.config.Revision
@@ -318,7 +331,20 @@ func (a *App) snapshot() model.Config {
 		}
 		if certificate != "valid" && certificate != "unknown" {
 			route.Status = panelCertificateLifecycle(certificate)
-			route.Error = panelCertificateDiagnostic(c.PanelDomain, certificate, c.PanelDomainProxied)
+			route.Error = panelCertificateDiagnostic(c.PanelDomain, certificate, a.effectiveCaddyConfig().PanelDomainProxied)
+		}
+		if a.panelEdge.Domain == c.PanelDomain {
+			switch a.panelEdge.State {
+			case "waiting_dns":
+				route.Status, route.Error = "waiting_dns", a.panelEdge.Detail
+			case "waiting_origin", "waiting_access", "waiting_edge":
+				if a.panelEdge.DNSMode == "proxied" {
+					route.Error = a.panelEdge.Detail
+					if route.Status == "healthy" {
+						route.Status = "error"
+					}
+				}
+			}
 		}
 		c.HTTPRoutes = append([]model.HTTPRoute{route}, c.HTTPRoutes...)
 	}
@@ -342,10 +368,10 @@ func panelCertificateDiagnostic(domain, certificate string, proxied bool) string
 		return fmt.Sprintf("Origin certificate for %q is %s. Check the hostname, expiry, private key and issuer. Apply the corrected certificate and restart niceproxy.", domain, certificate)
 	}
 	if certificate == "bootstrap" {
-		return fmt.Sprintf("Caddy has a local TLS certificate for %q. Cloudflare Full (strict) requires a publicly trusted certificate or a mounted Cloudflare Origin CA certificate. With DNS-only, check public TCP 80 or 443 forwarding for ACME.", domain)
+		return fmt.Sprintf("Caddy has a local TLS certificate for %q. Configure Cloudflare API access for managed Origin CA issuance, or mount a trusted certificate for Full (strict). For DNS Only, verify public TCP 80 or 443 forwarding for ACME.", domain)
 	}
 	if proxied {
-		return fmt.Sprintf("Public certificate for %q is pending. Obtain it with DNS-only and public TCP 80 or 443 forwarding, or provide a trusted origin certificate before using Full (strict).", domain)
+		return fmt.Sprintf("Trusted origin certificate for %q is pending. Configure Cloudflare API access for Origin CA issuance, or mount a certificate that Cloudflare trusts.", domain)
 	}
 	return fmt.Sprintf("Public certificate for %q is pending. Verify that public DNS points to this origin, that TCP 80 reaches Caddy for HTTP-01 or TCP 443 for TLS-ALPN-01, and that the proxy is DNS-only during ACME validation.", domain)
 }
@@ -505,7 +531,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		healthError := a.applyError
 		if a.config.PanelDomain != "" && certificate != "valid" && certificate != "unknown" && a.applyError == "" {
 			state = panelCertificateLifecycle(certificate)
-			healthError = panelCertificateDiagnostic(a.config.PanelDomain, certificate, a.config.PanelDomainProxied)
+			healthError = panelCertificateDiagnostic(a.config.PanelDomain, certificate, a.effectiveCaddyConfig().PanelDomainProxied)
 		}
 		status := "healthy"
 		if !ok || a.applyError != "" || state != "ready" {
@@ -523,6 +549,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/reconcile" && r.Method == "POST" {
 		_ = a.reconcile(r.Context())
+		a.queuePanelAutomation()
 		write(w, 200, a.snapshot())
 		return
 	}

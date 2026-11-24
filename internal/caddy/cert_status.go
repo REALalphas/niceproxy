@@ -54,11 +54,12 @@ func verifyOriginChain(chain []*x509.Certificate, host string, originRoots *x509
 // CertificateState examines the matching SNI entries across Caddy's issuers.
 func (m *Manager) CertificateState(ctx context.Context, host string) (string, error) {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	if m.options.PanelCertFile != "" || m.options.PanelKeyFile != "" {
-		chain, state, err := importedPanelCertificate(m.options.PanelCertFile, m.options.PanelKeyFile, host)
-		if err != nil {
-			return state, err
-		}
+	mode := panelDNSMode(m.panelDNS.Load())
+	_, _, chain, importedState, certErr := panelCertificateFiles(m.options.DataDir, m.options.PanelCertFile, m.options.PanelKeyFile, host, mode)
+	if certErr != nil {
+		return importedState, certErr
+	}
+	if len(chain) != 0 {
 		if _, err := verifyOriginChain(chain, host, cloudflareOriginRoots()); err != nil {
 			return "invalid", fmt.Errorf("panel certificate is not trusted by the system or Cloudflare Origin CA: %w", err)
 		}
@@ -88,6 +89,10 @@ func (m *Manager) CertificateState(ctx context.Context, host string) (string, er
 		if name != host && name != wildcard {
 			return nil
 		}
+		issuerDir := filepath.Base(filepath.Dir(filepath.Dir(path)))
+		if issuerDir == "local" && mode != panelDNSProxied {
+			return nil
+		}
 		cert, certErr := os.ReadFile(path)
 		key, keyErr := os.ReadFile(strings.TrimSuffix(path, ".crt") + ".key")
 		candidate, candidateErr := "invalid", errors.Join(certErr, keyErr)
@@ -97,7 +102,6 @@ func (m *Manager) CertificateState(ctx context.Context, host string) (string, er
 		if candidateErr == nil {
 			candidate, candidateErr = ValidateCertificate(cert, key, host, time.Now())
 		}
-		issuerDir := filepath.Base(filepath.Dir(filepath.Dir(path)))
 		if candidate == "valid" && issuerDir == "local" {
 			if state == "missing" {
 				state = "bootstrap"

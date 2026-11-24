@@ -31,6 +31,7 @@ type Manager struct {
 	waitErr  error // Written before waitDone closes; read only after receiving waitDone.
 	done     chan error
 	closing  atomic.Bool
+	panelDNS atomic.Uint32
 	closed   bool
 }
 
@@ -39,7 +40,9 @@ func New(o Options) *Manager {
 	transport := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(o.RuntimeDir, "caddy.sock"))
 	}}
-	return &Manager{options: o, client: &http.Client{Transport: transport, Timeout: operationTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, done: make(chan error, 1)}
+	m := &Manager{options: o, client: &http.Client{Transport: transport, Timeout: operationTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, done: make(chan error, 1)}
+	m.panelDNS.Store(uint32(o.panelDNSMode()))
+	return m
 }
 
 // Done reports an unexpected child exit (including a successful exit). The child
@@ -243,7 +246,7 @@ func (m *Manager) ValidateConfig(cfg model.Config) error {
 	o := m.options
 	o.PortOwners = cfg.PortOwners
 	o.PanelDomain = cfg.PanelDomain
-	o.PanelDomainProxied = cfg.PanelDomainProxied
+	o.PanelDomainProxied, o.PanelDNSObserved = cfg.PanelDomainProxied, cfg.PanelDNSObserved
 	_, err := BuildConfig(o, cfg.HTTPRoutes)
 	return err
 }
@@ -258,7 +261,7 @@ func (m *Manager) apply(ctx context.Context, routes []model.HTTPRoute, desired *
 	if desired != nil {
 		o.PortOwners = desired.PortOwners
 		o.PanelDomain = desired.PanelDomain
-		o.PanelDomainProxied = desired.PanelDomainProxied
+		o.PanelDomainProxied, o.PanelDNSObserved = desired.PanelDomainProxied, desired.PanelDNSObserved
 	}
 	config, err := BuildConfig(o, routes)
 	if err != nil {
@@ -278,7 +281,8 @@ func (m *Manager) apply(ctx context.Context, routes []model.HTTPRoute, desired *
 	}
 	m.options.PortOwners = o.PortOwners
 	m.options.PanelDomain = o.PanelDomain
-	m.options.PanelDomainProxied = o.PanelDomainProxied
+	m.options.PanelDomainProxied, m.options.PanelDNSObserved = o.PanelDomainProxied, o.PanelDNSObserved
+	m.panelDNS.Store(uint32(o.panelDNSMode()))
 	return m.persist(name)
 }
 
