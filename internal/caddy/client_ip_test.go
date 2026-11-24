@@ -68,6 +68,10 @@ func TestPanelCloudflareRejectsInvalidCIDRs(t *testing.T) {
 	for _, value := range []string{"not-a-cidr", "127.0.0.3", "0.0.0.0/0", "::/0", "::ffff:192.0.2.0/120"} {
 		o := options(t)
 		o.PanelCloudflareCIDRs = value
+		if _, err := BuildConfig(o, nil); err != nil {
+			t.Errorf("local panel cannot recover with override %q: %v", value, err)
+		}
+		o.PanelDomain = "panel.example.test"
 		if _, err := BuildConfig(o, nil); err == nil {
 			t.Errorf("accepted proxy range %q", value)
 		}
