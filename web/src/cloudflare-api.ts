@@ -9,6 +9,13 @@ export type CloudflareStatus = {
   expiresAt?: string;
   error?: string;
 };
+export type CertificateStatus = {
+  configured: boolean;
+  domain: string;
+  state: "not_configured" | "pending" | "issued" | "expired" | "error" | "unknown";
+  expiresAt?: string;
+  error?: string;
+};
 export type Zone = { id: string; name: string; status: string; account: { id: string; name: string } };
 export type DNSRecord = { id: string; type: string; name: string; content: string; proxied: boolean; ttl: number };
 export type RecordInput = { name: string; type: "A" | "AAAA" | "CNAME"; content: string; proxied: boolean; ttl: number };
@@ -17,6 +24,11 @@ const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(x => 
 const status = (v: unknown): v is CloudflareStatus => object(v) &&
   typeof v.configured === "boolean" && typeof v.connected === "boolean" &&
   typeof v.clientId === "string" && typeof v.redirectUrl === "string" && strings(v.scopes) &&
+  (v.expiresAt === undefined || typeof v.expiresAt === "string") &&
+  (v.error === undefined || typeof v.error === "string");
+const certificateStatus = (v: unknown): v is CertificateStatus => object(v) &&
+  typeof v.configured === "boolean" && typeof v.domain === "string" &&
+  ["not_configured", "pending", "issued", "expired", "error", "unknown"].includes(String(v.state)) &&
   (v.expiresAt === undefined || typeof v.expiresAt === "string") &&
   (v.error === undefined || typeof v.error === "string");
 const zone = (v: unknown): v is Zone => object(v) && typeof v.id === "string" &&
@@ -36,6 +48,7 @@ export function authorizationURL(value: string): string {
 const recordsPath = (id: string) => `/cloudflare/zones/${encodeURIComponent(id)}/records`;
 export const cloudflareApi = {
   status: () => request("/cloudflare", status),
+  certificate: () => request("/certificate", certificateStatus),
   settings: (clientId: string, scopes: string[]) => request("/cloudflare/settings", status, "POST", { clientId, scopes }),
   connect: () => request("/cloudflare/connect", (v): v is { url: string } => object(v) && typeof v.url === "string", "POST"),
   disconnect: () => request("/cloudflare/disconnect", (v): v is { ok: true; warning?: string } => object(v) && v.ok === true &&

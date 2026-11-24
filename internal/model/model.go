@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 type HTTPRoute struct {
 	ID          string `json:"id"`
 	Host        string `json:"host"`
@@ -54,4 +56,12 @@ type Health struct {
 	Revision        int64  `json:"revision"`
 	AppliedRevision int64  `json:"appliedRevision"`
 	Error           string `json:"error,omitempty"`
+}
+
+type CertificateStatus struct {
+	Configured bool       `json:"configured"`
+	Domain     string     `json:"domain"`
+	State      string     `json:"state"` // not_configured, pending, issued, expired, error
+	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+	Error      string     `json:"error,omitempty"`
 }

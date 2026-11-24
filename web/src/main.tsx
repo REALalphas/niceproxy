@@ -18,7 +18,7 @@ import "@alpha/core/styles.css";
 import "./app.css";
 import { Cloudflare } from "./Cloudflare";
 import { CloudflareOAuthWindow, isCloudflareOAuthWindow, type CloudflareCallback } from "./CloudflareOAuth";
-import { cloudflareApi, type CloudflareStatus } from "./cloudflare-api";
+import { cloudflareApi, type CertificateStatus, type CloudflareStatus } from "./cloudflare-api";
 import {
   api,
   type Auth,
@@ -395,6 +395,7 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
   const [config, setConfig] = useState<ProxyConfig | null>(null);
   const [health, setHealth] = useState<ServiceHealth | null>(null);
   const [cloudflareStatus, setCloudflareStatus] = useState<CloudflareStatus | null>(null);
+  const [certificateStatus, setCertificateStatus] = useState<CertificateStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [section, setSection] = useState(sectionFromHash);
@@ -415,10 +416,11 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
       const a = await api.auth();
       setAuth(a);
       if (a.authenticated) {
-        const [c, h, cf] = await Promise.all([api.config(), api.health(), cloudflareApi.status()]);
+        const [c, h, cf, certificate] = await Promise.all([api.config(), api.health(), cloudflareApi.status(), cloudflareApi.certificate()]);
         setConfig(c);
         setHealth(h);
         setCloudflareStatus(cf);
+        setCertificateStatus(certificate);
       }
     } catch (e) {
       if (!(e instanceof Unauthorized)) setError(err(e));
@@ -433,6 +435,7 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
       setConfig(null);
       setHealth(null);
       setCloudflareStatus(null);
+      setCertificateStatus(null);
       void load();
     };
     const changed = () => void load();
@@ -674,6 +677,7 @@ function App({ cloudflareCallback }: { cloudflareCallback?: CloudflareCallback }
                       <Text tone="secondary">Service endpoint for Cloudflare sign-in and the management panel. When NICEPROXY_DOMAIN is set, Caddy serves this hostname over HTTPS. Configure DNS and port forwarding separately.</Text>
                     </>
                     : <Text tone="secondary">Callback is not configured. Open Cloudflare and enter a local URL or a domain with a subdomain.</Text>}
+                  {certificateStatus && <Text tone="secondary">Origin certificate: {certificateStatus.state === "issued" ? `issued until ${certificateStatus.expiresAt ? new Date(certificateStatus.expiresAt).toLocaleString("en-US") : "unknown date"}` : certificateStatus.state === "pending" ? "waiting for Caddy ACME issuance" : certificateStatus.state === "not_configured" ? "not configured" : certificateStatus.error || certificateStatus.state}.</Text>}
                   <div className="actions">
                     <Button variant="simple" onPress={() => { setSection("cloudflare"); window.location.hash = "cloudflare"; setAdding(false); setEditing(null); }}>Configure in Cloudflare</Button>
                   </div>

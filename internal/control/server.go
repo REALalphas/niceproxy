@@ -30,6 +30,10 @@ type Caddy interface {
 	Healthy(context.Context) bool
 }
 
+type certificateReporter interface {
+	CertificateStatus(string) model.CertificateStatus
+}
+
 type App struct {
 	mu                    sync.Mutex
 	db                    *store.Store
@@ -231,6 +235,25 @@ func (a *App) authenticated(r *http.Request) bool {
 	return err == nil && a.db.Authenticated(hash(c.Value))
 }
 func hash(s string) string { d := sha256.Sum256([]byte(s)); return hex.EncodeToString(d[:]) }
+
+func (a *App) certificateStatus() model.CertificateStatus {
+	a.cfMu.Lock()
+	defer a.cfMu.Unlock()
+	u, err := url.Parse(a.cfOptions.RedirectURL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return model.CertificateStatus{State: "not_configured", Error: "HTTPS domain is not configured"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if !a.caddy.Healthy(ctx) {
+		return model.CertificateStatus{Configured: true, Domain: u.Hostname(), State: "error", Error: "Caddy is not running"}
+	}
+	if reader, ok := a.caddy.(certificateReporter); ok {
+		return reader.CertificateStatus(u.Hostname())
+	}
+	return model.CertificateStatus{Configured: true, Domain: u.Hostname(), State: "unknown", Error: "Caddy certificate status is unavailable"}
+}
+
 func randomID() string {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
@@ -312,6 +335,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			status = "error"
 		}
 		write(w, 200, model.Health{Status: status, Caddy: ok, Revision: a.config.Revision, AppliedRevision: a.applied, Error: a.applyError})
+		return
+	}
+	if r.URL.Path == "/api/certificate" && r.Method == "GET" {
+		write(w, 200, a.certificateStatus())
 		return
 	}
 	if r.URL.Path == "/api/reconcile" && r.Method == "POST" {

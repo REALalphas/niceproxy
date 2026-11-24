@@ -3,6 +3,8 @@ package caddy
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -45,6 +47,58 @@ func New(o Options) *Manager {
 // Done reports an unexpected child exit (including a successful exit). The child
 // is always reaped, and this channel closes once it has exited.
 func (m *Manager) Done() <-chan error { return m.done }
+
+// CertificateStatus reports the certificate Caddy has stored for a managed domain.
+// Caddy may need a short period after startup to complete ACME issuance.
+func (m *Manager) CertificateStatus(domain string) model.CertificateStatus {
+	status := model.CertificateStatus{Domain: domain}
+	if domain == "" {
+		status.State = "not_configured"
+		return status
+	}
+	status.Configured = true
+	status.State = "pending"
+	root := filepath.Join(m.options.DataDir, "caddy", "certificates")
+	var certPath string
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || filepath.Base(path) != domain+".crt" {
+			return nil
+		}
+		if filepath.Base(filepath.Dir(path)) == domain {
+			certPath = path
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	if certPath == "" {
+		return status
+	}
+	b, err := os.ReadFile(certPath)
+	if err != nil {
+		status.State = "error"
+		status.Error = "cannot read the Caddy certificate"
+		return status
+	}
+	block, _ := pem.Decode(b)
+	if block == nil {
+		status.State = "error"
+		status.Error = "Caddy certificate is not valid PEM"
+		return status
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		status.State = "error"
+		status.Error = "Caddy certificate is not valid X.509"
+		return status
+	}
+	status.ExpiresAt = &cert.NotAfter
+	if time.Now().After(cert.NotAfter) {
+		status.State = "expired"
+	} else {
+		status.State = "issued"
+	}
+	return status
+}
 
 func (m *Manager) running() bool {
 	if m.cmd == nil {
