@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { Badge, Button, Card, Icon, Select, Stack, Switch, Text, TextInput } from "@alpha/react";
 import { type HttpRoute, Unauthorized } from "./api";
 import { openOAuthWindow, type CloudflareCallback, type OAuthPopup } from "./CloudflareOAuth";
-import { authorizationURL, cloudflareApi, parseScopes, supportedRecord, type CloudflareStatus, type DNSRecord, type RecordInput, type Zone } from "./cloudflare-api";
+import { authorizationURL, cloudflareApi, parseScopes, supportedRecord, type CertificateStatus, type CloudflareStatus, type DNSRecord, type RecordInput, type Zone } from "./cloudflare-api";
 const message = (e: unknown) => e instanceof Error ? e.message : "Action failed.";
 function Alert({ children }: { children: string }) { return <div role="alert"><Text>{children}</Text></div>; }
 
@@ -46,6 +46,7 @@ function RecordForm({ zone, record, routes, onSaved, onCancel }: {
 
 export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; callback?: CloudflareCallback }) {
   const [status, setStatus] = useState<CloudflareStatus | null>(null);
+  const [certificate, setCertificate] = useState<CertificateStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -71,7 +72,11 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
   }, []);
   const load = useCallback(async () => {
     setLoading(true); setError("");
-    try { applyStatus(await cloudflareApi.status()); }
+    try {
+      const [nextStatus, nextCertificate] = await Promise.all([cloudflareApi.status(), cloudflareApi.certificate()]);
+      applyStatus(nextStatus);
+      setCertificate(nextCertificate);
+    }
     catch (e) { if (!(e instanceof Unauthorized)) setError(message(e)); }
     finally { setLoading(false); }
   }, [applyStatus]);
@@ -193,6 +198,7 @@ export function Cloudflare({ routes = [], callback }: { routes?: HttpRoute[]; ca
       {status?.error && !oauthPending && <><Alert>{status.error}</Alert><Text><a href="https://dash.cloudflare.com/?to=/profile/access-management/authorization" target="_blank" rel="noreferrer">Review and revoke Cloudflare access</a></Text></>}
       {error && <Alert>{error}</Alert>}
       {notice && <div role="status"><Text>{notice}</Text></div>}
+      {certificate && <Text tone="secondary">Origin certificate {certificate.domain ? `for ${certificate.domain}: ` : ""}{certificate.state === "issued" ? `issued until ${certificate.expiresAt ? new Date(certificate.expiresAt).toLocaleString("en-US") : "unknown date"}` : certificate.state === "pending" ? "waiting for Caddy ACME issuance" : certificate.state === "not_configured" ? "not configured" : certificate.error || certificate.state}.</Text>}
       {!status?.connected && status?.configured && <>
         <Text tone="secondary">{oauthPending
           ? "Approve access in the Cloudflare window. The panel will update automatically."
