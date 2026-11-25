@@ -1214,109 +1214,20 @@ function target(route: HttpRoute | DirectRule) {
     ? route.target
     : formatEndpoint(route.targetHost, route.targetPort);
 }
-function PortOwnersCard({
-  settings,
-  error,
-  onSaved,
-}: {
-  settings: PortOwnerSettings | null;
-  error: string;
-  onSaved: (config: ProxyConfig) => void;
-}) {
-  const [draft, setDraft] = useState<Partial<PortOwners>>({});
-  const [busy, setBusy] = useState(false);
-  const [saveError, setSaveError] = useState("");
-  const value = settings ? { ...settings.owners, ...draft } : null;
-  const dirty =
-    !!settings &&
-    Object.entries(draft).some(
-      ([key, owner]) => settings.owners[key as keyof PortOwners] !== owner,
-    );
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    if (!value || !settings || error || busy) return;
-    setBusy(true);
-    setSaveError("");
-    try {
-      const config = await api.savePortOwners(draft);
-      onSaved(config);
-      setDraft({});
-    } catch (e) {
-      setSaveError(err(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <form onSubmit={submit}>
-      <Stack gap={3}>
-        <Text tone="secondary">
-          Выберите HTTP/HTTPS или прямой проброс для каждого порта. Перед сменой
-          отключите конфликтующие маршруты.
-        </Text>
-        {error && <ErrorMessage>{error}</ErrorMessage>}
-        {settings && value && (
-          <Stack gap={4}>
-            {(
-              [
-                [
-                  "http",
-                  `HTTP · TCP ${settings.httpPort}`,
-                  "Caddy — HTTP",
-                  "Прямой TCP",
-                ],
-                [
-                  "https",
-                  `HTTPS · TCP ${settings.httpsPort}`,
-                  "Caddy — HTTPS",
-                  "Прямой TCP",
-                ],
-                [
-                  "http3",
-                  `HTTP/3 · UDP ${settings.httpsPort}`,
-                  "Caddy — HTTP/3",
-                  "Прямой UDP",
-                ],
-              ] as const
-            ).map(([key, label, caddyLabel, directLabel]) => (
-              <Select
-                popup="overlay"
-                key={key}
-                id={`port-owner-${key}`}
-                label={label}
-                value={value[key]}
-                onValueChange={(owner) => {
-                  if (owner === "caddy" || owner === "direct") {
-                    setDraft((current) => ({ ...current, [key]: owner }));
-                    setSaveError("");
-                  }
-                }}
-                disabled={busy || !!error}
-                options={[
-                  { value: "caddy", label: caddyLabel },
-                  { value: "direct", label: directLabel },
-                ]}
-              />
-            ))}
-          </Stack>
-        )}
-        <Text tone="secondary">
-          Сохранение и применение — отдельные состояния. Результат доступен в
-          разделе «Сервис».
-        </Text>
-        {saveError && <ErrorMessage>{saveError}</ErrorMessage>}
-        <Stack direction="row" gap={3}>
-          <Button
-            type="submit"
-            disabled={!settings || !!error || busy || !dirty}
-            loading={busy}
-          >
-            Сохранить назначения
-          </Button>
-        </Stack>
-      </Stack>
-    </form>
-  );
+function publicPortLines(
+  route: HttpRoute | DirectRule,
+  settings: PortOwnerSettings | null,
+) {
+  if (!("host" in route)) return [];
+  if (!settings) return ["Публичные порты настраиваются автоматически"];
+  const label = (owner: PortOwners[keyof PortOwners]) =>
+    owner === "direct" ? "Прямой проброс" : "Веб-доступ";
+  if (route.tls === "off")
+    return [`HTTP · TCP ${settings.httpPort} · ${label(settings.owners.http)}`];
+  return [
+    `HTTPS · TCP ${settings.httpsPort} · ${label(settings.owners.https)}`,
+    `HTTP/3 · UDP ${settings.httpsPort} · ${label(settings.owners.http3)}`,
+  ];
 }
 function readPage() {
   const hash = window.location.hash.slice(1);
@@ -1324,7 +1235,6 @@ function readPage() {
     return "settings/cloudflare";
   if (
     hash === "settings/anti-ddos" ||
-    hash === "settings/ports" ||
     hash === "settings/account" ||
     hash === "settings"
   )
@@ -1343,7 +1253,6 @@ function App() {
   const [panelDomainSettings, setPanelDomainSettings] =
     useState<PanelDomainSettings | null>(null);
   const [owners, setOwners] = useState<PortOwnerSettings | null>(null);
-  const [ownersError, setOwnersError] = useState("");
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [pending, setPending] = useState(false);
@@ -1398,8 +1307,7 @@ function App() {
         else setPanelDomainSettings(null);
         if (o.status === "fulfilled") {
           setOwners(o.value);
-          setOwnersError("");
-        } else setOwnersError(err(o.reason));
+        } else setOwners(null);
         const failure =
           c.status === "rejected"
             ? c.reason
@@ -1584,9 +1492,7 @@ function App() {
       ? "Сервис"
       : page === "settings/anti-ddos"
         ? "Защита от DDoS"
-        : page === "settings/ports"
-          ? "Назначение портов"
-          : page === "settings/cloudflare"
+        : page === "settings/cloudflare"
             ? "Cloudflare DNS"
             : page === "settings/account"
               ? "Доступ к панели"
@@ -1782,6 +1688,7 @@ function App() {
           <RouteForm
             key={page}
             initialProtocol={newProtocol}
+            ports={owners}
             onDone={saved}
             onCancel={() => navigate("routes")}
           />
@@ -1798,6 +1705,7 @@ function App() {
           <RouteForm
             key={mapping.key}
             route={mapping.route}
+            ports={owners}
             onDone={saved}
             onCancel={() => navigate(`routes/view/${mapping.key}`)}
           />
@@ -1839,6 +1747,16 @@ function App() {
                     {source(mapping.route)}
                   </Text>
                 </Stack>
+                {publicPortLines(mapping.route, owners).length > 0 && (
+                  <Stack gap={1}>
+                    <Text tone="secondary">Публичные порты</Text>
+                    {publicPortLines(mapping.route, owners).map((line) => (
+                      <Text key={line} font="mono">
+                        {line}
+                      </Text>
+                    ))}
+                  </Stack>
+                )}
                 <Stack gap={1}>
                   <Text tone="secondary">Сервис</Text>
                   <Text font="mono" size="lg">
@@ -1960,14 +1878,11 @@ function App() {
                 </Text>
               </Stack>
               <Text>
-                Caddy:{" "}
-                {!health
-                  ? "состояние неизвестно"
-                  : health.caddy === true || health.caddy === "healthy"
-                    ? "доступен"
-                    : health.caddy === false || health.caddy === "error"
-                      ? "недоступен"
-                      : String(health.caddy)}
+                {health?.caddy === true || health?.caddy === "healthy"
+                  ? "Веб-сервер доступен"
+                  : health?.caddy === false || health?.caddy === "error"
+                    ? "Веб-сервер недоступен"
+                    : "Состояние веб-сервера неизвестно"}
               </Text>
               {health?.error && <ErrorMessage>{health.error}</ErrorMessage>}
               {certificate?.configured && (
@@ -1992,9 +1907,9 @@ function App() {
               )}
               {certificate?.tlsState && (
                 <Text tone="secondary">
-                  TLS на локальном origin:{" "}
+                  HTTPS на сервере —{" "}
                   {certificate.tlsState === "bootstrap"
-                    ? "сертификат Caddy Local Authority"
+                    ? "локальный сертификат"
                     : certificate.tlsState === "served"
                       ? "доверенный сертификат"
                       : certificate.tlsState === "cloudflare_origin"
@@ -2059,13 +1974,6 @@ function App() {
                 onPress={() => navigate("settings/anti-ddos")}
               />
               <DrawerButton
-                label="Назначение портов"
-                secondaryText="HTTP/HTTPS или прямой TCP/UDP"
-                secondaryPlacement="below"
-                icon="device"
-                onPress={() => navigate("settings/ports")}
-              />
-              <DrawerButton
                 label="Cloudflare DNS"
                 secondaryText="Подключение аккаунта и записи доменов"
                 secondaryPlacement="below"
@@ -2090,20 +1998,6 @@ function App() {
                 setConfig((current) =>
                   current && current.revision > next.revision ? current : next,
                 );
-            }}
-          />
-        )}
-        {page === "settings/ports" && (
-          <PortOwnersCard
-            settings={owners}
-            error={ownersError}
-            onSaved={(next) => {
-              if (renderEpoch !== epoch.current || !authenticated.current)
-                return;
-              setConfig(next);
-              setOwners(
-                (current) => current && { ...current, owners: next.portOwners },
-              );
             }}
           />
         )}

@@ -22,6 +22,7 @@ export type HttpRoute = {
   target: string;
   tls: "auto" | "internal" | "off";
   enabled: boolean;
+  autoSetup?: boolean;
   status: Health;
   error?: string;
   systemManaged?: boolean;
@@ -61,6 +62,7 @@ export type DirectRule = {
   targetHost: string;
   targetPort: number;
   enabled: boolean;
+  autoSetup?: boolean;
   status: Health;
   error?: string;
   stats?: DirectStats;
@@ -129,6 +131,7 @@ const normalizeConfig = (config: StoredConfig): ProxyConfig => ({
 const http = (v: unknown): v is StoredHttpRoute =>
   base(v) &&
   typeof v.host === "string" &&
+  (v.autoSetup === undefined || typeof v.autoSetup === "boolean") &&
   (v.path === undefined || typeof v.path === "string") &&
   (v.stripPrefix === undefined || typeof v.stripPrefix === "boolean") &&
   typeof v.target === "string" &&
@@ -428,6 +431,7 @@ const stats = (v: unknown): v is DirectStats =>
 const direct = (v: unknown): v is DirectRule =>
   base(v) &&
   ["tcp", "udp"].includes(String(v.protocol)) &&
+  (v.autoSetup === undefined || typeof v.autoSetup === "boolean") &&
   typeof v.listenHost === "string" &&
   typeof v.targetHost === "string" &&
   port(v.listenPort) &&
@@ -492,9 +496,11 @@ async function performRequest<T>(
   }
   if (!response.ok)
     throw new Error(
-      record(body) && typeof body.error === "string"
-        ? body.error
-        : `Server error: HTTP ${response.status}`,
+      record(body) && typeof body.message === "string"
+        ? body.message
+        : record(body) && typeof body.error === "string"
+          ? body.error
+          : `Ошибка сервера (HTTP ${response.status})`,
     );
   if (!valid(body))
     throw new Error("Сервер вернул данные в неизвестном формате.");
@@ -589,14 +595,14 @@ export const api = {
       id ? itemPath("http-routes", id) : "/http-routes",
       http,
       id ? "PATCH" : "POST",
-      data,
+      { ...data, autoSetup: true },
     ).then(normalizeHttp),
   saveDirect: (data: NewDirectRule, id?: string) =>
     request(
       id ? itemPath("direct-rules", id) : "/direct-rules",
       direct,
       id ? "PATCH" : "POST",
-      data,
+      { ...data, autoSetup: true },
     ),
   toggle: (
     kind: "http-routes" | "direct-rules",
@@ -609,7 +615,7 @@ export const api = {
         ? (v): v is StoredHttpRoute | DirectRule => http(v)
         : (v): v is StoredHttpRoute | DirectRule => direct(v),
       "PATCH",
-      { enabled },
+      { enabled, autoSetup: true },
     ).then((route) => ("host" in route ? normalizeHttp(route) : route)),
   remove: (kind: "http-routes" | "direct-rules", id: string) =>
     request(itemPath(kind, id), ok, "DELETE"),

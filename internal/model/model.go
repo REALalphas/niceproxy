@@ -16,6 +16,7 @@ type HTTPRoute struct {
 	Target        string `json:"target"`
 	TLS           string `json:"tls"` // auto, internal, off
 	Enabled       bool   `json:"enabled"`
+	AutoSetup     bool   `json:"autoSetup,omitempty"`
 	SystemManaged bool   `json:"systemManaged,omitempty"`
 	Status        string `json:"status,omitempty"`
 	Error         string `json:"error,omitempty"`
@@ -86,6 +87,7 @@ type DirectRule struct {
 	TargetHost string           `json:"targetHost"`
 	TargetPort int              `json:"targetPort"`
 	Enabled    bool             `json:"enabled"`
+	AutoSetup  bool             `json:"autoSetup,omitempty"`
 	Status     string           `json:"status,omitempty"`
 	Error      string           `json:"error,omitempty"`
 }

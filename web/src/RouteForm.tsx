@@ -9,7 +9,12 @@ import {
   Text,
   TextInput,
 } from "@alpha/react";
-import { api, type DirectRule, type HttpRoute } from "./api";
+import {
+  api,
+  type DirectRule,
+  type HttpRoute,
+  type PortOwnerSettings,
+} from "./api";
 import { formatEndpoint, isDirectIP, isDirectTarget } from "./direct-address";
 import { validHttpPath } from "./http-path";
 import "./route-form.css";
@@ -42,10 +47,12 @@ function httpTargetError(value: string): string | undefined {
 
 function RouteFlow({
   incoming,
+  ports,
   rules,
   upstream,
 }: {
   incoming: string;
+  ports: string[];
   rules: string;
   upstream: string;
 }) {
@@ -55,6 +62,12 @@ function RouteFlow({
       label: "Подключение",
       detail: incoming || "Укажите входящий адрес",
       mono: !!incoming,
+    },
+    {
+      icon: "device",
+      label: "Публичные порты",
+      detail: ports,
+      mono: false,
     },
     { icon: "shield", label: "Правила", detail: rules, mono: false },
     {
@@ -75,9 +88,19 @@ function RouteFlow({
                 {step.label}
               </Text>
               <div className="route-flow-detail">
-                <Text font={step.mono ? "mono" : "ui"} tone="secondary">
-                  {step.detail}
-                </Text>
+                {Array.isArray(step.detail) ? (
+                  <Stack gap={1}>
+                    {step.detail.map((line) => (
+                      <Text key={line} font="mono" tone="secondary">
+                        {line}
+                      </Text>
+                    ))}
+                  </Stack>
+                ) : (
+                  <Text font={step.mono ? "mono" : "ui"} tone="secondary">
+                    {step.detail}
+                  </Text>
+                )}
               </div>
               {index < steps.length - 1 && (
                 <span className="route-flow-arrow" aria-hidden="true">
@@ -113,11 +136,13 @@ function RouteSection({
 
 export function RouteForm({
   route,
+  ports,
   initialProtocol = "http",
   onDone,
   onCancel,
 }: {
   route?: Route;
+  ports?: PortOwnerSettings | null;
   initialProtocol?: Protocol;
   onDone: (route: Route) => void;
   onCancel: () => void;
@@ -181,6 +206,36 @@ export function RouteForm({
     : isHttp
       ? "Совпадение по домену и пути"
       : "Прямой проброс";
+  const publicPorts = isHttp
+    ? ports
+      ? tls === "off"
+        ? [
+            `HTTP · TCP ${ports.httpPort} → ${
+              ports.owners.http === "direct"
+                ? "занят прямым пробросом"
+                : "веб-доступ"
+            }`,
+          ]
+        : [
+            `HTTPS · TCP ${ports.httpsPort} → ${
+              ports.owners.https === "direct"
+                ? "занят прямым пробросом"
+                : "веб-доступ"
+            }`,
+            `HTTP/3 · UDP ${ports.httpsPort} → ${
+              ports.owners.http3 === "direct"
+                ? "занят прямым пробросом"
+                : "веб-доступ"
+            }`,
+          ]
+      : ["Публичные порты будут выбраны автоматически"]
+    : [
+        `${protocol.toUpperCase()} ${
+          validPort(listenPort)
+            ? formatEndpoint(effectiveListenHost, Number(listenPort))
+            : "входящий порт"
+        } → прямой проброс`,
+      ];
 
   function clearFieldError(field: DirectField) {
     setFieldErrors((current) => ({ ...current, [field]: undefined }));
@@ -255,7 +310,12 @@ export function RouteForm({
   return (
     <form onSubmit={submit}>
       <Stack gap={4}>
-        <RouteFlow incoming={incoming} rules={rules} upstream={upstream} />
+        <RouteFlow
+          incoming={incoming}
+          ports={publicPorts}
+          rules={rules}
+          upstream={upstream}
+        />
         <Card>
           <Stack gap={5}>
             <RouteSection title="Точка подключения">
@@ -338,7 +398,7 @@ export function RouteForm({
                   <Select
                     popup="overlay"
                     id="tls"
-                    label="TLS входящего соединения"
+                    label="Доступ по HTTPS"
                     value={tls}
                     onValueChange={(value) => {
                       if (
@@ -353,12 +413,12 @@ export function RouteForm({
                     hint="Для всех путей одного домена используйте одинаковый режим."
                     disabled={busy}
                     options={[
-                      { value: "auto", label: "Автоматически (HTTPS)" },
+                      { value: "auto", label: "Автоматический сертификат" },
                       {
                         value: "internal",
-                        label: "Внутренний сертификат (HTTPS)",
+                        label: "Локальный сертификат",
                       },
-                      { value: "off", label: "Выключен (HTTP)" },
+                      { value: "off", label: "Без HTTPS (HTTP)" },
                     ]}
                   />
                 </>
