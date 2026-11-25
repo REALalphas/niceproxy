@@ -187,6 +187,9 @@ func (m *Manager) Start(ctx context.Context, routes []model.HTTPRoute, owners ..
 		}
 	}
 	cmd.Env = append(cmd.Env, "XDG_DATA_HOME="+m.options.DataDir, "XDG_CONFIG_HOME="+m.options.RuntimeDir)
+	if m.options.BridgeToken != "" {
+		cmd.Env = append(cmd.Env, "NICEPROXY_BRIDGE_TOKEN="+m.options.BridgeToken)
+	}
 	if err = cmd.Start(); err != nil {
 		return fmt.Errorf("launch Caddy: %w", err)
 	}
@@ -247,6 +250,7 @@ func (m *Manager) ValidateConfig(cfg model.Config) error {
 	o.PortOwners = cfg.PortOwners
 	o.PanelDomain = cfg.PanelDomain
 	o.PanelDomainProxied, o.PanelDNSObserved = cfg.PanelDomainProxied, cfg.PanelDNSObserved
+	o.Protection = cfg.AntiDDoS
 	_, err := BuildConfig(o, cfg.HTTPRoutes)
 	return err
 }
@@ -262,6 +266,7 @@ func (m *Manager) apply(ctx context.Context, routes []model.HTTPRoute, desired *
 		o.PortOwners = desired.PortOwners
 		o.PanelDomain = desired.PanelDomain
 		o.PanelDomainProxied, o.PanelDNSObserved = desired.PanelDomainProxied, desired.PanelDNSObserved
+		o.Protection = desired.AntiDDoS
 	}
 	config, err := BuildConfig(o, routes)
 	if err != nil {
@@ -282,6 +287,7 @@ func (m *Manager) apply(ctx context.Context, routes []model.HTTPRoute, desired *
 	m.options.PortOwners = o.PortOwners
 	m.options.PanelDomain = o.PanelDomain
 	m.options.PanelDomainProxied, m.options.PanelDNSObserved = o.PanelDomainProxied, o.PanelDNSObserved
+	m.options.Protection = o.Protection
 	m.panelDNS.Store(uint32(o.panelDNSMode()))
 	return m.persist(name)
 }
