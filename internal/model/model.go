@@ -92,8 +92,9 @@ type Config struct {
 	PortOwners PortOwners `json:"portOwners"`
 	// PanelDomain is the optional public hostname reserved for the management panel.
 	PanelDomain string `json:"panelDomain,omitempty"`
-	// PanelDomainProxied records the Cloudflare proxy mode observed for the
-	// panel record. Proxied mode requires an origin certificate or DNS-01.
+	// Last-good records whether Cloudflare confirmed its proxy mode.
+	PanelDNSObserved bool `json:"panelDNSObserved,omitempty"`
+	// The desired value is a fallback until Cloudflare confirms the mode.
 	PanelDomainProxied bool         `json:"panelDomainProxied,omitempty"`
 	Revision           int64        `json:"revision"`
 	HTTPRoutes         []HTTPRoute  `json:"httpRoutes"`
@@ -112,9 +113,15 @@ type Health struct {
 }
 
 type CertificateStatus struct {
-	Configured bool       `json:"configured"`
-	Domain     string     `json:"domain"`
-	State      string     `json:"state"`
-	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
-	Error      string     `json:"error,omitempty"`
+	Configured  bool       `json:"configured"`
+	Domain      string     `json:"domain"`
+	State       string     `json:"state"`
+	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	StoredState string     `json:"storedState,omitempty"`
+	DNSState    string     `json:"dnsState,omitempty"`
+	Addresses   []string   `json:"addresses,omitempty"`
+	TLSState    string     `json:"tlsState,omitempty"`
+	DNSError    string     `json:"dnsError,omitempty"`
+	TLSError    string     `json:"tlsError,omitempty"`
 }

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"niceproxy/internal/caddy"
 	"niceproxy/internal/model"
 	"niceproxy/internal/proxy"
 	"niceproxy/internal/store"
@@ -241,6 +242,41 @@ func TestLoginLimitIsPerClientAndSetupCannotLockOut(t *testing.T) {
 	}
 }
 
+func TestLoginClientKey(t *testing.T) {
+	for _, tc := range []struct {
+		name, remote, peer, want string
+		unix                     bool
+		cloudflare               []string
+	}{
+		{"TCP ignores headers", "192.0.2.1:1234", "192.0.2.2", "192.0.2.1", false, []string{"198.51.100.1"}},
+		{"Unix with trusted edge", "@", "192.0.2.2", "2001:db8::1", true, []string{"2001:0db8::1"}},
+		{"Unix with mapped IPv4", "@", "192.0.2.2", "198.51.100.1", true, []string{"::ffff:198.51.100.1"}},
+		{"Unix with missing header", "@", "192.0.2.2", "192.0.2.2", true, nil},
+		{"Unix with malformed header", "@", "192.0.2.2", "192.0.2.2", true, []string{"198.51.100.1:1234"}},
+		{"Unix with a list", "@", "192.0.2.2", "192.0.2.2", true, []string{"198.51.100.1, 203.0.113.1"}},
+		{"Unix with repeated header", "@", "192.0.2.2", "192.0.2.2", true, []string{"198.51.100.1", "198.51.100.1"}},
+		{"Unix with zoned peer", "@", "fe80::1%eth0", "fe80::1", true, nil},
+		{"Unnamed socket address alone grants no trust", "@", "192.0.2.2", "@", false, []string{"198.51.100.1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "/api/login", nil)
+			r.RemoteAddr = tc.remote
+			if tc.unix {
+				addr := &net.UnixAddr{Name: "control.sock", Net: "unix"}
+				r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, addr))
+			}
+			r.Header.Set(caddy.PanelPeerIPHeader, tc.peer)
+			for _, value := range tc.cloudflare {
+				r.Header.Add(caddy.PanelCloudflareIPHeader, value)
+			}
+			r.Header.Set("X-Forwarded-For", "203.0.113.2")
+			if got := loginClientKey(r); got != tc.want {
+				t.Fatalf("client key = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHTTPPathsCRUDAndCompatibility(t *testing.T) {
 	a, s, c := fixture(t)
 	create := func(body string, status int) model.HTTPRoute {
@@ -298,7 +334,7 @@ func (pendingPanelCaddy) Healthy(context.Context) bool                   { retur
 func (pendingPanelCaddy) CertificateState(context.Context, string) (string, error) {
 	return "missing", nil
 }
-func (pendingPanelCaddy) CertificateStatus(domain string) model.CertificateStatus {
+func (pendingPanelCaddy) CertificateStatus(_ context.Context, domain string) model.CertificateStatus {
 	return model.CertificateStatus{Configured: true, Domain: domain, State: "pending", Error: "certificate is missing"}
 }
 
@@ -307,15 +343,15 @@ func TestPanelDomainPendingCertificateIsAppliedAndActionable(t *testing.T) {
 	a.mu.Lock()
 	a.caddy = pendingPanelCaddy{}
 	a.config = model.Config{
-		Revision:    27,
-		PanelDomain: "cf.toxl.fun",
+		Revision:    19,
+		PanelDomain: "panel.example.com",
 		PortOwners:  model.PortOwners{HTTP: "caddy", HTTPS: "caddy", HTTP3: "caddy"},
-		HTTPRoutes:  []model.HTTPRoute{{ID: "bb06b3a7983cc68ed29c554dc570b92076c977d8c6aebbb4", Host: "toxl.fun", Path: "/", Target: "http://10.0.2.1", TLS: "auto", Enabled: true}},
+		HTTPRoutes:  []model.HTTPRoute{{ID: "route-existing-example", Host: "origin.example.com", Path: "/", Target: "http://192.0.2.10", TLS: "auto", Enabled: true}},
 		DirectRules: []model.DirectRule{},
 	}
-	a.applied = 27
+	a.applied = 19
 	a.state = "ready"
-	a.cfOptions.RedirectURL = "https://cf.toxl.fun/api/cloudflare/callback"
+	a.cfOptions.RedirectURL = "https://panel.example.com/api/cloudflare/callback"
 	a.mu.Unlock()
 	if err := a.Reconcile(context.Background()); err != nil {
 		t.Fatalf("pending certificate should not make reconciliation fail: %v", err)
@@ -331,7 +367,7 @@ func TestPanelDomainPendingCertificateIsAppliedAndActionable(t *testing.T) {
 		t.Fatalf("system panel route missing: %s %+v", resp.Status, config)
 	}
 	panel := config.HTTPRoutes[0]
-	if !panel.SystemManaged || panel.Host != "cf.toxl.fun" || panel.Status != "waiting_acme" || panel.Error == "" {
+	if !panel.SystemManaged || panel.Host != "panel.example.com" || panel.Status != "waiting_acme" || panel.Error == "" {
 		t.Fatalf("panel route diagnostics: %+v", panel)
 	}
 	if config.HTTPRoutes[1].Status != "healthy" {
@@ -347,7 +383,7 @@ func TestPanelDomainPendingCertificateIsAppliedAndActionable(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || health.State != "waiting_acme" || health.Certificate != "missing" || health.Error == "" {
 		t.Fatalf("health diagnostics: %s %+v", resp.Status, health)
 	}
-	if health.Revision != 27 || health.AppliedRevision != 27 {
+	if health.Revision != 19 || health.AppliedRevision != 19 {
 		t.Fatalf("certificate wait changed applied revision: %+v", health)
 	}
 
@@ -361,7 +397,7 @@ func TestPanelDomainPendingCertificateIsAppliedAndActionable(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || panelSettings.PanelDomain != "cf.toxl.fun" || panelSettings.Proxied || panelSettings.ProxyWarning == "" {
+	if resp.StatusCode != http.StatusOK || panelSettings.PanelDomain != "panel.example.com" || panelSettings.Proxied || panelSettings.ProxyWarning == "" {
 		t.Fatalf("panel DNS diagnostics: %s %+v", resp.Status, panelSettings)
 	}
 
@@ -371,7 +407,38 @@ func TestPanelDomainPendingCertificateIsAppliedAndActionable(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || certificate.Domain != "cf.toxl.fun" || certificate.State != "pending" {
+	if resp.StatusCode != http.StatusOK || certificate.Domain != "panel.example.com" || certificate.State != "pending" {
 		t.Fatalf("certificate endpoint: %s %+v", resp.Status, certificate)
+	}
+}
+
+type recordingPanelCaddy struct {
+	pendingPanelCaddy
+	loaded model.Config
+}
+
+func (c *recordingPanelCaddy) ApplyConfig(_ context.Context, cfg model.Config) error {
+	c.loaded = cfg
+	return nil
+}
+
+func TestPanelProxyModeChangeReloadsCaddy(t *testing.T) {
+	a, server, cookie := fixture(t)
+	caddy := &recordingPanelCaddy{}
+	a.mu.Lock()
+	a.caddy = caddy
+	a.mu.Unlock()
+
+	for _, body := range []string{`{"panelDomain":"panel.example.com","proxied":true}`, `{"proxied":false}`} {
+		resp := call(t, server, http.MethodPatch, "/api/panel-domain", body, cookie)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("panel mode update: %s", resp.Status)
+		}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if caddy.loaded.PanelDomain != "panel.example.com" || caddy.loaded.PanelDomainProxied || caddy.loaded.Revision != 2 {
+		t.Fatalf("Caddy did not receive DNS-only mode for the same panel domain: %+v", caddy.loaded)
 	}
 }

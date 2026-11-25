@@ -135,8 +135,8 @@ func TestPKCEAndEncryptedRestart(t *testing.T) {
 	}
 	o.Scopes = []string{"configured-scope-id"}
 	o.RedirectURL = "https://app.example/api/cloudflare/callback"
-	if manager(t, o, p).Status().Connected {
-		t.Fatal("wrong redirect loaded")
+	if !manager(t, o, p).Status().Connected {
+		t.Fatal("changing the redirect discarded the still-valid OAuth grant")
 	}
 	os.Remove(filepath.Join(o.DataDir, "cloudflare.key"))
 	lost := manager(t, o, p)
@@ -650,5 +650,51 @@ func TestDisconnectRetriesDurableDeletion(t *testing.T) {
 	}
 	if m.Status().Connected || revokes.Load() != 2 {
 		t.Fatal("disconnect did not retry revocation")
+	}
+}
+
+func TestLoopbackGrantSurvivesRefreshWithNoDirectCallback(t *testing.T) {
+	const loopback = "http://localhost:9080/api/cloudflare/callback"
+	var refreshes atomic.Int32
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			if err := r.ParseForm(); err != nil {
+				t.Error(err)
+			}
+			if r.Form.Get("grant_type") == "refresh_token" {
+				refreshes.Add(1)
+				if r.Form.Has("redirect_uri") {
+					t.Error("refresh must not send the panel callback")
+				}
+				token(w)
+				return
+			}
+			fmt.Fprint(w, `{"access_token":"example-access","refresh_token":"example-refresh","expires_in":1}`)
+			return
+		}
+		fmt.Fprint(w, `{"success":true,"result":[]}`)
+	}))
+	defer s.Close()
+	o := opts(t, s)
+	o.RedirectURL, o.LoopbackRedirectURL = "", loopback
+	p := &memoryStore{}
+	m := manager(t, o, p)
+	raw, err := m.BeginLoopback("initiating-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := auth.Query().Get("state")
+	if err := m.CompleteLoopback(context.Background(), loopback+"?code=example-code&state="+state, "initiating-session", func(s string) bool { return s == "initiating-session" }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Zones(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if restarted := manager(t, o, p).Status(); refreshes.Load() != 1 || !restarted.Connected {
+		t.Fatalf("grant did not survive refresh and restart: %+v, refreshes=%d", restarted, refreshes.Load())
 	}
 }

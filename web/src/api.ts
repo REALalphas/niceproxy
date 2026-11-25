@@ -36,6 +36,14 @@ export type PanelDomainSettings = {
   panelDomain: string;
   proxied: boolean;
   proxyWarning?: string;
+  automation?: {
+    domain?: string;
+    dnsMode?: string;
+    zoneSSL?: string;
+    sslSelection?: string;
+    state: string;
+    detail?: string;
+  };
 };
 export type DirectStats = {
   accepted: number;
@@ -248,7 +256,17 @@ export const api = {
         record(v) &&
         typeof v.panelDomain === "string" &&
         typeof v.proxied === "boolean" &&
-        (v.proxyWarning == null || typeof v.proxyWarning === "string"),
+        (v.proxyWarning == null || typeof v.proxyWarning === "string") &&
+        (v.automation == null ||
+          (record(v.automation) &&
+            typeof v.automation.state === "string" &&
+            [
+              v.automation.domain,
+              v.automation.dnsMode,
+              v.automation.zoneSSL,
+              v.automation.sslSelection,
+              v.automation.detail,
+            ].every((value) => value == null || typeof value === "string"))),
     ),
   savePanelDomain: (panelDomain: string) =>
     request("/panel-domain", config, "PATCH", { panelDomain }).then(
