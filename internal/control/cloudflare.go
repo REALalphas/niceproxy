@@ -274,6 +274,10 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/cloudflare/zones/"), "/")
+	if strings.HasPrefix(r.URL.Path, "/api/cloudflare/zones/") && len(parts) == 3 && parts[1] == "settings" {
+		a.cloudflareZoneSetting(ctx, w, r, parts[0], parts[2])
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/cloudflare/zones/") && (len(parts) == 2 || len(parts) == 3) && parts[1] == "records" {
 		zoneID := parts[0]
 		if len(parts) == 2 && r.Method == "GET" {
@@ -303,11 +307,47 @@ func (a *App) cloudflareAPI(w http.ResponseWriter, r *http.Request) {
 				fail(w, 502, err.Error())
 				return
 			}
+			a.queuePanelAutomation()
 			write(w, 200, result)
 			return
 		}
 	}
 	fail(w, 404, "Cloudflare endpoint not found")
+}
+
+func (a *App) cloudflareZoneSetting(ctx context.Context, w http.ResponseWriter, r *http.Request, zoneID, id string) {
+	var setting cloudflare.ZoneSetting
+	var err error
+	switch r.Method {
+	case http.MethodGet:
+		setting, err = a.cf.ReadZoneSetting(ctx, zoneID, id)
+	case http.MethodPatch:
+		var input struct {
+			Value string `json:"value"`
+		}
+		if err := decode(w, r, &input); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		setting, err = a.cf.WriteZoneSetting(ctx, zoneID, id, input.Value)
+		if err == nil {
+			a.queuePanelAutomation()
+		}
+	default:
+		w.Header().Set("Allow", "GET, PATCH")
+		fail(w, 405, "GET or PATCH required")
+		return
+	}
+	switch {
+	case errors.Is(err, cloudflare.ErrInvalidZoneSetting):
+		fail(w, 400, err.Error())
+	case errors.Is(err, cloudflare.ErrReadOnlySetting):
+		fail(w, 409, err.Error())
+	case err != nil:
+		fail(w, 502, err.Error())
+	default:
+		write(w, 200, setting)
+	}
 }
 
 func (a *App) cloudflareCredentialsCleared(w http.ResponseWriter) bool {

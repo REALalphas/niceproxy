@@ -207,6 +207,115 @@ func TestCloudflareRequiresAuthAndRejectsForeignStart(t *testing.T) {
 	}
 }
 
+func TestCloudflareZoneSettingsAfterLANOAuth(t *testing.T) {
+	a, s, session := fixture(t)
+	zone := strings.Repeat("a", 32)
+	prefix := "/zones/" + zone + "/settings/"
+	const loopback = "http://127.0.0.1:9080/api/cloudflare/callback"
+	const fakeAccess = "fictional-access-credential"
+	var calls, writes atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			if err := r.ParseForm(); err != nil || r.Form.Get("redirect_uri") != loopback || r.Form.Get("code_verifier") == "" {
+				t.Error("invalid bootstrap token exchange")
+			}
+			fmt.Fprintf(w, `{"access_token":%q,"expires_in":3600}`, fakeAccess)
+			return
+		}
+		calls.Add(1)
+		if r.Header.Get("Authorization") != "Bearer "+fakeAccess {
+			t.Error("settings request did not use the OAuth grant")
+		}
+		switch r.Method + " " + strings.TrimPrefix(r.URL.Path, prefix) {
+		case "GET ssl":
+			mode := "full"
+			if writes.Load() > 0 {
+				mode = "strict"
+			}
+			fmt.Fprintf(w, `{"success":true,"result":{"id":"ssl","value":%q,"editable":true}}`, mode)
+		case "PATCH ssl":
+			var body struct{ Value string }
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Value != "strict" {
+				t.Error("unexpected SSL setting payload", err)
+			}
+			writes.Add(1)
+			fmt.Fprint(w, `{"success":true,"result":{"id":"ssl","value":"strict","editable":true}}`)
+		case "GET always_use_https":
+			fmt.Fprint(w, `{"success":true,"result":{"id":"always_use_https","value":"off","editable":false}}`)
+		case "GET automatic_https_rewrites":
+			fmt.Fprint(w, `{"success":true,"result":{"id":"automatic_https_rewrites","value":"off","editable":true}}`)
+		case "PATCH automatic_https_rewrites", "GET /zones":
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintf(w, `{"success":false,"errors":[{"code":9109,"message":%q}]}`, fakeAccess)
+		default:
+			t.Errorf("unexpected provider request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer provider.Close()
+	if err := a.ConfigureCloudflare(cloudflare.Options{
+		ClientID: "fictional-client", Scopes: []string{"fictional-scope"}, DataDir: t.TempDir(),
+		LoopbackRedirectURL: loopback, AuthURL: provider.URL + "/auth", TokenURL: provider.URL + "/token", APIBase: provider.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lanPanel := func(path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "http://192.0.2.10:9080/api/cloudflare/"+path, strings.NewReader(body))
+		req.Header.Set("Origin", "http://192.0.2.10:9080")
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(session)
+		response := httptest.NewRecorder()
+		a.Handler(http.NotFoundHandler()).ServeHTTP(response, req)
+		if response.Code != http.StatusOK {
+			t.Fatalf("localhost OAuth %s: %d %s", path, response.Code, response.Body)
+		}
+		return response
+	}
+	var start struct{ URL string }
+	if err := json.Unmarshal(lanPanel("connect?mode=localhost", "").Body.Bytes(), &start); err != nil {
+		t.Fatal(err)
+	}
+	authURL, err := url.Parse(start.URL)
+	if err != nil || authURL.Query().Get("redirect_uri") != loopback || authURL.Query().Get("state") == "" {
+		t.Fatal("missing localhost callback or state", err)
+	}
+	callback := loopback + "?code=fictional-code&state=" + url.QueryEscape(authURL.Query().Get("state"))
+	lanPanel("complete", fmt.Sprintf(`{"callbackUrl":%q}`, callback))
+
+	apiPath := "/api/cloudflare" + prefix
+	for _, tc := range []struct {
+		name, method, path, input, want string
+		status                          int
+		auth                            bool
+	}{
+		{"unauthenticated", "PATCH", apiPath + "ssl", `{"value":"strict"}`, "authentication required", 401, false},
+		{"read", "GET", apiPath + "ssl", "", `"value":"full"`, 200, true},
+		{"unknown setting", "GET", apiPath + "unlisted", "", "Invalid zone", 400, true},
+		{"invalid value", "PATCH", apiPath + "ssl", `{"value":"unknown"}`, "Invalid zone", 400, true},
+		{"read-only", "PATCH", apiPath + "always_use_https", `{"value":"on"}`, "read-only", 409, true},
+		{"write permission", "PATCH", apiPath + "automatic_https_rewrites", `{"value":"on"}`, "Zone Settings Write", 502, true},
+		{"zone permission", "GET", "/api/cloudflare/zones", "", "Zone Read", 502, true},
+		{"explicit write", "PATCH", apiPath + "ssl", `{"value":"strict"}`, `"value":"strict"`, 200, true},
+		{"same value", "PATCH", apiPath + "ssl", `{"value":"strict"}`, `"value":"strict"`, 200, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var cookie *http.Cookie
+			if tc.auth {
+				cookie = session
+			}
+			response := call(t, s, tc.method, tc.path, tc.input, cookie)
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil || response.StatusCode != tc.status || !bytes.Contains(body, []byte(tc.want)) || bytes.Contains(body, []byte(fakeAccess)) {
+				t.Fatalf("unexpected response %d: %s (%v)", response.StatusCode, body, err)
+			}
+		})
+	}
+	if writes.Load() != 1 || calls.Load() != 8 {
+		t.Fatalf("provider calls = %d, writes = %d", calls.Load(), writes.Load())
+	}
+}
+
 func TestExplicitHTTPSCallbackHostIsAllowed(t *testing.T) {
 	a, s, session := fixture(t)
 	if err := a.ConfigureCloudflare(cloudflare.Options{DataDir: t.TempDir(), RedirectURL: "https://panel.example/api/cloudflare/callback"}); err != nil {
