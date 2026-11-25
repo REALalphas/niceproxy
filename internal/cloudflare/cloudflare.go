@@ -614,6 +614,23 @@ type envelope struct {
 	} `json:"result_info"`
 }
 
+type apiStatusError int
+
+func (e apiStatusError) Error() string {
+	if e == http.StatusUnauthorized {
+		return "Cloudflare authorization expired"
+	}
+	return fmt.Sprintf("Cloudflare API request failed (HTTP %d)", int(e))
+}
+
+func withPermission(err error, permission string) error {
+	var status apiStatusError
+	if errors.As(err, &status) && status == http.StatusForbidden {
+		return fmt.Errorf("%w. Check %s for the selected account and zone, then reconnect Cloudflare with the updated OAuth scopes", err, permission)
+	}
+	return err
+}
+
 func (m *Manager) api(ctx context.Context, method, path string, body any, out any) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -644,10 +661,9 @@ func (m *Manager) api(ctx context.Context, method, path string, body any, out an
 	defer resp.Body.Close()
 	if resp.StatusCode == 401 {
 		m.invalidateLocked()
-		return 0, errors.New("Cloudflare authorization expired")
 	}
 	if resp.StatusCode/100 != 2 {
-		return 0, fmt.Errorf("Cloudflare API request failed (HTTP %d)", resp.StatusCode)
+		return 0, apiStatusError(resp.StatusCode)
 	}
 	var env envelope
 	if readJSON(resp.Body, 4<<20, &env) != nil {
@@ -667,7 +683,7 @@ func (m *Manager) Zones(ctx context.Context) ([]Zone, error) {
 		var z []Zone
 		pages, e := m.api(ctx, "GET", fmt.Sprintf("/zones?page=%d&per_page=50", p), nil, &z)
 		if e != nil {
-			return nil, e
+			return nil, withPermission(e, "Zone Read")
 		}
 		all = append(all, z...)
 		if pages > 0 && p >= pages || pages == 0 && len(z) < 50 {
@@ -695,7 +711,7 @@ func (m *Manager) Records(ctx context.Context, zone string) ([]Record, error) {
 		var r []Record
 		pages, e := m.api(ctx, "GET", fmt.Sprintf("/zones/%s/dns_records?page=%d&per_page=50", zone, p), nil, &r)
 		if e != nil {
-			return nil, e
+			return nil, withPermission(e, "DNS Read")
 		}
 		all = append(all, r...)
 		if pages > 0 && p >= pages || pages == 0 && len(r) < 50 {
@@ -762,7 +778,7 @@ func (m *Manager) WriteRecord(ctx context.Context, zone, id string, r Record) (R
 	}
 	var actual Zone
 	if _, e := m.api(ctx, "GET", "/zones/"+zone, nil, &actual); e != nil {
-		return Record{}, e
+		return Record{}, withPermission(e, "Zone Read")
 	}
 	name := strings.ToLower(strings.TrimSuffix(actual.Name, "."))
 	if actual.ID != zone || !hostname(name) || !(r.Name == name || strings.HasSuffix(r.Name, "."+name)) {
@@ -776,7 +792,7 @@ func (m *Manager) WriteRecord(ctx context.Context, zone, id string, r Record) (R
 	}
 	var out Record
 	if _, e := m.api(ctx, method, path, r, &out); e != nil {
-		return Record{}, e
+		return Record{}, withPermission(e, "DNS Write")
 	}
 	return out, nil
 }

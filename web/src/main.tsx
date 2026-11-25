@@ -27,6 +27,7 @@ import { changeView } from "./view";
 import { validHttpPath } from "./http-path";
 import { isDirectIP, isDirectTarget } from "./direct-address";
 import { Cloudflare } from "./Cloudflare";
+import { CloudflareRouteDomains } from "./CloudflareRouteDomains";
 import { cloudflareApi, type CertificateStatus } from "./cloudflare-api";
 import {
   api,
@@ -154,10 +155,12 @@ function target(route: HttpRoute | DirectRule) {
 }
 function HttpForm({
   route,
+  panelDomain = "",
   onDone,
   onCancel,
 }: {
   route?: HttpRoute;
+  panelDomain?: string;
   onDone: (r: HttpRoute) => void;
   onCancel?: () => void;
 }) {
@@ -239,6 +242,7 @@ function HttpForm({
             required
             disabled={busy}
           />
+          <CloudflareRouteDomains host={host} panelDomain={panelDomain} onPick={setHost} disabled={busy} />
           <TextInput
             showIcon={false}
             labelPlacement="inside"
@@ -1094,6 +1098,7 @@ function App() {
               </Stack>
             ) : page.endsWith("/http") ? (
               <HttpForm
+                panelDomain={config.panelDomain}
                 onDone={(r) => saved("http", r)}
                 onCancel={() => navigate("routes")}
               />
@@ -1125,6 +1130,7 @@ function App() {
                 <HttpForm
                   key={mapping.key}
                   route={mapping.route}
+                  panelDomain={config.panelDomain}
                   onDone={(r) => saved("http", r)}
                   onCancel={() => navigate(`routes/view/${mapping.key}`)}
                 />
@@ -1430,6 +1436,9 @@ function App() {
           <Card>
             <Cloudflare
               routes={config.httpRoutes}
+              panelDomain={config.panelDomain}
+              panelAutomation={panelAutomation}
+              onCloudflareChanged={() => void refresh()}
               callback={cloudflareCallback}
             />
           </Card>

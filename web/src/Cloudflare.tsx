@@ -17,12 +17,15 @@ import {
   TextInput,
 } from "@alpha/react";
 import { changeView } from "./view";
-import { type HttpRoute, Unauthorized } from "./api";
+import { type HttpRoute, type PanelDomainSettings, Unauthorized } from "./api";
+import { CloudflareZoneSettings } from "./CloudflareZoneSettings";
 import {
   authorizationURL,
   cloudflareApi,
+  domainSuggestions,
   parseScopes,
   supportedRecord,
+  zoneForDomain,
   type CloudflareStatus,
   type DNSRecord,
   type RecordInput,
@@ -41,13 +44,13 @@ function Alert({ children }: { children: string }) {
 function RecordForm({
   zone,
   record,
-  routes,
+  domains,
   onSaved,
   onCancel,
 }: {
   zone: Zone;
   record?: DNSRecord;
-  routes: HttpRoute[];
+  domains: string[];
   onSaved: (record: DNSRecord) => void;
   onCancel: () => void;
 }) {
@@ -59,17 +62,7 @@ function RecordForm({
   const [proxied, setProxied] = useState(record?.proxied ?? false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const suggestions = [
-    ...new Set(
-      routes
-        .map((r) => r.host.toLowerCase())
-        .filter(
-          (host) =>
-            host === zone.name.toLowerCase() ||
-            host.endsWith(`.${zone.name.toLowerCase()}`),
-        ),
-    ),
-  ];
+  const suggestions = domainSuggestions(zone.name, domains);
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (busy || !name.trim() || !content.trim()) return;
@@ -149,7 +142,7 @@ function RecordForm({
           <Select
             popup="overlay"
             id="cf-route-suggestion"
-            label="Подставить имя из HTTP-маршрута"
+            label="Подставить домен панели, маршрута или зоны"
             value=""
             onValueChange={(v) => {
               if (v) setName(v);
@@ -206,9 +199,15 @@ function RecordForm({
 
 export function Cloudflare({
   routes = [],
+  panelDomain = "",
+  panelAutomation,
+  onCloudflareChanged,
   callback,
 }: {
   routes?: HttpRoute[];
+  panelDomain?: string;
+  panelAutomation?: PanelDomainSettings["automation"];
+  onCloudflareChanged: () => void;
   callback?: string;
 }) {
   const [status, setStatus] = useState<CloudflareStatus | null>(null);
@@ -264,10 +263,18 @@ export function Cloudflare({
     cloudflareApi
       .zones()
       .then((data) => {
-        if (current) setZones(data.zones);
+        if (!current) return;
+        setZones(data.zones);
+        setZoneId((selected) => data.zones.some(({ id }) => id === selected)
+          ? selected
+          : zoneForDomain(data.zones, panelDomain)?.id ?? (data.zones.length === 1 ? data.zones[0].id : ""));
       })
       .catch((e) => {
-        if (current && !(e instanceof Unauthorized)) setZonesError(message(e));
+        if (current && !(e instanceof Unauthorized)) {
+          setZones([]);
+          setZoneId("");
+          setZonesError(message(e));
+        }
       })
       .finally(() => {
         if (current) setZonesLoading(false);
@@ -275,7 +282,7 @@ export function Cloudflare({
     return () => {
       current = false;
     };
-  }, [status?.connected, refresh]);
+  }, [status?.connected, refresh, panelDomain]);
   useEffect(() => {
     setRecordsError("");
     if (!status?.connected || !zoneId) {
@@ -355,6 +362,7 @@ export function Cloudflare({
   }
 
   const zone = zones.find((z) => z.id === zoneId);
+  const panelZone = zoneForDomain(zones, panelDomain);
   const change = (update: () => void) => {
     void changeView(update);
   };
@@ -456,7 +464,7 @@ export function Cloudflare({
         key={`${zone.id}:${editor === "new" ? "new" : editor.id}`}
         zone={zone}
         record={editor === "new" ? undefined : editor}
-        routes={routes}
+        domains={[panelDomain, ...routes.map(({ host }) => host), zone.name]}
         onCancel={() => change(() => setEditor(null))}
         onSaved={(saved) => {
           ++recordsVersion.current;
@@ -465,6 +473,7 @@ export function Cloudflare({
               ? current.map((r) => (r.id === saved.id ? saved : r))
               : [...current, saved],
           );
+          onCloudflareChanged();
           change(() => setEditor(null));
         }}
       />
@@ -587,6 +596,23 @@ export function Cloudflare({
       )}
       {status?.connected && (
         <Stack gap={4}>
+          {panelDomain && (
+            <Card>
+              <Stack gap={2}>
+                <Text as="h3" font="heading">Домен панели</Text>
+                <Text font="mono">{panelDomain}</Text>
+                {panelZone && <Text>Зона Cloudflare · {panelZone.name}</Text>}
+                {!panelZone && !zonesLoading && !zonesError && (
+                  <Text tone="secondary">
+                    Для домена панели нет доступной зоны. Проверьте аккаунт и доступ к зоне в разрешении Cloudflare.
+                  </Text>
+                )}
+                {panelAutomation?.domain === panelDomain && panelAutomation.detail && (
+                  <Text tone="secondary">{panelAutomation.detail}</Text>
+                )}
+              </Stack>
+            </Card>
+          )}
           {zonesLoading && !zones.length && <Text>Загрузка зон…</Text>}
           {zonesError && <Alert>{zonesError}</Alert>}
           {!zonesLoading && !zonesError && !zones.length && (
@@ -624,11 +650,18 @@ export function Cloudflare({
             <Button
               variant="blank"
               loading={zonesLoading || recordsLoading}
-              onPress={() => setRefresh((v) => v + 1)}
+              onPress={() => {
+                void load();
+                onCloudflareChanged();
+                setRefresh((v) => v + 1);
+              }}
             >
               Обновить
             </Button>
           </Stack>
+          {zone && (
+            <CloudflareZoneSettings key={`${zone.id}:${refresh}`} zoneId={zone.id} onSaved={onCloudflareChanged} />
+          )}
           {recordsLoading && !records.length && (
             <Text>Загрузка DNS-записей…</Text>
           )}
