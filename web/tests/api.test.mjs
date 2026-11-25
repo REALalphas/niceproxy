@@ -154,3 +154,46 @@ test("expired-session mutations cannot publish stale state or send queued writes
   assert.equal(writes, 1, "a queued mutation must not run in a different session");
   assert.equal(changed, 0, "stale success must not publish a mutation event");
 });
+
+test("reports transport, HTTP and malformed JSON failures through the shared client", async t => {
+  setup(t, async () => { throw new TypeError("network failure"); });
+  await assert.rejects(api.config(), /server is unavailable or the request timed out/);
+  globalThis.fetch = async () => new Response("Bad gateway", { status: 502 });
+  await assert.rejects(api.health(), /HTTP 502/);
+  globalThis.fetch = async () => new Response("invalid JSON");
+  await assert.rejects(api.auth(), /неизвестном формате/);
+  let expired = 0;
+  window.addEventListener("niceproxy:unauthorized", () => expired++);
+  globalThis.fetch = async () => reply({ error: "invalid credentials" }, 401);
+  await assert.rejects(api.login("wrong-password", false), /Incorrect password/);
+  assert.equal(expired, 0);
+});
+
+test("HTTP and direct route CRUD use encoded IDs and normalize legacy HTTP paths", async t => {
+  const stored = { id: "route/a", host: "app.example", target: "http://127.0.0.1:3001", tls: "off", enabled: true, status: "healthy" };
+  const httpInput = { host: stored.host, target: stored.target, tls: stored.tls, enabled: true, path: "/", stripPrefix: false };
+  const directInput = { protocol: rule.protocol, listenHost: rule.listenHost, listenPort: rule.listenPort, targetHost: rule.targetHost, targetPort: rule.targetPort, enabled: true };
+  const calls = [];
+  setup(t, async (url, options) => {
+    calls.push([url, options.method, options.body === undefined ? undefined : JSON.parse(options.body)]);
+    if (options.method === "DELETE") return reply({ ok: true });
+    if (url.includes("direct-rules")) return reply(rule);
+    return reply(stored);
+  });
+  assert.deepEqual(await api.saveHttp(httpInput), { ...stored, path: "/", stripPrefix: false });
+  await api.saveHttp(httpInput, stored.id);
+  assert.equal((await api.toggle("http-routes", stored.id, true)).path, "/");
+  assert.deepEqual(await api.saveDirect(directInput), rule);
+  await api.saveDirect(directInput, "direct/a");
+  assert.deepEqual(await api.toggle("direct-rules", "direct/a", true), rule);
+  await api.remove("direct-rules", "direct/a");
+  assert.deepEqual(calls, [
+    ["/api/http-routes", "POST", httpInput],
+    ["/api/http-routes/route%2Fa", "PATCH", httpInput],
+    ["/api/http-routes/route%2Fa", "PATCH", { enabled: true }],
+    ["/api/direct-rules", "POST", directInput],
+    ["/api/direct-rules/direct%2Fa", "PATCH", directInput],
+    ["/api/direct-rules/direct%2Fa", "PATCH", { enabled: true }],
+    ["/api/direct-rules/direct%2Fa", "DELETE", undefined],
+  ]);
+});
