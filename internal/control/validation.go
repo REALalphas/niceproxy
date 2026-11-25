@@ -29,14 +29,16 @@ func validateHTTP(r *model.HTTPRoute) error {
 		return fmt.Errorf("stripPrefix requires a non-root path")
 	}
 	u, err := url.Parse(r.Target)
-	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return fmt.Errorf("target must be an http(s) origin, for example http://127.0.0.1:3000")
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "tcp" && u.Scheme != "udp") {
+		return fmt.Errorf("target must be an http(s), tcp or udp origin, for example http://127.0.0.1:3000")
 	}
 	if u.Port() != "" {
 		p, e := strconv.Atoi(u.Port())
 		if e != nil || p < 1 || p > 65535 {
 			return fmt.Errorf("invalid upstream port")
 		}
+	} else if u.Scheme == "tcp" || u.Scheme == "udp" {
+		return fmt.Errorf("%s target must include a port", u.Scheme)
 	}
 	return nil
 }

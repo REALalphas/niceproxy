@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"niceproxy/internal/ddos"
 )
 
 type HTTPRoute struct {
@@ -89,7 +91,8 @@ type DirectRule struct {
 }
 
 type Config struct {
-	PortOwners PortOwners `json:"portOwners"`
+	AntiDDoS   ddos.Config `json:"antiDDoS,omitempty"`
+	PortOwners PortOwners  `json:"portOwners"`
 	// PanelDomain is the optional public hostname reserved for the management panel.
 	PanelDomain string `json:"panelDomain,omitempty"`
 	// Last-good records whether Cloudflare confirmed its proxy mode.

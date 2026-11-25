@@ -31,10 +31,12 @@ const validPort = (value: string) =>
 function httpTargetError(value: string): string | undefined {
   // Caddy accepts DNS names such as app.123 that the browser URL parser rejects.
   const match =
-    /^https?:\/\/(\[[^\]]+\]|[^:/?#@\\\[\]\s]+)(?::(\d*))?\/?#?$/i.exec(value);
-  if (!match || !isDirectTarget(match[1].replace(/^\[|\]$/g, "")))
-    return "Укажите HTTP(S)-адрес сервиса без пути, параметров и пароля.";
-  if (match[2] !== undefined && !validPort(match[2]))
+    /^(https?|tcp|udp):\/\/(\[[^\]]+\]|[^:/?#@\\\[\]\s]+)(?::(\d*))?\/?#?$/i.exec(value);
+  if (!match || !isDirectTarget(match[2].replace(/^\[|\]$/g, "")))
+    return "Укажите HTTP(S), TCP или UDP адрес сервиса без пути, параметров и пароля.";
+  if ((match[1] === "tcp" || match[1] === "udp") && !match[3])
+    return "Для TCP/UDP укажите порт сервиса.";
+  if (match[3] !== undefined && !validPort(match[3]))
     return "Укажите порт сервиса от 1 до 65535.";
 }
 

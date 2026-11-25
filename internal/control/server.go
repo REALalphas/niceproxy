@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,8 +21,11 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"niceproxy/internal/bridge"
 	"niceproxy/internal/caddy"
 	"niceproxy/internal/cloudflare"
+	"niceproxy/internal/ddos"
+	"niceproxy/internal/ddos/trust"
 	"niceproxy/internal/model"
 	"niceproxy/internal/proxy"
 	"niceproxy/internal/store"
@@ -45,6 +49,7 @@ type App struct {
 	applied                int64
 	active                 map[string]model.DirectRule
 	httpActive             []model.HTTPRoute
+	activeProtection       ddos.Config
 	httpOwners             model.PortOwners
 	activePanelDomain      string
 	activePanelProxied     bool
@@ -69,6 +74,8 @@ type App struct {
 	cfInitError            string
 	cfCallbackHost         atomic.Value // explicit trusted callback host; never learned from a request
 	cfHTTPSCallback        atomic.Bool
+	trustResolver          *trust.Resolver
+	bridgeToken            string
 }
 
 const systemPanelRouteID = "system-panel-domain"
@@ -90,6 +97,9 @@ func New(db *store.Store, c Caddy, p *proxy.Manager, reserved map[int]bool) (*Ap
 		cfg.DirectRules = []model.DirectRule{}
 	}
 	cfg.ApplyDefaults()
+	if err := validateAntiDDoS(cfg); err != nil {
+		return nil, err
+	}
 	reservedCopy := map[int]bool{}
 	for port, value := range reserved {
 		reservedCopy[port] = value
@@ -100,7 +110,11 @@ func New(db *store.Store, c Caddy, p *proxy.Manager, reserved map[int]bool) (*Ap
 	}
 	delete(reservedCopy, hp)
 	delete(reservedCopy, sp)
-	a := &App{httpPort: hp, httpsPort: sp, db: db, caddy: c, proxy: p, config: cfg, applied: persistedApplied, active: map[string]model.DirectRule{}, ruleErrors: map[string]string{}, reserved: reservedCopy, authByClient: map[string]authBucket{}, state: "ready", panelEdgeWake: make(chan struct{}, 1)}
+	resolver, resolverErr := newTrustResolver(cfg.AntiDDoS)
+	if resolverErr != nil {
+		return nil, resolverErr
+	}
+	a := &App{httpPort: hp, httpsPort: sp, db: db, caddy: c, proxy: p, config: cfg, applied: persistedApplied, active: map[string]model.DirectRule{}, ruleErrors: map[string]string{}, reserved: reservedCopy, authByClient: map[string]authBucket{}, state: "ready", panelEdgeWake: make(chan struct{}, 1), trustResolver: resolver}
 	if err := a.panelDomainConflict(cfg); err != nil {
 		a.startupError = err.Error()
 		a.state = "unrecoverable_corruption"
@@ -122,7 +136,7 @@ func New(db *store.Store, c Caddy, p *proxy.Manager, reserved map[int]bool) (*Ap
 		if !r.Enabled {
 			continue
 		}
-		_, e := p.Add(r.ID, proxy.Rule{Protocol: r.Protocol, ListenAddress: r.ListenHost, ListenPort: r.ListenPort, TargetAddress: r.TargetHost, TargetPort: r.TargetPort})
+		_, e := p.AddProtected(r.ID, proxy.Rule{Protocol: r.Protocol, ListenAddress: r.ListenHost, ListenPort: r.ListenPort, TargetAddress: r.TargetHost, TargetPort: r.TargetPort}, &proxy.ProtectionConfig{Version: good.Revision, Listener: good.AntiDDoS.Listener, Endpoint: good.AntiDDoS.Endpoints[r.ID]})
 		if e == nil {
 			a.active[r.ID] = r
 		}
@@ -130,10 +144,147 @@ func New(db *store.Store, c Caddy, p *proxy.Manager, reserved map[int]bool) (*Ap
 	return a, nil
 }
 
+func (a *App) SetBridgeToken(token string) { a.mu.Lock(); a.bridgeToken = token; a.mu.Unlock() }
+
+func (a *App) RunProtection(ctx context.Context) {
+	go a.proxy.Defense().Run(ctx)
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for {
+		a.mu.Lock()
+		resolver := a.trustResolver
+		a.mu.Unlock()
+		if resolver != nil {
+			_ = resolver.Refresh(ctx) // the resolver retains its last complete pair
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func validateAntiDDoS(c model.Config) error {
+	if err := c.AntiDDoS.Listener.Validate(ddos.Listener); err != nil {
+		return fmt.Errorf("listener protection: %w", err)
+	}
+	known := make(map[string]string, len(c.HTTPRoutes)+len(c.DirectRules))
+	for _, r := range c.DirectRules {
+		if r.Protocol == "tcp" {
+			known[r.ID] = ddos.TCP
+		} else if r.Protocol == "udp" {
+			known[r.ID] = ddos.UDP
+		}
+	}
+	for _, r := range c.HTTPRoutes {
+		kind := ddos.HTTP
+		if strings.HasPrefix(strings.ToLower(r.Target), "tcp://") {
+			kind = ddos.HTTPTCP
+		}
+		if strings.HasPrefix(strings.ToLower(r.Target), "udp://") {
+			kind = ddos.HTTPUDP
+		}
+		known[r.ID] = kind
+	}
+	for id, p := range c.AntiDDoS.Endpoints {
+		kind, ok := known[id]
+		if !ok {
+			return fmt.Errorf("anti-DDoS endpoint %q is not configured", id)
+		}
+		if err := p.Validate(kind); err != nil {
+			return fmt.Errorf("endpoint %s protection: %w", id, err)
+		}
+		for _, route := range c.HTTPRoutes {
+			if route.ID == id && p.CloudflareOnly && route.TLS == "off" {
+				return fmt.Errorf("endpoint %s Cloudflare-only protection requires TLS", id)
+			}
+		}
+		if p.CloudflareOnly && (c.AntiDDoS.Cloudflare == nil || !c.AntiDDoS.Cloudflare.Enabled) {
+			return fmt.Errorf("endpoint %s Cloudflare-only protection requires enabled Cloudflare network refresh", id)
+		}
+	}
+	if c.AntiDDoS.Cloudflare != nil {
+		if err := c.AntiDDoS.Cloudflare.Validate(); err != nil {
+			return fmt.Errorf("Cloudflare trust: %w", err)
+		}
+	}
+	cloudflareHosts := map[string]bool{}
+	cloudflareCAs := map[string]string{}
+	for _, route := range c.HTTPRoutes {
+		policy := c.AntiDDoS.Endpoints[route.ID]
+		if policy == nil || !policy.CloudflareOnly {
+			continue
+		}
+		host := strings.ToLower(strings.TrimSuffix(route.Host, "."))
+		if previous, ok := cloudflareHosts[host]; ok && !previous {
+			return fmt.Errorf("Cloudflare-only protection must cover every path of host %s", host)
+		}
+		cloudflareHosts[host] = true
+		if ca, ok := cloudflareCAs[host]; ok && ca != policy.OriginPullCA {
+			return fmt.Errorf("Cloudflare Origin Pull CA must be identical for every path of host %s", host)
+		}
+		cloudflareCAs[host] = policy.OriginPullCA
+		for _, other := range c.HTTPRoutes {
+			if other.ID == route.ID || !strings.EqualFold(strings.TrimSuffix(other.Host, "."), host) {
+				continue
+			}
+			otherPolicy := c.AntiDDoS.Endpoints[other.ID]
+			if otherPolicy == nil || !otherPolicy.CloudflareOnly {
+				return fmt.Errorf("Cloudflare-only protection must cover every path of host %s", host)
+			}
+		}
+	}
+	return nil
+}
+
+func newTrustResolver(cfg ddos.Config) (*trust.Resolver, error) {
+	trustConfig := trust.Config{TrustedProxies: []string{"127.0.0.1/32", "::1/128"}}
+	if cfg.Cloudflare != nil {
+		trustConfig = *cfg.Cloudflare
+		trustConfig.TrustedProxies = append(trustConfig.TrustedProxies, "127.0.0.1/32", "::1/128")
+	}
+	return trust.New(trustConfig)
+}
+
 func (a *App) Reconcile(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.reconcile(ctx)
+}
+
+func (a *App) antiDDoSStatus() map[string]any {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	status := map[string]any{"revision": a.config.Revision, "appliedRevision": a.applied, "status": "active", "instances": []any{}}
+	if a.applied < 0 || a.applied != a.config.Revision {
+		status["status"] = "partial"
+	}
+	if a.applied >= 0 && a.applied != a.config.Revision {
+		status["status"] = "applying"
+	}
+	targets := make([]any, 0)
+	for _, s := range a.proxy.Defense().Snapshots() {
+		targets = append(targets, s)
+	}
+	instance := map[string]any{"id": "local", "version": a.applied, "targets": targets}
+	if a.trustResolver != nil {
+		s := a.trustResolver.Snapshot()
+		networks := make([]string, 0, len(s.IPv4)+len(s.IPv6))
+		for _, n := range append(s.IPv4, s.IPv6...) {
+			networks = append(networks, n.String())
+		}
+		cloudflareStatus := map[string]any{"networks": networks, "ipv4URL": s.EffectiveIPv4URL, "ipv6URL": s.EffectiveIPv6URL}
+		if !s.UpdatedAt.IsZero() {
+			cloudflareStatus["updatedAt"] = s.UpdatedAt
+		}
+		if s.Error != "" {
+			cloudflareStatus["error"] = s.Error
+		}
+		instance["cloudflare"] = cloudflareStatus
+	}
+	status["instances"] = []any{instance}
+	return status
 }
 
 // SetCaddyActive records the public configuration loaded during startup.
@@ -145,6 +296,7 @@ func (a *App) SetCaddyActive(cfg model.Config) {
 
 func (a *App) setCaddyActive(cfg model.Config) {
 	a.httpActive = append([]model.HTTPRoute{}, cfg.HTTPRoutes...)
+	a.activeProtection = cfg.AntiDDoS
 	a.httpOwners = cfg.PortOwners
 	a.activePanelDomain = cfg.PanelDomain
 	a.activePanelProxied = cfg.PanelDomainProxied
@@ -217,11 +369,13 @@ func (a *App) reconcile(ctx context.Context) error {
 		}
 	}
 	a.httpError = ""
+	caddyApplied := true
 	if a.caddyUnconfirmed || a.httpOwners != a.config.PortOwners ||
 		a.activePanelDomain != caddyConfig.PanelDomain || a.activePanelProxied != caddyConfig.PanelDomainProxied ||
 		a.activePanelDNSObserved != caddyConfig.PanelDNSObserved ||
-		!reflect.DeepEqual(a.httpActive, a.config.HTTPRoutes) || !a.caddy.Healthy(ctx) {
+		!reflect.DeepEqual(a.httpActive, a.config.HTTPRoutes) || !reflect.DeepEqual(a.activeProtection, caddyConfig.AntiDDoS) || !a.caddy.Healthy(ctx) {
 		if err := a.applyCaddy(ctx, caddyConfig); err != nil {
+			caddyApplied = false
 			// An admin request can fail after Caddy changed its listeners.
 			// Even reverting to the prior desired config needs a confirmed load.
 			a.caddyUnconfirmed = true
@@ -230,6 +384,7 @@ func (a *App) reconcile(ctx context.Context) error {
 		} else {
 			a.caddyUnconfirmed = false
 			a.setCaddyActive(caddyConfig)
+			a.activeProtection = caddyConfig.AntiDDoS
 		}
 	}
 	for _, r := range a.config.DirectRules {
@@ -237,23 +392,24 @@ func (a *App) reconcile(ctx context.Context) error {
 			continue
 		}
 		pr := proxy.Rule{Protocol: r.Protocol, ListenAddress: r.ListenHost, ListenPort: r.ListenPort, TargetAddress: r.TargetHost, TargetPort: r.TargetPort}
+		protection := &proxy.ProtectionConfig{Version: a.config.Revision, Listener: a.config.AntiDDoS.Listener, Endpoint: a.config.AntiDDoS.Endpoints[r.ID]}
 		previous, exists := a.active[r.ID]
 		if exists && !a.proxy.HasListener(r.ID) {
 			// A replacement and its rollback may both fail to bind.
 			delete(a.active, r.ID)
 			exists = false
 		}
-		if exists && reflect.DeepEqual(previous, r) {
+		if exists && reflect.DeepEqual(previous, r) && a.applied == a.config.Revision {
 			continue
 		}
 		var err error
 		if exists {
 			drain, cancel := context.WithTimeout(ctx, time.Second)
-			_, e := a.proxy.Update(drain, r.ID, pr)
+			_, e := a.proxy.UpdateProtected(drain, r.ID, pr, protection)
 			cancel()
 			err = e
 		} else {
-			_, err = a.proxy.Add(r.ID, pr)
+			_, err = a.proxy.AddProtected(r.ID, pr, protection)
 		}
 		if err != nil {
 			if !a.proxy.HasListener(r.ID) {
@@ -265,6 +421,27 @@ func (a *App) reconcile(ctx context.Context) error {
 			a.active[r.ID] = r
 		}
 	}
+	httpProtection := make([]proxy.HTTPProtectionConfig, 0, len(a.config.HTTPRoutes))
+	for _, r := range a.config.HTTPRoutes {
+		if !r.Enabled {
+			continue
+		}
+		network := ddos.HTTP
+		switch strings.ToLower(strings.SplitN(r.Target, "://", 2)[0]) {
+		case "tcp":
+			network = ddos.HTTPTCP
+		case "udp":
+			network = ddos.HTTPUDP
+		}
+		httpProtection = append(httpProtection, proxy.HTTPProtectionConfig{ID: r.ID, Label: r.Host + r.Path, Network: network, Version: a.config.Revision, Listener: a.config.AntiDDoS.Listener, Endpoint: a.config.AntiDDoS.Endpoints[r.ID]})
+	}
+	a.proxy.SetGlobalProtection(a.config.AntiDDoS.Listener, a.config.Revision)
+	if caddyApplied {
+		a.proxy.SetHTTPProtection(httpProtection)
+	} else {
+		a.proxy.SetHTTPProtection(nil)
+	}
+	a.proxy.PublishProtection()
 	if len(errs) == 0 {
 		if err := a.db.MarkApplied(caddyConfig); err != nil {
 			errs = append(errs, err)
@@ -405,6 +582,74 @@ func (a *App) Handler(static http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		// Alpha UI sets icon URLs and motion variables on style attributes.
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+		a.mu.Lock()
+		bridgeToken := a.bridgeToken
+		a.mu.Unlock()
+		if routeID := r.Header.Get("X-Niceproxy-Bridge-Route"); routeID != "" && bridgeToken != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Niceproxy-Bridge-Token")), []byte(bridgeToken)) == 1 && r.Header.Get("X-Niceproxy-Forwarded-By") == "niceproxy-caddy" {
+			a.mu.Lock()
+			var route *model.HTTPRoute
+			for i := range a.httpActive {
+				if a.httpActive[i].ID == routeID && a.httpActive[i].Enabled {
+					route = &a.httpActive[i]
+					break
+				}
+			}
+			var target string
+			if route != nil {
+				target = route.Target
+			}
+			a.mu.Unlock()
+			if route == nil {
+				fail(w, 404, "bridge route not found")
+				return
+			}
+			u, err := url.Parse(target)
+			if err != nil {
+				fail(w, 502, "invalid bridge target")
+				return
+			}
+			p := a.proxy.HTTPProtection(routeID)
+			peer := netip.Addr{}
+			if marker := strings.TrimSpace(r.Header.Get("X-Niceproxy-Client-IP")); marker != "" {
+				peer, _ = netip.ParseAddr(marker)
+			}
+			if !peer.IsValid() {
+				fail(w, http.StatusBadGateway, "Caddy did not provide a valid client address")
+				return
+			}
+			cloudflarePeer := false
+			a.mu.Lock()
+			resolver := a.trustResolver
+			a.mu.Unlock()
+			if resolver != nil && peer.IsValid() {
+				identity := resolver.Client(peer, r.Header)
+				peer, cloudflarePeer = identity.Address, identity.Cloudflare
+			}
+			if p.Endpoint.CloudflareOnly() && !cloudflarePeer {
+				fail(w, http.StatusForbidden, "route requires a verified Cloudflare source")
+				return
+			}
+			var bridgeErr error
+			if u.Scheme == "http" || u.Scheme == "https" {
+				bridgeErr = bridge.HandleHTTP(w, r, target, p.Listener, p.Endpoint, peer)
+			} else {
+				bridgeErr = bridge.HandleWithListener(w, r, bridge.Config{Network: u.Scheme, Address: u.Host}, p.Listener, p.Endpoint, peer)
+			}
+			if err := bridgeErr; err != nil {
+				status := http.StatusBadGateway
+				if errors.Is(err, bridge.ErrBodyTooLarge) {
+					status = http.StatusRequestEntityTooLarge
+				}
+				if errors.Is(err, bridge.ErrQuota) {
+					status = http.StatusTooManyRequests
+				}
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					status = http.StatusGatewayTimeout
+				}
+				fail(w, status, err.Error())
+			}
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store")
 		}
@@ -512,6 +757,62 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/certificate" && r.Method == "GET" {
 		write(w, 200, a.certificateStatus(r.Context()))
+		return
+	}
+	if (r.URL.Path == "/api/anti-ddos" || r.URL.Path == "/api/metrics") && r.Method == "GET" {
+		write(w, 200, a.antiDDoSStatus())
+		return
+	}
+	if r.URL.Path == "/api/anti-ddos" && r.Method == "PATCH" {
+		var request struct {
+			Listener   *ddos.Policy            `json:"listener"`
+			Endpoints  map[string]*ddos.Policy `json:"endpoints"`
+			Cloudflare *trust.Config           `json:"cloudflare"`
+			Revision   int64                   `json:"revision"`
+		}
+		if err := decode(w, r, &request); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if request.Revision != 0 && request.Revision != a.config.Revision {
+			fail(w, 409, "configuration revision changed")
+			return
+		}
+		c := a.config
+		c.AntiDDoS = ddos.Config{Listener: request.Listener, Endpoints: request.Endpoints, Cloudflare: request.Cloudflare}
+		if err := a.commit(r.Context(), c); err != nil {
+			mutationFail(w, err)
+			return
+		}
+		write(w, 200, a.snapshot())
+		return
+	}
+	if r.URL.Path == "/api/anti-ddos/clear" && r.Method == "POST" {
+		var request struct {
+			Instance, Target, Rule, Subject string
+			TTLSeconds                      int `json:"ttlSeconds"`
+		}
+		if err := decode(w, r, &request); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		if request.Instance != "" && request.Instance != "local" {
+			fail(w, 400, "unknown instance")
+			return
+		}
+		if request.TTLSeconds < 1 || request.TTLSeconds > 86400 {
+			fail(w, 400, "ttlSeconds must be between 1 and 86400")
+			return
+		}
+		b := a.proxy.Defense().Binding(request.Target)
+		if b == nil {
+			fail(w, 404, "protection target not found")
+			return
+		}
+		_ = b.Clear(request.Rule, request.Subject, "admin", time.Duration(request.TTLSeconds)*time.Second)
+		write(w, 200, map[string]bool{"ok": true})
 		return
 	}
 	a.mu.Lock()
@@ -704,6 +1005,13 @@ func (a *App) commit(ctx context.Context, c model.Config) error {
 	if err := a.ownershipConflict(c); err != nil {
 		return err
 	}
+	if err := validateAntiDDoS(c); err != nil {
+		return err
+	}
+	resolver, err := newTrustResolver(c.AntiDDoS)
+	if err != nil {
+		return err
+	}
 	// A valid authenticated edit is the recovery path for a legacy or
 	// interrupted state that was discovered during startup.
 	a.startupError = ""
@@ -723,6 +1031,7 @@ func (a *App) commit(ctx context.Context, c model.Config) error {
 		}
 	}
 	a.config = c
+	a.trustResolver = resolver
 	_ = a.reconcile(ctx)
 	return nil
 }
