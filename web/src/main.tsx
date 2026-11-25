@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
   type FormEvent,
@@ -19,13 +20,14 @@ import {
   Stack,
   Switch,
   Text,
+  TextArea,
   TextInput,
 } from "@alpha/react";
 import "@alpha/core/fonts.css";
 import "@alpha/core/styles.css";
 import { changeView } from "./view";
-import { validHttpPath } from "./http-path";
-import { isDirectIP, isDirectTarget } from "./direct-address";
+import { formatEndpoint } from "./direct-address";
+import { RouteForm } from "./RouteForm";
 import { Cloudflare } from "./Cloudflare";
 import { cloudflareApi, type CertificateStatus } from "./cloudflare-api";
 import {
@@ -35,28 +37,1082 @@ import {
   type HttpRoute,
   type PanelDomainSettings,
   type ProxyConfig,
+  type PortOwners,
+  type PortOwnerSettings,
+  type Policy,
+  type AntiDDoSConfig,
+  type DDoSStatus,
+  validPolicy,
+  scopes,
+  actions,
+  units,
+  signals,
   type ServiceHealth,
   Unauthorized,
 } from "./api";
 
 const err = (e: unknown) =>
   e instanceof Error ? e.message : "Не удалось выполнить действие.";
+const trafficStages = {
+  pre_filter: "До фильтрации",
+  accepted: "Принято",
+  routed: "Направлено по маршруту",
+  forwarded: "Передано на сервер назначения",
+  dropped: "Отброшено",
+  backend_rejected: "Отклонено сервером назначения",
+};
+
+const metricLabels: Record<string, string> = {
+  ...trafficStages,
+  active: "Активная обработка",
+  tcp_new: "Новые TCP-соединения",
+  tcp_active: "Активные TCP-соединения",
+  tcp_bytes: "Объём TCP-трафика",
+  tls_new: "Новые TLS-соединения",
+  tls_active: "Активные TLS-соединения",
+  tls_sessions: "TLS-сессии",
+  first_byte_ms: "Время до первого байта, мс",
+  header_ms: "Время до получения заголовков, мс",
+  idle_ms: "Время простоя, мс",
+  udp_packets: "UDP-пакеты",
+  udp_bytes: "Объём UDP-трафика",
+  udp_datagram_bytes: "Размер UDP-датаграммы",
+  cpu_percent: "Загрузка ЦП, %",
+  memory_bytes: "Использование памяти, байт",
+  backlog: "Очередь входящих подключений",
+  queue: "Глубина очереди",
+  http_requests: "HTTP-запросы",
+  http_active: "Активные HTTP-запросы",
+  http_connection_active: "Активные HTTP-соединения",
+  header_bytes: "Размер заголовков, байт",
+  body_bytes: "Размер тела запроса, байт",
+  response_ms: "Время ответа, мс",
+  backend_active: "Активные обращения к серверу назначения",
+  backend_tcp_new: "Новые TCP-соединения с сервером назначения",
+  backend_tcp_bytes: "TCP-трафик до сервера назначения, байт",
+  backend_udp_packets: "UDP-пакеты до сервера назначения",
+  backend_udp_bytes: "UDP-трафик до сервера назначения, байт",
+  backend_response_ms: "Время ответа сервера назначения, мс",
+};
+const signalLabels: Record<(typeof signals)[number], string> = {
+  tcp_new: metricLabels.tcp_new,
+  tls_new: metricLabels.tls_new,
+  requests: "Запросы",
+  udp_packets: metricLabels.udp_packets,
+  udp_bytes: metricLabels.udp_bytes,
+  protocol_errors: "Ошибки протокола",
+  timeouts: "Истечения тайм-аута",
+  short_connections: "Короткие соединения",
+  backend_errors: "Ошибки сервера назначения",
+  backend_latency_ms: "Задержка сервера назначения, мс",
+  pressure: "Нагрузка на ресурсы",
+  distinct_sources: "Уникальные источники",
+  distinct_subnets: "Уникальные подсети",
+  kernel_drops: "Пакеты, отброшенные ядром",
+  udp_unanswered: "UDP-запросы без ответа",
+};
+const scopeLabels: Record<(typeof scopes)[number], string> = {
+  ip: "IP-адрес",
+  subnet: "Подсеть",
+  listener: "Слушатель",
+  endpoint: "Маршрут",
+  group: "Группа",
+  all_instances: "Все экземпляры",
+};
+const actionLabels: Record<(typeof actions)[number], string> = {
+  pass: "Пропустить",
+  slow: "Замедлить",
+  reject: "Отклонить",
+  block: "Заблокировать",
+};
+const unitLabels: Record<(typeof units)[number], string> = {
+  count: "Количество",
+  bytes: "Байты",
+  ms: "Миллисекунды",
+  percent: "Проценты",
+};
+
+const listenerMetrics = [
+  "tcp_new",
+  "tcp_active",
+  "tls_new",
+  "tls_active",
+  "first_byte_ms",
+  "header_ms",
+  "idle_ms",
+  "udp_packets",
+  "udp_bytes",
+  "udp_datagram_bytes",
+  "cpu_percent",
+  "memory_bytes",
+  "backlog",
+  "queue",
+];
+const tcpMetrics = [
+  "tcp_new",
+  "tcp_active",
+  "tcp_bytes",
+  "idle_ms",
+  "backend_active",
+];
+const udpMetrics = [
+  "udp_packets",
+  "udp_bytes",
+  "udp_datagram_bytes",
+  "backend_active",
+];
+const httpMetrics = [
+  "http_requests",
+  "http_active",
+  "http_connection_active",
+  "tls_sessions",
+  "header_bytes",
+  "body_bytes",
+  "response_ms",
+  "backend_active",
+];
+function protectionMetrics(route?: HttpRoute | DirectRule) {
+  if (!route) return listenerMetrics;
+  if (!("host" in route))
+    return route.protocol === "tcp" ? tcpMetrics : udpMetrics;
+  if (/^tcp:\/\//i.test(route.target))
+    return [
+      ...httpMetrics,
+      "backend_tcp_new",
+      "backend_tcp_bytes",
+      "backend_response_ms",
+    ];
+  if (/^udp:\/\//i.test(route.target))
+    return [
+      ...httpMetrics,
+      "backend_udp_packets",
+      "backend_udp_bytes",
+      "backend_response_ms",
+    ];
+  return httpMetrics;
+}
+
+const defaultPolicy: Policy = {
+  detect: false,
+  autoFilter: false,
+  enforceLimits: false,
+};
+type Field = {
+  key: string;
+  label: string;
+  choices?: Record<string, string>;
+  optional?: boolean;
+};
+const rateMetrics = new Set([
+  "tcp_new",
+  "tls_new",
+  "udp_packets",
+  "udp_bytes",
+  "http_requests",
+  "backend_tcp_new",
+  "backend_udp_packets",
+  "backend_udp_bytes",
+]);
+function metricUnit(metric: string) {
+  if (metric.endsWith("_bytes")) return "bytes";
+  if (metric.endsWith("_ms")) return "ms";
+  if (metric.endsWith("_percent")) return "percent";
+  return "count";
+}
+const policyId = /^[a-zA-Z0-9_.-]{1,64}$/;
+const limitFields: Field[] = [
+  { key: "id", label: "Идентификатор лимита" },
+  { key: "value", label: "Значение" },
+  { key: "unit", label: "Единица измерения", choices: unitLabels },
+  { key: "windowSeconds", label: "Окно лимита, с", optional: true },
+  { key: "burst", label: "Допустимый всплеск", optional: true },
+  { key: "scope", label: "Область действия", choices: scopeLabels },
+  { key: "action", label: "Действие при превышении", choices: actionLabels },
+  { key: "ttlSeconds", label: "Срок действия, с", optional: true },
+];
+const ruleFields: Field[] = [
+  { key: "id", label: "Идентификатор правила" },
+  { key: "signal", label: "Сигнал детектора", choices: signalLabels },
+  { key: "scope", label: "Область действия", choices: scopeLabels },
+  { key: "threshold", label: "Порог срабатывания" },
+  { key: "clearThreshold", label: "Порог снятия ограничения" },
+  { key: "windowSeconds", label: "Окно наблюдения, с" },
+  { key: "burst", label: "Допустимый всплеск" },
+  { key: "minSamples", label: "Минимум наблюдений" },
+  { key: "action", label: "Действие при срабатывании", choices: actionLabels },
+  { key: "cooldownSeconds", label: "Пауза после срабатывания, с" },
+];
+const numericFields = new Set([
+  "value",
+  "windowSeconds",
+  "burst",
+  "ttlSeconds",
+  "threshold",
+  "clearThreshold",
+  "minSamples",
+  "cooldownSeconds",
+]);
+function numberField(value: string, label: string) {
+  const number = Number(value.replace(",", "."));
+  if (!/^\d+(?:[.,]\d+)?$/.test(value) || !Number.isFinite(number))
+    throw new Error(`Укажите неотрицательное число в поле «${label}».`);
+  return number;
+}
+type PolicyRow = { key: string; values: Record<string, string> };
+let policyRowSequence = 0;
+function newPolicyRow(values: Record<string, string | number>): PolicyRow {
+  return {
+    key: String(++policyRowSequence),
+    values: Object.fromEntries(
+      Object.entries(values).map(([key, value]) => [key, String(value)]),
+    ),
+  };
+}
+function readPolicyRows(rows: PolicyRow[], fields: Field[]) {
+  const ids = new Set<string>();
+  return rows.map(({ values }) => {
+    const result = Object.fromEntries(
+      fields.flatMap(({ key, label, optional }) => {
+        const value = values[key]?.trim() ?? "";
+        if (!value && optional) return [];
+        if (!value) throw new Error(`Заполните поле «${label}».`);
+        return [
+          [key, numericFields.has(key) ? numberField(value, label) : value],
+        ];
+      }),
+    );
+    const id = String(result.id);
+    if (!policyId.test(id))
+      throw new Error(
+        "Идентификатор должен содержать от 1 до 64 латинских букв, цифр, точек, дефисов или подчёркиваний.",
+      );
+    if (ids.has(id)) throw new Error(`Идентификатор «${id}» повторяется.`);
+    ids.add(id);
+    return result;
+  });
+}
+function PolicyRows({
+  rows,
+  fields,
+  disabled,
+  heading,
+  onChange,
+  defaults,
+}: {
+  rows: PolicyRow[];
+  fields: Field[];
+  disabled: boolean;
+  heading: string;
+  onChange: (rows: PolicyRow[]) => void;
+  defaults: Record<string, string | number>;
+}) {
+  return (
+    <Stack gap={3}>
+      <Text as="h3">{heading}</Text>
+      {rows.map((row, index) => (
+        <Card key={row.key}>
+          <Stack gap={3}>
+            {fields.map(({ key, label, choices, optional }) => {
+              const id = `ddos-${row.key}-${key}`;
+              const value = row.values[key] ?? "";
+              const onValueChange = (next: string) =>
+                onChange(
+                  rows.map((item) =>
+                    item.key === row.key
+                      ? {
+                          ...item,
+                          values: {
+                            ...item.values,
+                            ...(key === "metric"
+                              ? {
+                                  unit: metricUnit(next),
+                                  windowSeconds: rateMetrics.has(next)
+                                    ? "1"
+                                    : "",
+                                  burst: "",
+                                }
+                              : {}),
+                            [key]: next,
+                          },
+                        }
+                      : item,
+                  ),
+                );
+              return choices ? (
+                <Select
+                  key={key}
+                  id={id}
+                  label={label}
+                  value={value}
+                  popup="overlay"
+                  options={Object.entries(choices).map(([value, label]) => ({
+                    value,
+                    label,
+                  }))}
+                  onValueChange={onValueChange}
+                  disabled={disabled}
+                />
+              ) : (
+                <TextInput
+                  key={key}
+                  id={id}
+                  label={label}
+                  value={value}
+                  onValueChange={onValueChange}
+                  disabled={disabled}
+                  required={!optional}
+                />
+              );
+            })}
+            <Button
+              variant="blank"
+              disabled={disabled}
+              onPress={() =>
+                onChange(rows.filter((item) => item.key !== row.key))
+              }
+            >
+              Удалить запись {index + 1}
+            </Button>
+          </Stack>
+        </Card>
+      ))}
+      <Button
+        disabled={disabled}
+        onPress={() => onChange([...rows, newPolicyRow(defaults)])}
+      >
+        Добавить запись
+      </Button>
+    </Stack>
+  );
+}
+
+export function ProtectionForm({
+  initial,
+  route,
+  onSave,
+}: {
+  initial?: Policy;
+  route?: HttpRoute | DirectRule;
+  onSave: (policy: Policy) => Promise<void>;
+}) {
+  const formId = useId();
+  const [policy, setPolicy] = useState(initial ?? defaultPolicy);
+  const [stableWindows, setStableWindows] = useState(
+    String(initial?.stableWindows ?? ""),
+  );
+  const [limits, setLimits] = useState(() =>
+    (initial?.limits ?? []).map(newPolicyRow),
+  );
+  const [rules, setRules] = useState(() =>
+    (initial?.rules ?? []).map(newPolicyRow),
+  );
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const metrics = protectionMetrics(route);
+  const hasTLS = route && "host" in route && route.tls !== "off";
+  const metricChoices = Object.fromEntries(
+    [
+      ...new Set([
+        ...metrics,
+        ...(initial?.limits ?? []).map(({ metric }) => metric),
+      ]),
+    ].map((metric) => [metric, translated(metricLabels, metric)]),
+  );
+  const availableScopes = Object.fromEntries(
+    Object.entries(scopeLabels).filter(
+      ([scope]) => scope !== (route ? "listener" : "endpoint"),
+    ),
+  );
+  const withScopes = (field: Field) =>
+    field.key === "scope" ? { ...field, choices: availableScopes } : field;
+  const fields = [
+    { key: "metric", label: "Метрика лимита", choices: metricChoices },
+    ...limitFields.map(withScopes),
+  ];
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+    setError("");
+    setMessage("");
+    try {
+      const next = {
+        ...policy,
+        stableWindows: stableWindows.trim()
+          ? numberField(stableWindows.trim(), "Стабильные окна")
+          : undefined,
+        limits: readPolicyRows(limits, fields),
+        rules: readPolicyRows(rules, ruleFields),
+      };
+      if (!validPolicy(next))
+        throw new Error(
+          "Проверьте параметры. Окна, сроки и количество наблюдений задаются целыми числами.",
+        );
+      if (next.stableWindows !== undefined && next.stableWindows > 60)
+        throw new Error("Укажите не более 60 стабильных окон.");
+      if (next.group && !policyId.test(next.group))
+        throw new Error(
+          "Группа должна содержать от 1 до 64 латинских букв, цифр, точек, дефисов или подчёркиваний.",
+        );
+      const ids = [...next.limits, ...next.rules].map(({ id }) => id);
+      if (new Set(ids).size !== ids.length)
+        throw new Error(
+          "У лимитов и правил должны быть уникальные идентификаторы.",
+        );
+      for (const limit of next.limits) {
+        if (limit.value <= 0 || limit.unit !== metricUnit(limit.metric))
+          throw new Error(
+            `Проверьте значение и единицу измерения лимита «${limit.id}».`,
+          );
+        if (rateMetrics.has(limit.metric)) {
+          if (!limit.windowSeconds || limit.windowSeconds > 300)
+            throw new Error(
+              `Для лимита «${limit.id}» укажите окно от 1 до 300 секунд.`,
+            );
+        } else if (limit.windowSeconds || limit.burst) {
+          throw new Error(
+            `У лимита «${limit.id}» окно и всплеск доступны только для метрик интенсивности.`,
+          );
+        }
+      }
+      for (const rule of next.rules) {
+        if (
+          rule.windowSeconds < 1 ||
+          rule.windowSeconds > 300 ||
+          rule.minSamples < 1 ||
+          rule.cooldownSeconds < 1 ||
+          rule.cooldownSeconds > 86400
+        )
+          throw new Error(
+            `Проверьте окно, минимум наблюдений и паузу у правила «${rule.id}».`,
+          );
+        if (rule.clearThreshold >= rule.threshold)
+          throw new Error(
+            `У правила «${rule.id}» порог снятия должен быть меньше порога срабатывания.`,
+          );
+      }
+      setBusy(true);
+      await onSave(next);
+      setMessage(
+        "Настройки сохранены. Состояние применения показано в сводке.",
+      );
+    } catch (e) {
+      setError(err(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form onSubmit={submit}>
+      <Stack gap={4}>
+        <Text as="h2">{route ? "Защита маршрута" : "Защита слушателя"}</Text>
+        {(
+          [
+            ["detect", "Обнаружение атак"],
+            ["autoFilter", "Автоматическая фильтрация"],
+            ["enforceLimits", "Применение лимитов"],
+          ] as const
+        ).map(([key, label]) => (
+          <Switch
+            key={key}
+            id={`${formId}-${key}`}
+            label={label}
+            checked={policy[key] ?? false}
+            disabled={busy}
+            onCheckedChange={(checked) =>
+              setPolicy({ ...policy, [key]: checked })
+            }
+          />
+        ))}
+        <TextInput
+          id={`${formId}-stable`}
+          label="Количество стабильных окон"
+          value={stableWindows}
+          onValueChange={setStableWindows}
+          disabled={busy}
+        />
+        <TextInput
+          id={`${formId}-group`}
+          label="Группа защиты"
+          value={policy.group ?? ""}
+          onValueChange={(group) => setPolicy({ ...policy, group })}
+          disabled={busy}
+        />
+        {hasTLS && (
+          <Stack gap={3}>
+            <Switch
+              id={`${formId}-cloudflare-only`}
+              label="Разрешать трафик только от Cloudflare"
+              checked={policy.cloudflareOnly ?? false}
+              disabled={busy}
+              onCheckedChange={(cloudflareOnly) =>
+                setPolicy({ ...policy, cloudflareOnly })
+              }
+            />
+            <TextArea
+              id={`${formId}-origin-ca`}
+              label="Сертификат CA для Origin Pull (PEM)"
+              value={policy.originPullCA ?? ""}
+              onValueChange={(originPullCA) =>
+                setPolicy({ ...policy, originPullCA })
+              }
+              disabled={busy}
+            />
+          </Stack>
+        )}
+        {route && (("host" in route && /^udp:\/\//i.test(route.target)) || (!("host" in route) && route.protocol === "udp")) && (
+          <Switch
+            id={`${formId}-udp-response`}
+            label="Ожидать ответ UDP"
+            checked={policy.expectUDPResponse ?? false}
+            disabled={busy}
+            onCheckedChange={(expectUDPResponse) => setPolicy({ ...policy, expectUDPResponse })}
+          />
+        )}
+        <PolicyRows
+          heading="Лимиты"
+          rows={limits}
+          fields={fields}
+          disabled={busy}
+          onChange={setLimits}
+          defaults={{
+            metric: metrics[0],
+            value: 1,
+            unit: "count",
+            windowSeconds: 1,
+            scope: route ? "endpoint" : "listener",
+            action: "pass",
+          }}
+        />
+        <PolicyRows
+          heading="Правила детектора"
+          rows={rules}
+          fields={ruleFields.map(withScopes)}
+          disabled={busy}
+          onChange={setRules}
+          defaults={{
+            signal:
+              route && "host" in route
+                ? "requests"
+                : route?.protocol === "udp"
+                  ? "udp_packets"
+                  : "tcp_new",
+            scope: route ? "endpoint" : "listener",
+            threshold: 1,
+            clearThreshold: 0,
+            windowSeconds: 1,
+            burst: 0,
+            minSamples: 1,
+            action: "pass",
+            cooldownSeconds: 60,
+          }}
+        />
+        {error && <ErrorMessage>{error}</ErrorMessage>}
+        {message && (
+          <div role="status">
+            <Text>{message}</Text>
+          </div>
+        )}
+        <Button type="submit" loading={busy} disabled={busy}>
+          Сохранить политику
+        </Button>
+      </Stack>
+    </form>
+  );
+}
+
+const applyLabels = {
+  active: "Применено",
+  applying: "Применяется",
+  partial: "Применено частично",
+};
+const detectorLabels: Record<string, string> = {
+  disabled: "Выключен",
+  off: "Выключен",
+  learning: "Обучается",
+  collecting: "Собирает данные",
+  partial: "Частичная видимость трафика",
+  warming_up: "Собирает исходные данные",
+  normal: "Норма",
+  stable: "Норма",
+  suspect: "Подозрение на атаку",
+  suspected: "Подозрение на атаку",
+  suspicious: "Подозрение на атаку",
+  attack: "Обнаружена атака",
+  mitigation: "Фильтрует трафик",
+  mitigating: "Фильтрует трафик",
+  cooldown: "Пауза после срабатывания",
+  recovering: "Восстановление",
+  unavailable: "Нет данных",
+};
+const observationLabels: Record<string, string> = {
+  full: "Полная",
+  socket: "Наблюдение на уровне сокетов",
+  partial: "Частичная",
+  unavailable: "Нет данных",
+  none: "Нет данных",
+};
+const detectorReasons: Record<string, string> = {
+  detector_disabled: "Детектор выключен",
+  warming_up: "Сбор исходных данных",
+  pre_filter_incomplete: "Доступна только часть данных до фильтрации",
+  corroborated_rule: "Срабатывание правила подтверждено",
+  input_and_backend_stable: "Входящий трафик и сервер назначения стабильны",
+  stable_windows_required: "Ожидание стабильных окон наблюдения",
+  anomalies_or_resource_pressure: "Аномалии трафика или высокая нагрузка на ресурсы",
+  resource_or_backend_observation_missing: "Отсутствуют данные о ресурсах или сервере назначения",
+};
+const translated = (labels: Record<string, string>, key: string) =>
+  Object.hasOwn(labels, key) ? labels[key] : key;
+const displayNumber = new Intl.NumberFormat("ru-RU", {
+  maximumFractionDigits: 3,
+});
+const formatMetric = (value: number | null | undefined) =>
+  value == null ? "нет данных" : displayNumber.format(value);
+const displayTime = (value: string) => new Date(value).toLocaleString("ru-RU");
+
+function DDoSDashboard({
+  status,
+  error,
+  busy,
+  onRefresh,
+  onClear,
+}: {
+  status: DDoSStatus | null;
+  error: string;
+  busy: boolean;
+  onRefresh: () => void;
+  onClear: (data: Parameters<typeof api.clearAntiDDoS>[0]) => void;
+}) {
+  return (
+    <Card>
+      <Stack gap={4}>
+        <Text as="h2">Состояние защиты</Text>
+        <Button onPress={onRefresh} disabled={busy}>
+          Обновить сводку
+        </Button>
+        {error && <ErrorMessage>{error}</ErrorMessage>}
+        <Text>
+          {status
+            ? `${applyLabels[status.status]} · желаемая ревизия ${status.revision} · применённая ревизия ${status.appliedRevision}`
+            : "Состояние применения — нет данных"}
+        </Text>
+        {!status?.instances.some((instance) => instance.targets.length) &&
+          Object.values(trafficStages).map((label) => (
+            <Text key={label}>{label} — нет данных</Text>
+          ))}
+        {status?.instances.map((instance) => (
+          <Stack key={instance.id} gap={3}>
+            <Text as="h3">
+              Экземпляр {instance.id} · {instance.version}
+            </Text>
+            {instance.error && <ErrorMessage>{instance.error}</ErrorMessage>}
+            {instance.cloudflare && (
+              <Stack gap={1}>
+                <Text as="h3">Сети Cloudflare</Text>
+                <Text>
+                  Количество сетей —{" "}
+                  {formatMetric(
+                    typeof instance.cloudflare.networks === "number"
+                      ? instance.cloudflare.networks
+                      : instance.cloudflare.networks?.length,
+                  )}
+                </Text>
+                <Text>
+                  Обновлено —{" "}
+                  {instance.cloudflare.updatedAt
+                    ? displayTime(instance.cloudflare.updatedAt)
+                    : "нет данных"}
+                </Text>
+                {instance.cloudflare.error && (
+                  <ErrorMessage>{instance.cloudflare.error}</ErrorMessage>
+                )}
+              </Stack>
+            )}
+            {!instance.targets.length && (
+              <Text>Цели наблюдения — нет данных</Text>
+            )}
+            {instance.targets.map((target) => (
+              <Card key={target.id}>
+                <Stack gap={3}>
+                  <Text as="h3">{target.label || target.id}</Text>
+                  <Text>
+                    Детектор — {translated(detectorLabels, target.state)}
+                  </Text>
+                  <Text>Оценка детектора — {formatMetric(target.score)}</Text>
+                  {target.reason && (
+                    <Text>Причина — {translated(detectorReasons, target.reason)}</Text>
+                  )}
+                  <Text>
+                    Применённая политика · обнаружение{" "}
+                    {target.policy.detect ? "включено" : "выключено"}
+                    {" · "}автофильтрация{" "}
+                    {target.policy.autoFilter ? "включена" : "выключена"}
+                    {" · "}лимиты{" "}
+                    {target.policy.enforceLimits ? "включены" : "выключены"}
+                  </Text>
+                  <Text>
+                    Наблюдаемость —{" "}
+                    {translated(observationLabels, target.observability)}
+                  </Text>
+                  <Stack gap={1}>
+                    <Text weight="medium">Этапы обработки и метрики</Text>
+                    {[
+                      ...new Set([
+                        ...Object.keys(trafficStages),
+                        ...Object.keys(target.metrics),
+                      ]),
+                    ].map((key) => {
+                      const metric = target.metrics[key];
+                      return (
+                        <Text key={key}>
+                          {translated(metricLabels, key)} —{" "}
+                          {formatMetric(metric?.value)}
+                          {metric?.source && ` · источник: ${metric.source}`}
+                        </Text>
+                      );
+                    })}
+                  </Stack>
+                  <Stack gap={2}>
+                    <Text weight="medium">Активные лимиты</Text>
+                    {target.policy.enforceLimits ? (
+                      target.policy.limits?.length ? (
+                        target.policy.limits.map((limit) => (
+                          <Text key={limit.id}>
+                            {translated(metricLabels, limit.metric)} —{" "}
+                            {formatMetric(limit.value)} ·{" "}
+                            {unitLabels[limit.unit]}
+                            {limit.windowSeconds !== undefined &&
+                              ` · окно ${limit.windowSeconds} с`}
+                            {" · "}
+                            {scopeLabels[limit.scope]} ·{" "}
+                            {actionLabels[limit.action]}
+                          </Text>
+                        ))
+                      ) : (
+                        <Text>Лимиты не заданы</Text>
+                      )
+                    ) : (
+                      <Text>Применение лимитов выключено</Text>
+                    )}
+                  </Stack>
+                  <Stack gap={2}>
+                    <Text weight="medium">Активные ограничения</Text>
+                    {!target.restrictions?.length && (
+                      <Text>Ограничений нет</Text>
+                    )}
+                    {target.restrictions?.map((restriction, index) => (
+                      <Stack key={index} gap={1}>
+                        <Text>
+                          {actionLabels[restriction.action]} ·{" "}
+                          {scopeLabels[restriction.scope]} {restriction.target}
+                          {" · "}правило {restriction.rule} · до{" "}
+                          {displayTime(restriction.expiresAt)}
+                          {" · "}
+                          {restriction.automatic ? "автоматическое" : "ручное"}
+                        </Text>
+                        {restriction.automatic && (
+                          <Button
+                            variant="blank"
+                            disabled={busy}
+                            onPress={() =>
+                              onClear({
+                                instance: instance.id,
+                                target: target.id,
+                                rule: restriction.rule,
+                                subject: restriction.target,
+                                ttlSeconds: 60,
+                              })
+                            }
+                          >
+                            Снять ограничение на 60 секунд
+                          </Button>
+                        )}
+                      </Stack>
+                    ))}
+                  </Stack>
+                  {!!target.events?.length && (
+                    <Stack gap={1}>
+                      <Text weight="medium">События детектора</Text>
+                      {target.events.map((event, index) => (
+                        <Text key={index}>
+                          {displayTime(event.at)} · {actionLabels[event.action]}{" "}
+                          · {event.reason} {event.rules?.join(", ")}
+                        </Text>
+                      ))}
+                    </Stack>
+                  )}
+                  {!!target.history?.length && (
+                    <Stack gap={1}>
+                      <Text weight="medium">История нагрузки</Text>
+                      {target.history.map((point, index) => (
+                        <Text key={index}>
+                          {displayTime(point.at)} · {formatMetric(point.load)} ·
+                          норма {formatMetric(point.normalLow)}–
+                          {formatMetric(point.normalHigh)}
+                        </Text>
+                      ))}
+                    </Stack>
+                  )}
+                  {!!target.sources?.length && (
+                    <Stack gap={1}>
+                      <Text weight="medium">Источники трафика</Text>
+                      {target.sources.map((origin, index) => (
+                        <Text key={index}>
+                          {origin.address} · {origin.subnet} ·{" "}
+                          {formatMetric(origin.count)} {origin.reason}
+                        </Text>
+                      ))}
+                    </Stack>
+                  )}
+                </Stack>
+              </Card>
+            ))}
+          </Stack>
+        ))}
+      </Stack>
+    </Card>
+  );
+}
+
+function CloudflareProtectionForm({
+  initial,
+  onSave,
+}: {
+  initial?: AntiDDoSConfig["cloudflare"];
+  onSave: (value: NonNullable<AntiDDoSConfig["cloudflare"]>) => Promise<void>;
+}) {
+  const [enabled, setEnabled] = useState(initial?.enabled ?? false);
+  const [ipv4URL, setIPv4] = useState(initial?.ipv4URL ?? "");
+  const [ipv6URL, setIPv6] = useState(initial?.ipv6URL ?? "");
+  const [proxies, setProxies] = useState(
+    initial?.trustedProxies?.join(", ") ?? "",
+  );
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  return (
+    <form
+      onSubmit={async (event) => {
+        event.preventDefault();
+        if (busy) return;
+        setBusy(true);
+        setError("");
+        setMessage("");
+        try {
+          await onSave({
+            enabled,
+            ipv4URL: ipv4URL.trim(),
+            ipv6URL: ipv6URL.trim(),
+            trustedProxies: proxies
+              .split(",")
+              .map((value) => value.trim())
+              .filter(Boolean),
+          });
+          setMessage(
+            "Настройки сохранены. Состояние применения показано в сводке.",
+          );
+        } catch (e) {
+          setError(err(e));
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <Stack gap={3}>
+        <Text as="h2">Доверенные сети Cloudflare</Text>
+        <Switch
+          id="ddos-cf"
+          label="Включить доверие к сетям Cloudflare"
+          checked={enabled}
+          onCheckedChange={setEnabled}
+          disabled={busy}
+        />
+        <TextInput
+          id="ddos-cf-ipv4"
+          type="url"
+          label="URL списка сетей IPv4"
+          value={ipv4URL}
+          onValueChange={setIPv4}
+          disabled={busy}
+        />
+        <TextInput
+          id="ddos-cf-ipv6"
+          type="url"
+          label="URL списка сетей IPv6"
+          value={ipv6URL}
+          onValueChange={setIPv6}
+          disabled={busy}
+        />
+        <TextInput
+          id="ddos-cf-proxies"
+          label="Доверенные прокси через запятую"
+          value={proxies}
+          onValueChange={setProxies}
+          disabled={busy}
+        />
+        {error && <ErrorMessage>{error}</ErrorMessage>}
+        {message && (
+          <div role="status">
+            <Text>{message}</Text>
+          </div>
+        )}
+        <Button type="submit" loading={busy} disabled={busy}>
+          Сохранить сети Cloudflare
+        </Button>
+      </Stack>
+    </form>
+  );
+}
+
+function ProtectionSettings({
+  config,
+  route,
+  cloudflare,
+  onSaved,
+}: {
+  config: ProxyConfig;
+  route?: HttpRoute | DirectRule;
+  cloudflare: boolean;
+  onSaved: (next: ProxyConfig) => void;
+}) {
+  const [base, setBase] = useState(config);
+  const desired = base.antiDDoS;
+  async function save(settings: AntiDDoSConfig) {
+    const next = await api.saveAntiDDoS({
+      ...desired,
+      ...settings,
+      revision: base.revision,
+    });
+    setBase(next);
+    onSaved(next);
+  }
+  return cloudflare ? (
+    <CloudflareProtectionForm
+      initial={desired?.cloudflare}
+      onSave={(value) => save({ cloudflare: value })}
+    />
+  ) : (
+    <ProtectionForm
+      initial={route ? desired?.endpoints?.[route.id] : desired?.listener}
+      route={route}
+      onSave={(policy) =>
+        save(
+          route
+            ? { endpoints: { ...desired?.endpoints, [route.id]: policy } }
+            : { listener: policy },
+        )
+      }
+    />
+  );
+}
+
+function AntiDDoSPage({
+  config,
+  onSaved,
+}: {
+  config: ProxyConfig;
+  onSaved: (next: ProxyConfig) => void;
+}) {
+  const [editor, setEditor] = useState("listener");
+  const [status, setStatus] = useState<DDoSStatus | null>(null);
+  const [readError, setReadError] = useState("");
+  const [clearError, setClearError] = useState("");
+  const [clearing, setClearing] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  const [editorVersion, setEditorVersion] = useState(0);
+  const routes = [...config.httpRoutes, ...config.directRules];
+  const route = routes.find((item) => `route:${item.id}` === editor);
+  const selected = route || editor === "cloudflare" ? editor : "listener";
+  useEffect(() => {
+    let live = true;
+    let timer: number;
+    async function read() {
+      try {
+        const next = await api.antiDDoS();
+        if (!live) return;
+        setStatus(next);
+        setReadError("");
+      } catch (e) {
+        if (!live) return;
+        setStatus(null);
+        setReadError(err(e));
+      }
+      if (live) timer = window.setTimeout(() => void read(), 5000);
+    }
+    void read();
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [refresh]);
+  async function clear(data: Parameters<typeof api.clearAntiDDoS>[0]) {
+    if (clearing) return;
+    setClearError("");
+    setClearing(true);
+    try {
+      await api.clearAntiDDoS(data);
+      setRefresh((current) => current + 1);
+    } catch (e) {
+      setClearError(err(e));
+    } finally {
+      setClearing(false);
+    }
+  }
+  return (
+    <Stack gap={4}>
+      <Card>
+        <Stack gap={4}>
+          <Select
+            id="ddos-editor"
+            label="Область настройки защиты"
+            value={selected}
+            onValueChange={setEditor}
+            popup="overlay"
+            options={[
+              { value: "listener", label: "Глобальный слушатель" },
+              { value: "cloudflare", label: "Доверенные сети Cloudflare" },
+              ...routes.map((item) => ({
+                value: `route:${item.id}`,
+                label: `Маршрут · ${source(item)}`,
+              })),
+            ]}
+          />
+          <Button
+            variant="blank"
+            onPress={() => setEditorVersion((current) => current + 1)}
+          >
+            Сбросить правки и загрузить сохранённые настройки
+          </Button>
+          <ProtectionSettings
+            key={`${selected}:${editorVersion}`}
+            config={config}
+            route={route}
+            cloudflare={selected === "cloudflare"}
+            onSaved={(next) => {
+              onSaved(next);
+              setRefresh((current) => current + 1);
+            }}
+          />
+        </Stack>
+      </Card>
+      {clearError && <ErrorMessage>{clearError}</ErrorMessage>}
+      <DDoSDashboard
+        status={status}
+        error={readError}
+        busy={clearing}
+        onRefresh={() => setRefresh((current) => current + 1)}
+        onClear={(data) => void clear(data)}
+      />
+    </Stack>
+  );
+}
+
 function ErrorMessage({ children }: { children: string }) {
   return (
     <div role="alert">
       <Text>{children}</Text>
     </div>
-  );
-}
-function TechnicalDetails({ children }: { children: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <Stack gap={2}>
-      <Button variant="blank" onPress={() => setOpen(!open)}>
-        {open ? "Скрыть подробности" : "Технические подробности"}
-      </Button>
-      {open && <Text tone="secondary">{children}</Text>}
-    </Stack>
   );
 }
 function AuthScreen({
@@ -141,10 +1197,7 @@ function statusLabel(route: HttpRoute | DirectRule) {
             ? "Недействительный сертификат"
             : route.status === "error"
               ? "Ошибка применения"
-              : "Применение не подтверждено";
-}
-function endpoint(host: string, port: number) {
-  return `${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}`;
+              : "Не подтверждён";
 }
 type Mapping = {
   key: string;
@@ -154,410 +1207,38 @@ type Mapping = {
 function source(route: HttpRoute | DirectRule) {
   return "host" in route
     ? `${route.host}${route.path === "/" ? "" : route.path}`
-    : `${route.protocol.toUpperCase()} ${endpoint(route.listenHost, route.listenPort)}`;
-}
-function routeProtocol(route: HttpRoute | DirectRule) {
-  if (!("host" in route)) return route.protocol.toUpperCase();
-  if (route.tls === "off") return "HTTP";
-  return "HTTPS";
+    : `${route.protocol.toUpperCase()} ${formatEndpoint(route.listenHost, route.listenPort)}`;
 }
 function target(route: HttpRoute | DirectRule) {
-  if ("host" in route)
-    return route.systemManaged ? "Панель управления" : route.target;
-  return endpoint(route.targetHost, route.targetPort);
+  return "host" in route
+    ? route.target
+    : formatEndpoint(route.targetHost, route.targetPort);
 }
-const certificateLabels: Record<HttpRoute["tls"], string> = {
-  auto: "Автоматический сертификат",
-  internal: "Локальный сертификат",
-  off: "Без HTTPS (HTTP)",
-};
-const localCertificateStatus: Record<string, string> = {
-  bootstrap: "локальный сертификат",
-  served: "доверенный сертификат",
-  cloudflare_origin: "сертификат Cloudflare для Full (strict)",
-  busy: "проверка ещё не завершена",
-  caddy_stopped: "веб-сервер недоступен",
-  no_caddy_tcp_listener: "HTTPS по TCP отключён",
-  unreachable: "не удалось подключиться",
-  handshake_failed: "не удалось установить защищённое соединение",
-  missing: "сертификат отсутствует",
-  wrong_host: "сертификат выдан для другого домена",
-  not_yet_valid: "срок действия ещё не начался",
-  expired: "срок действия истёк",
-  untrusted: "сертификат не прошёл проверку доверия",
-};
-function HttpForm({
-  route,
-  onDone,
-  onCancel,
-}: {
-  route?: HttpRoute;
-  onDone: (r: HttpRoute) => void;
-  onCancel?: () => void;
-}) {
-  const [host, setHost] = useState(route?.host ?? "");
-  const [target, setTarget] = useState(route?.target ?? "");
-  const [path, setPath] = useState(
-    route?.path && route.path !== "/" ? route.path : "",
-  );
-  const effectivePath = path || "/";
-  const canStripPrefix = path !== "" && path !== "/" && validHttpPath(path);
-  const [stripPrefix, setStripPrefix] = useState(
-    !!route?.stripPrefix && !!route.path && route.path !== "/",
-  );
-  const [tls, setTls] = useState(route?.tls ?? "auto");
-  const [enabled, setEnabled] = useState(route?.enabled ?? true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    if (busy) return;
-    setError("");
-    try {
-      let u: URL;
-      try {
-        u = new URL(target);
-      } catch {
-        throw new Error(
-          "Введите корректный целевой URL: http:// или https://.",
-        );
-      }
-      if (!["http:", "https:"].includes(u.protocol))
-        throw new Error("Цель должна начинаться с http:// или https://");
-      if (
-        u.username ||
-        u.password ||
-        u.search ||
-        u.hash ||
-        (u.pathname !== "/" && u.pathname !== "")
-      )
-        throw new Error(
-          "Укажите только адрес сервиса и порт, без пути, параметров и пароля.",
-        );
-      if (!host.trim()) throw new Error("Укажите домен.");
-      if (!validHttpPath(path))
-        throw new Error(
-          "Укажите буквальный путь от / без пробелов, управляющих символов, //, . и .., параметров и шаблонов (до 2048 байт).",
-        );
-      setBusy(true);
-      onDone(
-        await api.saveHttp(
-          {
-            host: host.trim(),
-            path: effectivePath,
-            stripPrefix: canStripPrefix && stripPrefix,
-            target: target.trim(),
-            tls,
-            enabled,
-          },
-          route?.id,
-        ),
-      );
-    } catch (e) {
-      setError(err(e));
-      setBusy(false);
-    }
-  }
-  return (
-    <form onSubmit={submit}>
-      <Stack gap={5}>
-        <Stack gap={4}>
-          <TextInput
-            showIcon={false}
-            labelPlacement="inside"
-            id="http-host"
-            label="Домен"
-            value={host}
-            onValueChange={setHost}
-            placeholder="example.com"
-            required
-            disabled={busy}
-          />
-          <TextInput
-            showIcon={false}
-            labelPlacement="inside"
-            id="http-path"
-            label="Путь"
-            value={path}
-            onValueChange={(value) => {
-              setPath(value);
-              if (!value || value === "/" || !validHttpPath(value))
-                setStripPrefix(false);
-            }}
-            placeholder="/"
-            hint="По умолчанию / — все запросы. /api — только /api и /api/*."
-            disabled={busy}
-          />
-          <TextInput
-            showIcon={false}
-            labelPlacement="inside"
-            id="http-target"
-            label="Адрес сервиса"
-            hint="Например, http://127.0.0.1:8080. Без пути и параметров."
-            type="url"
-            value={target}
-            onValueChange={setTarget}
-            placeholder="http://127.0.0.1:8080"
-            required
-            disabled={busy}
-          />
-          <Select
-            popup="overlay"
-            id="tls"
-            label="Доступ по HTTPS"
-            value={tls}
-            onValueChange={(v) => setTls(v as HttpRoute["tls"])}
-            disabled={busy}
-            options={[
-              { value: "auto", label: certificateLabels.auto },
-              { value: "internal", label: certificateLabels.internal },
-              { value: "off", label: certificateLabels.off },
-            ]}
-          />
-        </Stack>
-        <Text tone="secondary">
-          По умолчанию путь и параметры запроса передаются без изменений. Для
-          разных путей одного домена выбирайте одинаковый режим HTTPS.
-        </Text>
-        <Switch
-          id="http-strip-prefix"
-          label="Убирать префикс пути"
-          hint="Например, /api/users → /users; параметры запроса сохраняются."
-          checked={canStripPrefix && stripPrefix}
-          onCheckedChange={(checked) =>
-            setStripPrefix(canStripPrefix && checked)
-          }
-          disabled={busy || !canStripPrefix}
-        />
-        <Switch
-          id="http-enabled"
-          label="Включён"
-          checked={enabled}
-          onCheckedChange={setEnabled}
-          disabled={busy}
-        />
-        {error && <ErrorMessage>{error}</ErrorMessage>}
-        <Stack direction="row" gap={3}>
-          <Button type="submit" loading={busy} disabled={busy}>
-            {route ? "Сохранить маршрут" : "Создать маршрут"}
-          </Button>
-          {onCancel && (
-            <Button
-              type="button"
-              variant="blank"
-              onPress={onCancel}
-              disabled={busy}
-            >
-              Отмена
-            </Button>
-          )}
-        </Stack>
-      </Stack>
-    </form>
-  );
-}
-function DirectForm({
-  rule,
-  onDone,
-  onCancel,
-  initialProtocol = "tcp",
-}: {
-  rule?: DirectRule;
-  initialProtocol?: "tcp" | "udp";
-  onDone: (r: DirectRule) => void;
-  onCancel?: () => void;
-}) {
-  const [protocol, setProtocol] = useState(rule?.protocol ?? initialProtocol);
-  const [listenHost, setListenHost] = useState(
-    rule?.listenHost && rule.listenHost !== "0.0.0.0" ? rule.listenHost : "",
-  );
-  const [listenPort, setListenPort] = useState(String(rule?.listenPort ?? ""));
-  const [targetHost, setTargetHost] = useState(rule?.targetHost ?? "");
-  const [targetPort, setTargetPort] = useState(String(rule?.targetPort ?? ""));
-  const [enabled, setEnabled] = useState(rule?.enabled ?? true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [fieldErrors, setFieldErrors] = useState<{
-    listenHost?: string;
-    listenPort?: string;
-    targetHost?: string;
-    targetPort?: string;
-  }>({});
-  const validPort = (value: string) =>
-    /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 65535;
-  const effectiveTargetPort = targetPort || listenPort;
-  function clearFieldError(field: keyof typeof fieldErrors) {
-    setFieldErrors((current) => ({ ...current, [field]: undefined }));
-    setError("");
-  }
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    if (busy) return;
-    const errors: typeof fieldErrors = {};
-    if (!validPort(listenPort))
-      errors.listenPort = "Укажите входящий порт от 1 до 65535.";
-    if (listenHost.trim() && !isDirectIP(listenHost.trim()))
-      errors.listenHost =
-        "Укажите IP интерфейса без порта или оставьте поле пустым.";
-    if (!targetHost.trim())
-      errors.targetHost = "Укажите IP-адрес или домен сервиса.";
-    else if (!isDirectTarget(targetHost.trim()))
-      errors.targetHost =
-        "Введите только IP-адрес или домен, без схемы, пути и порта.";
-    if (targetPort && !validPort(targetPort))
-      errors.targetPort =
-        "Укажите порт сервиса от 1 до 65535 или оставьте пустым.";
-    setFieldErrors(errors);
-    if (Object.keys(errors).length) return;
-    setBusy(true);
-    setError("");
-    try {
-      onDone(
-        await api.saveDirect(
-          {
-            protocol,
-            listenHost: listenHost.trim() || "0.0.0.0",
-            listenPort: +listenPort,
-            targetHost: targetHost.trim(),
-            targetPort: +effectiveTargetPort,
-            enabled,
-          },
-          rule?.id,
-        ),
-      );
-    } catch (e) {
-      setError(err(e));
-      setBusy(false);
-    }
-  }
-  return (
-    <form onSubmit={submit}>
-      <Stack gap={5}>
-        <Select
-          popup="overlay"
-          id="protocol"
-          label="Протокол"
-          value={protocol}
-          onValueChange={(v) => {
-            if (v === "tcp" || v === "udp") setProtocol(v);
-          }}
-          disabled={busy}
-          options={[
-            { value: "tcp", label: "TCP" },
-            { value: "udp", label: "UDP" },
-          ]}
-        />
-        <Stack direction="row" columns="wide-start" align="start" gap={3}>
-          <TextInput
-            id="listen-host"
-            label="IP сервера"
-            labelPlacement="inside"
-            showIcon={false}
-            value={listenHost}
-            onValueChange={(value) => {
-              setListenHost(value);
-              clearFieldError("listenHost");
-            }}
-            error={fieldErrors.listenHost}
-            placeholder="0.0.0.0"
-            disabled={busy}
-          />
-          <TextInput
-            id="listen-port"
-            label="Входящий порт"
-            labelPlacement="inside"
-            showIcon={false}
-            value={listenPort}
-            onValueChange={(value) => {
-              setListenPort(value);
-              clearFieldError("listenPort");
-            }}
-            placeholder="Порт"
-            error={fieldErrors.listenPort}
-            disabled={busy}
-          />
-        </Stack>
-        <Stack direction="row" columns="wide-start" align="start" gap={3}>
-          <TextInput
-            id="target-host"
-            label="IP или домен сервиса"
-            labelPlacement="inside"
-            showIcon={false}
-            value={targetHost}
-            onValueChange={(value) => {
-              setTargetHost(value);
-              clearFieldError("targetHost");
-            }}
-            placeholder="IP или домен сервиса"
-            error={fieldErrors.targetHost}
-            disabled={busy}
-          />
-          <TextInput
-            id="target-port"
-            label="Порт сервиса"
-            labelPlacement="inside"
-            showIcon={false}
-            value={targetPort}
-            onValueChange={(value) => {
-              setTargetPort(value);
-              clearFieldError("targetPort");
-            }}
-            placeholder="Порт"
-            error={fieldErrors.targetPort}
-            disabled={busy}
-          />
-        </Stack>
-        <Stack gap={2}>
-          <Text tone="muted">Схема проброса</Text>
-          <Text font="mono">
-            {protocol.toUpperCase()}{" "}
-            {endpoint(
-              listenHost.trim() || "0.0.0.0",
-              validPort(listenPort) ? Number(listenPort) : 0,
-            ).replace(/:0$/, ":…")}{" "}
-            →{" "}
-            {targetHost.trim()
-              ? endpoint(
-                  targetHost.trim(),
-                  validPort(effectiveTargetPort)
-                    ? Number(effectiveTargetPort)
-                    : 0,
-                ).replace(/:0$/, ":…")
-              : "адрес сервиса:порт"}
-          </Text>
-        </Stack>
-        <Switch
-          id="direct-enabled"
-          label="Маршрут включён"
-          checked={enabled}
-          onCheckedChange={setEnabled}
-          disabled={busy}
-        />
-        {error && <ErrorMessage>{error}</ErrorMessage>}
-        <Stack direction="row" gap={3}>
-          <Button type="submit" loading={busy} disabled={busy}>
-            {rule ? "Сохранить маршрут" : "Создать маршрут"}
-          </Button>
-          {onCancel && (
-            <Button
-              type="button"
-              variant="blank"
-              onPress={onCancel}
-              disabled={busy}
-            >
-              Отмена
-            </Button>
-          )}
-        </Stack>
-      </Stack>
-    </form>
-  );
+function publicPortLines(
+  route: HttpRoute | DirectRule,
+  settings: PortOwnerSettings | null,
+) {
+  if (!("host" in route)) return [];
+  if (!settings) return ["Публичные порты настраиваются автоматически"];
+  const label = (owner: PortOwners[keyof PortOwners]) =>
+    owner === "direct" ? "Прямой проброс" : "Веб-доступ";
+  if (route.tls === "off")
+    return [`HTTP · TCP ${settings.httpPort} · ${label(settings.owners.http)}`];
+  return [
+    `HTTPS · TCP ${settings.httpsPort} · ${label(settings.owners.https)}`,
+    `HTTP/3 · UDP ${settings.httpsPort} · ${label(settings.owners.http3)}`,
+  ];
 }
 function readPage() {
   const hash = window.location.hash.slice(1);
   if (hash === "cloudflare" || hash === "settings/cloudflare")
     return "settings/cloudflare";
-  if (hash === "settings/account" || hash === "settings") return hash;
+  if (
+    hash === "settings/anti-ddos" ||
+    hash === "settings/account" ||
+    hash === "settings"
+  )
+    return hash;
   if (hash === "overview") return "overview";
   if (hash.startsWith("routes/")) return hash;
   return "routes";
@@ -571,6 +1252,7 @@ function App() {
   );
   const [panelDomainSettings, setPanelDomainSettings] =
     useState<PanelDomainSettings | null>(null);
+  const [owners, setOwners] = useState<PortOwnerSettings | null>(null);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [pending, setPending] = useState(false);
@@ -607,9 +1289,10 @@ function App() {
       do {
         refreshAgain.current = false;
         const readingVersion = dataVersion.current;
-        const [c, h, cert, panel] = await Promise.allSettled([
+        const [c, h, o, cert, panel] = await Promise.allSettled([
           api.config(),
           api.health(),
+          api.portOwners(),
           cloudflareApi.certificate(),
           api.panelDomain(),
         ]);
@@ -622,6 +1305,9 @@ function App() {
         else setCertificate(null);
         if (panel.status === "fulfilled") setPanelDomainSettings(panel.value);
         else setPanelDomainSettings(null);
+        if (o.status === "fulfilled") {
+          setOwners(o.value);
+        } else setOwners(null);
         const failure =
           c.status === "rejected"
             ? c.reason
@@ -660,6 +1346,7 @@ function App() {
       setAuth({ configured: true, authenticated: false });
       setConfig(null);
       setHealth(null);
+      setOwners(null);
       setPending(false);
       setError("");
     };
@@ -719,6 +1406,7 @@ function App() {
       setAuth({ configured: true, authenticated: false });
       setConfig(null);
       setHealth(null);
+      setOwners(null);
     } catch (e) {
       setError(err(e));
     } finally {
@@ -790,36 +1478,46 @@ function App() {
   const isList = page === "routes";
   const isCreating = mode === "new";
   const routeScreen = section === "routes" && !isList && !isCreating;
-  const titles: Record<string, string> = {
-    overview: "Сервис",
-    "settings/cloudflare": "Cloudflare DNS",
-    "settings/account": "Доступ к панели",
-    settings: "Настройки",
-    routes: "Маршруты",
-    "routes/new": "Новый маршрут",
-    "routes/new/http": "Веб-доступ",
-  };
+  const systemRoute =
+    mapping && "host" in mapping.route && mapping.route.systemManaged;
+  const isEditing = routeScreen && mode === "edit" && !systemRoute;
+  const newProtocol =
+    selectedKey === "direct"
+      ? filter === "udp" ? "udp" : "tcp"
+      : selectedKey === "tcp" || selectedKey === "udp"
+        ? selectedKey
+        : "http";
   const title =
-    titles[page] ??
-    (isCreating
-      ? "Проброс порта"
-      : mode === "edit"
-        ? "Редактирование маршрута"
-        : mode === "delete"
-          ? "Удаление маршрута"
-          : "Маршрут");
+    page === "overview"
+      ? "Сервис"
+      : page === "settings/anti-ddos"
+        ? "Защита от DDoS"
+        : page === "settings/cloudflare"
+            ? "Cloudflare DNS"
+            : page === "settings/account"
+              ? "Доступ к панели"
+              : page === "settings"
+                ? "Настройки"
+                : isList
+                  ? "Маршруты"
+                  : isCreating
+                    ? page.endsWith("/http")
+                      ? "Новый HTTP/HTTPS маршрут"
+                      : page.endsWith("/direct") ||
+                          page.endsWith("/tcp") ||
+                          page.endsWith("/udp")
+                        ? "Новое TCP/UDP правило"
+                        : "Новый маршрут"
+                    : mode === "edit"
+                      ? "Редактирование маршрута"
+                      : mode === "delete"
+                        ? "Удаление маршрута"
+                        : "Маршрут";
   const converged =
     !!health &&
     health.appliedRevision === config.revision &&
     health.revision === config.revision;
   const applied = converged && health?.status === "healthy";
-  const serviceDetails = [
-    health?.error,
-    certificate?.error,
-    certificate?.dnsError,
-    certificate?.tlsError,
-    panelDomainSettings?.automation?.detail || panelDomainSettings?.proxyWarning,
-  ].filter(Boolean).join("\n");
   const panelAutomation = panelDomainSettings?.automation;
   const cloudflareSSLMode = panelAutomation?.zoneSSL;
   const cloudflareSSLLabel =
@@ -835,29 +1533,30 @@ function App() {
               ? "Strict (SSL-Only Origin Pull)"
               : cloudflareSSLMode;
   const renderEpoch = epoch.current;
-  const saved = (kind: "http" | "direct", item: HttpRoute | DirectRule) => {
+  const saved = (item: HttpRoute | DirectRule) => {
     if (renderEpoch !== epoch.current || !authenticated.current) return;
+    const isHttp = "host" in item;
     setConfig(
       (current) =>
         current && {
           ...current,
           httpRoutes:
-            kind === "http"
+            isHttp
               ? [
                   ...current.httpRoutes.filter((r) => r.id !== item.id),
-                  item as HttpRoute,
+                  item,
                 ]
               : current.httpRoutes,
           directRules:
-            kind === "direct"
-              ? [
+            isHttp
+              ? current.directRules
+              : [
                   ...current.directRules.filter((r) => r.id !== item.id),
-                  item as DirectRule,
-                ]
-              : current.directRules,
+                  item,
+                ],
         },
     );
-    navigate(`routes/view/${kind}/${encodeURIComponent(item.id)}`);
+    navigate(`routes/view/${isHttp ? "http" : "direct"}/${encodeURIComponent(item.id)}`);
   };
   return (
     <AppShell
@@ -896,7 +1595,13 @@ function App() {
           <Text as="h1">{title}</Text>
           {isList && (
             <Stack direction="row" gap={3} align="center">
-              <Button onPress={() => navigate("routes/new")}>
+              <Button
+                onPress={() =>
+                  navigate(
+                    filter === "all" ? "routes/new" : `routes/new/${filter}`,
+                  )
+                }
+              >
                 Добавить маршрут
               </Button>
               <IconButton
@@ -938,7 +1643,11 @@ function App() {
                       <Stack direction="row" gap={3} align="center">
                         <Icon name={"host" in route ? "link" : "device"} />
                         <Text font="heading" weight="bold">
-                          {routeProtocol(route)}
+                          {"host" in route
+                            ? route.tls === "off"
+                              ? "HTTP"
+                              : "HTTPS"
+                            : route.protocol.toUpperCase()}
                         </Text>
                         <Text tone="secondary">{statusLabel(route)}</Text>
                       </Stack>
@@ -965,55 +1674,24 @@ function App() {
                       ? "Нет маршрутов этого типа"
                       : "Подключите первый сервис"}
                   </Text>
-                  {mappings.length > 0 && (
-                    <Text tone="secondary">
-                      Выберите другой протокол или добавьте маршрут.
-                    </Text>
-                  )}
+                  <Text tone="secondary">
+                    {mappings.length
+                      ? "Выберите другой протокол или добавьте маршрут."
+                      : "HTTP/HTTPS — по домену и пути. TCP/UDP — по порту."}
+                  </Text>
                 </Stack>
               </Card>
             )}
           </Stack>
         )}
         {isCreating && (
-          <Card>
-            {page === "routes/new" ? (
-              <Stack gap={1}>
-                <Text tone="secondary">Как подключить сервис?</Text>
-                <Text tone="secondary">
-                  Нужный способ подключения настроится автоматически.
-                </Text>
-                <DrawerButton
-                  label="Веб-доступ"
-                  icon="link"
-                  secondaryText="Сайт или API по домену и пути"
-                  secondaryPlacement="below"
-                  onPress={() => navigate("routes/new/http")}
-                />
-                <DrawerButton
-                  label="Проброс порта"
-                  icon="device"
-                  secondaryText="Подключение к сервису по порту TCP или UDP"
-                  secondaryPlacement="below"
-                  onPress={() => navigate("routes/new/direct")}
-                />
-              </Stack>
-            ) : page.endsWith("/http") ? (
-              <HttpForm
-                onDone={(r) => saved("http", r)}
-                onCancel={() => navigate("routes")}
-              />
-            ) : (
-              <DirectForm
-                key={page}
-                initialProtocol={
-                  page.endsWith("/udp") || filter === "udp" ? "udp" : "tcp"
-                }
-                onDone={(r) => saved("direct", r)}
-                onCancel={() => navigate("routes")}
-              />
-            )}
-          </Card>
+          <RouteForm
+            key={page}
+            initialProtocol={newProtocol}
+            ports={owners}
+            onDone={saved}
+            onCancel={() => navigate("routes")}
+          />
         )}
         {routeScreen && !mapping && (
           <Card>
@@ -1023,27 +1701,18 @@ function App() {
             </Stack>
           </Card>
         )}
-        {routeScreen && mapping && (
+        {mapping && isEditing && (
+          <RouteForm
+            key={mapping.key}
+            route={mapping.route}
+            ports={owners}
+            onDone={saved}
+            onCancel={() => navigate(`routes/view/${mapping.key}`)}
+          />
+        )}
+        {routeScreen && mapping && !isEditing && (
           <Card>
-            {mode === "edit" &&
-            !("host" in mapping.route && mapping.route.systemManaged) ? (
-              "host" in mapping.route ? (
-                <HttpForm
-                  key={mapping.key}
-                  route={mapping.route}
-                  onDone={(r) => saved("http", r)}
-                  onCancel={() => navigate(`routes/view/${mapping.key}`)}
-                />
-              ) : (
-                <DirectForm
-                  key={mapping.key}
-                  rule={mapping.route}
-                  onDone={(r) => saved("direct", r)}
-                  onCancel={() => navigate(`routes/view/${mapping.key}`)}
-                />
-              )
-            ) : mode === "delete" &&
-              !("host" in mapping.route && mapping.route.systemManaged) ? (
+            {mode === "delete" && !systemRoute ? (
               <Stack gap={4}>
                 <Text font="mono">{source(mapping.route)}</Text>
                 <Text>
@@ -1054,11 +1723,7 @@ function App() {
                     loading={pending}
                     onPress={() =>
                       void mutate(
-                        () =>
-                          api.remove(
-                            mapping.kind,
-                            mapping.route.id,
-                          ),
+                        () => api.remove(mapping.kind, mapping.route.id),
                         () => navigate("routes"),
                       )
                     }
@@ -1082,6 +1747,16 @@ function App() {
                     {source(mapping.route)}
                   </Text>
                 </Stack>
+                {publicPortLines(mapping.route, owners).length > 0 && (
+                  <Stack gap={1}>
+                    <Text tone="secondary">Публичные порты</Text>
+                    {publicPortLines(mapping.route, owners).map((line) => (
+                      <Text key={line} font="mono">
+                        {line}
+                      </Text>
+                    ))}
+                  </Stack>
+                )}
                 <Stack gap={1}>
                   <Text tone="secondary">Сервис</Text>
                   <Text font="mono" size="lg">
@@ -1100,10 +1775,20 @@ function App() {
                   />
                   <Text>{statusLabel(mapping.route)}</Text>
                 </Stack>
+                {mapping.route.error && (
+                  <ErrorMessage>{mapping.route.error}</ErrorMessage>
+                )}
                 {"host" in mapping.route ? (
                   <Text tone="secondary">
-                    {certificateLabels[mapping.route.tls]}
-                    {mapping.route.stripPrefix && " · Префикс пути удаляется"}
+                    {mapping.route.tls === "auto"
+                      ? "Автоматический TLS"
+                      : mapping.route.tls === "internal"
+                        ? "Внутренний сертификат"
+                        : "Без TLS"}{" "}
+                    ·{" "}
+                    {mapping.route.stripPrefix
+                      ? "Префикс пути удаляется"
+                      : "Путь сохраняется"}
                   </Text>
                 ) : (
                   <Text tone="secondary">
@@ -1112,10 +1797,7 @@ function App() {
                       : "Статистика недоступна"}
                   </Text>
                 )}
-                {mapping.route.error && (
-                  <TechnicalDetails>{mapping.route.error}</TechnicalDetails>
-                )}
-                {!("host" in mapping.route && mapping.route.systemManaged) && (
+                {!systemRoute && (
                   <Switch
                     id="route-enabled"
                     label="Маршрут включён"
@@ -1128,10 +1810,14 @@ function App() {
                     }
                   />
                 )}
+                {systemRoute && (
+                  <Text tone="secondary">
+                    Системный маршрут панели управляется настройкой домена
+                    панели.
+                  </Text>
+                )}
                 <Stack direction="row" gap={3}>
-                  {!(
-                    "host" in mapping.route && mapping.route.systemManaged
-                  ) && (
+                  {!systemRoute && (
                     <Button
                       variant="simple"
                       onPress={() => navigate(`routes/edit/${mapping.key}`)}
@@ -1146,9 +1832,7 @@ function App() {
                   >
                     Обновить
                   </Button>
-                  {!(
-                    "host" in mapping.route && mapping.route.systemManaged
-                  ) && (
+                  {!systemRoute && (
                     <Button
                       variant="blank"
                       onPress={() => navigate(`routes/delete/${mapping.key}`)}
@@ -1200,6 +1884,7 @@ function App() {
                     ? "Веб-сервер недоступен"
                     : "Состояние веб-сервера неизвестно"}
               </Text>
+              {health?.error && <ErrorMessage>{health.error}</ErrorMessage>}
               {certificate?.configured && (
                 <Text tone="secondary">
                   Сертификат{" "}
@@ -1208,22 +1893,29 @@ function App() {
                     ? "ожидается выдача"
                     : certificate.state === "issued"
                       ? "выдан"
-                      : certificate.state === "expired"
-                        ? "срок действия истёк"
-                        : "требует проверки"}
+                      : certificate.state}
+                  {certificate.error ? `. ${certificate.error}` : ""}
                 </Text>
               )}
               {certificate?.dnsState && (
                 <Text tone="secondary">
-                  Адреса домена на сервере —{" "}
-                  {certificate.addresses?.join(", ") || "нет адресов"}
+                  Системный резолвер, включая hosts:{" "}
+                  {certificate.addresses?.join(", ") ||
+                    certificate.dnsError ||
+                    "нет адресов"}
                 </Text>
               )}
               {certificate?.tlsState && (
                 <Text tone="secondary">
                   HTTPS на сервере —{" "}
-                  {localCertificateStatus[certificate.tlsState] ??
-                    "состояние неизвестно"}
+                  {certificate.tlsState === "bootstrap"
+                    ? "локальный сертификат"
+                    : certificate.tlsState === "served"
+                      ? "доверенный сертификат"
+                      : certificate.tlsState === "cloudflare_origin"
+                        ? "Cloudflare Origin CA для Full (strict)"
+                        : certificate.tlsState}
+                  {certificate.tlsError ? `. ${certificate.tlsError}` : ""}
                 </Text>
               )}
               {panelAutomation?.dnsMode && (
@@ -1235,7 +1927,12 @@ function App() {
                   {cloudflareSSLLabel && ` · режим зоны: ${cloudflareSSLLabel}`}
                 </Text>
               )}
-              {serviceDetails && <TechnicalDetails>{serviceDetails}</TechnicalDetails>}
+              {panelAutomation?.detail && (
+                <Text tone="secondary">{panelAutomation.detail}</Text>
+              )}
+              {!panelAutomation?.dnsMode && panelDomainSettings?.proxyWarning && (
+                <ErrorMessage>{panelDomainSettings.proxyWarning}</ErrorMessage>
+              )}
               <Stack direction="row" gap={3}>
                 {!converged && health && (
                   <Button
@@ -1260,12 +1957,22 @@ function App() {
                 HTTP/HTTPS: {config.httpRoutes.length} · TCP/UDP:{" "}
                 {config.directRules.length}
               </Text>
+              <Text tone="secondary">
+                Сохранение изменений не означает их успешного применения.
+              </Text>
             </Stack>
           </Card>
         )}
         {page === "settings" && (
           <Card>
             <Stack gap={1}>
+              <DrawerButton
+                label="Защита от DDoS"
+                secondaryText="Политики защиты и состояние фильтрации"
+                secondaryPlacement="below"
+                icon="shield"
+                onPress={() => navigate("settings/anti-ddos")}
+              />
               <DrawerButton
                 label="Cloudflare DNS"
                 secondaryText="Подключение аккаунта и записи доменов"
@@ -1282,6 +1989,17 @@ function App() {
               />
             </Stack>
           </Card>
+        )}
+        {page === "settings/anti-ddos" && (
+          <AntiDDoSPage
+            config={config}
+            onSaved={(next) => {
+              if (renderEpoch === epoch.current && authenticated.current)
+                setConfig((current) =>
+                  current && current.revision > next.revision ? current : next,
+                );
+            }}
+          />
         )}
         {page === "settings/cloudflare" && (
           <Card>

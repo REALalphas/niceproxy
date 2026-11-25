@@ -13,6 +13,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"niceproxy/internal/ddos"
+	"niceproxy/internal/linuxstats"
 )
 
 // Rule identifies a listener and its upstream. Port zero may be used for an ephemeral listener.
@@ -109,22 +112,92 @@ type instance interface {
 	stop()
 	wait(context.Context) error
 	addr() net.Addr
-	update(Rule)
 	metrics() *counters
 }
 type Manager struct {
-	mu      sync.Mutex
-	rules   map[string]instance
-	specs   map[string]Rule
-	opts    Options
-	closed  bool
-	retired map[instance]struct{}
-	stats   map[string]*counters
-	cleanup sync.WaitGroup
+	mu               sync.Mutex
+	rules            map[string]instance
+	specs            map[string]Rule
+	opts             Options
+	closed           bool
+	retired          map[instance]struct{}
+	stats            map[string]*counters
+	cleanup          sync.WaitGroup
+	defense          *ddos.Engine
+	protection       map[string]Protection
+	httpProtection   map[string]Protection
+	globalProtection Protection
 }
 
 func NewManager(o Options) *Manager {
-	return &Manager{rules: make(map[string]instance), specs: make(map[string]Rule), opts: o.defaults(), retired: make(map[instance]struct{}), stats: make(map[string]*counters)}
+	return &Manager{rules: make(map[string]instance), specs: make(map[string]Rule), opts: o.defaults(), retired: make(map[instance]struct{}), stats: make(map[string]*counters), defense: ddos.NewEngine(), protection: make(map[string]Protection), httpProtection: make(map[string]Protection)}
+}
+
+type ProtectionConfig struct {
+	Version            int64
+	Listener, Endpoint *ddos.Policy
+}
+
+func (m *Manager) Defense() *ddos.Engine { return m.defense }
+
+type HTTPProtectionConfig struct {
+	ID, Label, Network string
+	Version            int64
+	Listener, Endpoint *ddos.Policy
+}
+
+func (m *Manager) SetHTTPProtection(specs []HTTPProtectionConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.httpProtection = make(map[string]Protection, len(specs))
+	for _, spec := range specs {
+		listener := m.defense.Bind(ddos.Spec{ID: "listener:global", Label: "all listeners", Kind: ddos.Listener, Protocol: spec.Network, Version: spec.Version, Policy: spec.Listener, PreFilter: "caddy · listener"})
+		endpoint := m.defense.Bind(ddos.Spec{ID: "http:" + spec.ID, Label: spec.Label, Kind: spec.Network, Protocol: spec.Network, Version: spec.Version, Policy: spec.Endpoint, PreFilter: "caddy · request"})
+		m.httpProtection[spec.ID] = Protection{Listener: listener, Endpoint: endpoint}
+	}
+}
+
+func (m *Manager) SetGlobalProtection(policy *ddos.Policy, version int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.globalProtection = Protection{Listener: m.defense.Bind(ddos.Spec{ID: "listener:global", Label: "all listeners", Kind: ddos.Listener, Version: version, Policy: policy, PreFilter: "proxy · admission"})}
+}
+
+func (m *Manager) HTTPProtection(id string) Protection {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.httpProtection[id]
+}
+
+func (m *Manager) protectionFor(id string, r Rule, cfg *ProtectionConfig) Protection {
+	if cfg == nil {
+		return Protection{}
+	}
+	source := "socket · accept"
+	if r.Protocol == "udp" {
+		source = "socket · recvmsg"
+	}
+	listener := m.defense.Bind(ddos.Spec{ID: "listener:global", Label: "all listeners", Kind: ddos.Listener, Protocol: r.Protocol, Version: cfg.Version, Policy: cfg.Listener, PreFilter: source})
+	endpoint := m.defense.Bind(ddos.Spec{ID: id, Label: address(r.ListenAddress, r.ListenPort), Kind: r.Protocol, Protocol: r.Protocol, Version: cfg.Version, Policy: cfg.Endpoint, PreFilter: source, BeforeListenerFilter: true})
+	return Protection{Listener: listener, Endpoint: endpoint}
+}
+
+func (m *Manager) PublishProtection() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var bindings []*ddos.Binding
+	for id, p := range m.protection {
+		if m.rules[id] != nil && p.Listener != nil {
+			bindings = append(bindings, p.Listener, p.Endpoint)
+		}
+	}
+	for _, p := range m.httpProtection {
+		bindings = append(bindings, p.Listener, p.Endpoint)
+	}
+	if m.globalProtection.Listener != nil {
+		bindings = append(bindings, m.globalProtection.Listener)
+	}
+	m.defense.Publish(bindings)
 }
 
 // Stats returns retained statistics for a rule ID, including retired streams.
@@ -201,6 +274,7 @@ func (m *Manager) Retire(id string) error {
 	}
 	delete(m.rules, id)
 	delete(m.specs, id)
+	delete(m.protection, id)
 	m.retireLocked(i)
 	return nil
 }
@@ -217,6 +291,10 @@ func (m *Manager) HasListener(id string) bool {
 
 // Add starts a rule. The OS performs the authoritative bind-conflict check.
 func (m *Manager) Add(id string, r Rule) (net.Addr, error) {
+	return m.AddProtected(id, r, nil)
+}
+
+func (m *Manager) AddProtected(id string, r Rule, cfg *ProtectionConfig) (net.Addr, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -228,9 +306,9 @@ func (m *Manager) Add(id string, r Rule) (net.Addr, error) {
 	if _, ok := m.rules[id]; ok {
 		return nil, fmt.Errorf("rule %q already exists", id)
 	}
-	return m.add(id, r)
+	return m.add(id, r, m.protectionFor(id, r, cfg))
 }
-func (m *Manager) add(id string, r Rule) (net.Addr, error) {
+func (m *Manager) add(id string, r Rule, protection Protection) (net.Addr, error) {
 	if err := r.validate(); err != nil {
 		return nil, err
 	}
@@ -245,8 +323,9 @@ func (m *Manager) add(id string, r Rule) (net.Addr, error) {
 			return nil, err
 		}
 		forceCtx, forceCancel := context.WithCancel(context.Background())
-		t := &tcpRule{stats: c, forceCtx: forceCtx, forceCancel: forceCancel, listener: l.(*net.TCPListener), rule: r, opts: m.opts, conns: make(map[*net.TCPConn]struct{}), done: make(chan struct{})}
+		t := &tcpRule{stats: c, forceCtx: forceCtx, forceCancel: forceCancel, listener: l.(*net.TCPListener), rule: r, protection: protection, opts: m.opts, conns: make(map[*net.TCPConn]struct{}), done: make(chan struct{})}
 		inst = t
+		protection.socket(linuxstats.SocketInode(t.listener))
 		go t.serve()
 	} else {
 		a, err := net.ResolveUDPAddr("udp", address(r.ListenAddress, r.ListenPort))
@@ -258,8 +337,9 @@ func (m *Manager) add(id string, r Rule) (net.Addr, error) {
 			return nil, err
 		}
 		forceCtx, forceCancel := context.WithCancel(context.Background())
-		u := &udpRule{stats: c, forceCtx: forceCtx, forceCancel: forceCancel, listener: l, rule: r, opts: m.opts, clients: make(map[string]*udpClient), pending: make(map[string]*udpSetup), done: make(chan struct{})}
+		u := &udpRule{stats: c, forceCtx: forceCtx, forceCancel: forceCancel, listener: l, rule: r, protection: protection, opts: m.opts, clients: make(map[string]*udpClient), pending: make(map[string]*udpSetup), done: make(chan struct{})}
 		inst = u
+		protection.socket(linuxstats.SocketInode(l))
 		go u.serve()
 	}
 	c.refs++
@@ -268,6 +348,7 @@ func (m *Manager) add(id string, r Rule) (net.Addr, error) {
 	m.trimStats()
 	m.rules[id] = inst
 	m.specs[id] = r
+	m.protection[id] = protection
 	return inst.addr(), nil
 }
 
@@ -276,6 +357,10 @@ func (m *Manager) add(id string, r Rule) (net.Addr, error) {
 // Existing TCP streams keep their target; UDP associations are reset. ctx bounds
 // draining the retired listener after a successful replacement.
 func (m *Manager) Update(ctx context.Context, id string, r Rule) (net.Addr, error) {
+	return m.UpdateProtected(ctx, id, r, nil)
+}
+
+func (m *Manager) UpdateProtected(ctx context.Context, id string, r Rule, cfg *ProtectionConfig) (net.Addr, error) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -291,9 +376,22 @@ func (m *Manager) Update(ctx context.Context, id string, r Rule) (net.Addr, erro
 		return nil, err
 	}
 	prev := m.specs[id]
+	previousProtection := m.protection[id]
+	protection := previousProtection
+	if cfg != nil {
+		protection = m.protectionFor(id, r, cfg)
+	}
 	if r.Protocol == prev.Protocol && r.ListenAddress == prev.ListenAddress && r.ListenPort == prev.ListenPort {
-		old.update(r)
+		switch i := old.(type) {
+		case *tcpRule:
+			i.mu.Lock()
+			i.rule, i.protection = r, protection
+			i.mu.Unlock()
+		case *udpRule:
+			i.reconfigure(r, protection)
+		}
 		m.specs[id] = r
+		m.protection[id] = protection
 		a := old.addr()
 		m.mu.Unlock()
 		return a, nil
@@ -312,11 +410,12 @@ func (m *Manager) Update(ctx context.Context, id string, r Rule) (net.Addr, erro
 		old.stop()
 		delete(m.rules, id)
 		delete(m.specs, id)
+		delete(m.protection, id)
 	}
-	a, err := m.add(id, r)
+	a, err := m.add(id, r, protection)
 	if err != nil {
 		if overlaps {
-			_, rollback := m.add(id, prev)
+			_, rollback := m.add(id, prev, previousProtection)
 			m.retireLocked(old)
 			m.mu.Unlock()
 			_ = m.wait(ctx, old)
@@ -353,6 +452,7 @@ func (m *Manager) Remove(ctx context.Context, id string) error {
 	}
 	delete(m.rules, id)
 	delete(m.specs, id)
+	delete(m.protection, id)
 	m.retireLocked(inst)
 	m.mu.Unlock()
 	return m.wait(ctx, inst)
@@ -374,6 +474,7 @@ func (m *Manager) Close(ctx context.Context) error {
 		m.retireLocked(i)
 		delete(m.rules, id)
 		delete(m.specs, id)
+		delete(m.protection, id)
 	}
 	m.mu.Unlock()
 	var errs []error
@@ -417,6 +518,7 @@ type tcpRule struct {
 	listener    *net.TCPListener
 	mu          sync.Mutex
 	rule        Rule
+	protection  Protection
 	opts        Options
 	conns       map[*net.TCPConn]struct{}
 	stopping    bool
@@ -426,7 +528,6 @@ type tcpRule struct {
 
 func (t *tcpRule) metrics() *counters { return t.stats }
 func (t *tcpRule) addr() net.Addr     { return t.listener.Addr() }
-func (t *tcpRule) update(r Rule)      { t.mu.Lock(); t.rule = r; t.mu.Unlock() }
 func (t *tcpRule) stop()              { t.mu.Lock(); t.stopping = true; _ = t.listener.Close(); t.mu.Unlock() }
 func (t *tcpRule) wait(ctx context.Context) error {
 	select {
@@ -480,34 +581,80 @@ func (t *tcpRule) serve() {
 			_ = c.Close()
 			break
 		}
-		if !admit(&t.stats.tcpActive, t.opts.MaxTCPConnections) {
+		r, p := t.rule, t.protection
+		ip := ddos.IP(c.RemoteAddr())
+		for _, b := range [...]*ddos.Binding{p.Listener, p.Endpoint} {
+			b.Count(ddos.PreFilter, 1)
+			b.Count("new_connections", 1)
+			b.Observe("tcp_new", ip, 1)
+			b.Source(ip, "peer")
+		}
+		d := p.Listener.Check(ip, ddos.Amount{Metric: "tcp_new", Value: 1}, ddos.Amount{Metric: "tcp_active", Value: 1})
+		d.Combine(p.Endpoint.Check(ip, ddos.Amount{Metric: "tcp_new", Value: 1}, ddos.Amount{Metric: "tcp_active", Value: 1}, ddos.Amount{Metric: "backend_active", Value: 1}))
+		allowed := !d.Rejected() && admit(&t.stats.tcpActive, t.opts.MaxTCPConnections)
+		if !allowed {
+			if !d.Rejected() {
+				d.Fail(p.Listener, "tcp_capacity")
+			}
+			d.Record()
+			d.Release()
 			t.stats.rejects.Add(1)
 			t.stats.closed.Add(1)
 			t.mu.Unlock()
 			_ = c.Close()
 			continue
 		}
+		d.Record()
+		p.Listener.InFlight(1)
+		p.Endpoint.InFlight(1)
+		p.Listener.Count(ddos.Accepted, 1)
+		p.Endpoint.Count(ddos.Accepted, 1)
+		p.Endpoint.Count(ddos.Routed, 1)
 		t.stats.active.Add(1)
-		r := t.rule
 		t.conns[c] = struct{}{}
 		t.wg.Add(1)
 		t.mu.Unlock()
-		go t.handle(c, r)
+		go t.handle(c, r, p, d)
 	}
 }
-func (t *tcpRule) handle(client *net.TCPConn, r Rule) {
+func (t *tcpRule) handle(client *net.TCPConn, r Rule, p Protection, d ddos.Decision) {
+	ip := ddos.IP(client.RemoteAddr())
+	started := time.Now()
+	defer d.Release()
+	defer p.Listener.InFlight(-1)
+	defer p.Endpoint.InFlight(-1)
 	defer t.wg.Done()
 	defer func() { t.stats.active.Add(^uint64(0)); t.stats.tcpActive.Add(-1); t.stats.closed.Add(1) }()
 	defer func() { t.mu.Lock(); delete(t.conns, client); t.mu.Unlock(); _ = client.Close() }()
+	if !d.Wait(t.forceCtx) {
+		return
+	}
+	if millis := p.Listener.Maximum("first_byte_ms"); millis > 0 {
+		if err := firstByte(client, started.Add(time.Duration(millis)*time.Millisecond)); err != nil {
+			if isTimeout(err) {
+				p.Listener.Observe("timeouts", ip, 1)
+				exceeded := p.Listener.CheckOperation(ip, ddos.Amount{Metric: "first_byte_ms", Value: float64(millis) + 1})
+				exceeded.Record()
+			}
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(t.forceCtx, t.opts.DialTimeout)
 	defer cancel()
+	dialed := time.Now()
 	c, err := (&net.Dialer{}).DialContext(ctx, "tcp", address(r.TargetAddress, r.TargetPort))
 	if err != nil {
 		if t.forceCtx.Err() == nil {
 			t.stats.errors.Add(1)
+			p.Endpoint.Backend(ip, dialed, err)
+			p.Listener.Backend(ip, dialed, err)
 		}
 		return
 	}
+	p.Endpoint.Backend(ip, dialed, nil)
+	p.Listener.Backend(ip, dialed, nil)
+	p.Endpoint.Count(ddos.Forwarded, 1)
+	p.Listener.Count(ddos.Forwarded, 1)
 	upstream := c.(*net.TCPConn)
 	defer upstream.Close()
 	t.mu.Lock()
@@ -523,18 +670,49 @@ func (t *tcpRule) handle(client *net.TCPConn, r Rule) {
 		_ = upstream.SetDeadline(time.Now().Add(t.opts.TCPTimeout))
 	}
 	done := make(chan error, 2)
-	go tcpCopy(upstream, client, done)
-	go tcpCopy(client, upstream, done)
+	flow := newTCPFlow(p.Endpoint.Maximum("tcp_bytes"))
+	listenerIdle, endpointIdle := p.Listener.Maximum("idle_ms"), p.Endpoint.Maximum("idle_ms")
+	idleMillis := listenerIdle
+	if endpointIdle > 0 && (idleMillis == 0 || endpointIdle < idleMillis) {
+		idleMillis = endpointIdle
+	}
+	if flow.byteLimit > 0 || idleMillis > 0 {
+		if idleMillis > 0 {
+			ctx, cancel := context.WithCancel(t.forceCtx)
+			defer cancel()
+			go flow.watchIdle(ctx, time.Duration(idleMillis)*time.Millisecond, client, upstream, func(elapsed time.Duration) {
+				p.Listener.Observe("timeouts", ip, 1)
+				p.Endpoint.Observe("timeouts", ip, 1)
+				amount := ddos.Amount{Metric: "idle_ms", Value: float64(elapsed)/float64(time.Millisecond) + 0.001}
+				d := p.Listener.CheckOperation(ip, amount)
+				d.Combine(p.Endpoint.CheckOperation(ip, amount))
+				d.Record()
+			})
+		}
+		go flow.copy(upstream, client, func(n int64) { p.bytes("bytes_in", n) }, done, idleMillis > 0)
+		go flow.copy(client, upstream, func(n int64) { p.bytes("bytes_out", n) }, done, idleMillis > 0)
+	} else {
+		go tcpCopy(upstream, client, done, func(n int64) { p.bytes("bytes_in", n); flow.total.Add(n) })
+		go tcpCopy(client, upstream, done, func(n int64) { p.bytes("bytes_out", n); flow.total.Add(n) })
+	}
 	e1, e2 := <-done, <-done
+	if errors.Is(e1, errTrafficLimit) || errors.Is(e2, errTrafficLimit) {
+		exceeded := p.Endpoint.CheckOperation(ip, ddos.Amount{Metric: "tcp_bytes", Value: float64(flow.byteLimit) + 1})
+		exceeded.Record()
+	}
 	if (e1 != nil || e2 != nil) && t.forceCtx.Err() == nil {
 		t.stats.errors.Add(1)
 	}
+	if t.forceCtx.Err() == nil && flow.total.Load() == 0 && time.Since(started) < time.Second {
+		p.Endpoint.Observe("short_connections", ip, 1)
+		p.Listener.Observe("short_connections", ip, 1)
+	}
 }
 
-// Keep the concrete TCP connections in io.Copy: Go may use Linux splice for
-// this path when supported. Actual kernel/runtime behavior must be measured.
-func tcpCopy(dst, src *net.TCPConn, done chan<- error) {
-	_, err := io.Copy(dst, src)
+// Keep the concrete TCP connections in io.Copy so Go can use Linux splice.
+func tcpCopy(dst, src *net.TCPConn, done chan<- error, count func(int64)) {
+	n, err := io.Copy(dst, src)
+	count(n)
 	if err != nil {
 		_ = dst.Close()
 		_ = src.Close()
@@ -545,9 +723,13 @@ func tcpCopy(dst, src *net.TCPConn, done chan<- error) {
 }
 
 type udpClient struct {
-	failed atomic.Bool
-	conn   *net.UDPConn
-	client *net.UDPAddr
+	failed     atomic.Bool
+	conn       *net.UDPConn
+	client     *net.UDPAddr
+	protection Protection
+	decision   ddos.Decision
+	replied    atomic.Bool
+	firstWrite time.Time
 }
 
 // Setup retains only the first datagram per client. Limits include running
@@ -560,6 +742,8 @@ type udpSetup struct {
 	key        string
 	client     *net.UDPAddr
 	packet     []byte
+	protection Protection
+	decision   ddos.Decision
 	rule       Rule
 	generation uint64
 	ctx        context.Context
@@ -576,6 +760,7 @@ type udpRule struct {
 	listener     *net.UDPConn
 	mu           sync.Mutex
 	rule         Rule
+	protection   Protection
 	opts         Options
 	clients      map[string]*udpClient
 	pending      map[string]*udpSetup
@@ -590,8 +775,14 @@ type udpRule struct {
 
 func (u *udpRule) metrics() *counters { return u.stats }
 func (u *udpRule) addr() net.Addr     { return u.listener.LocalAddr() }
-func (u *udpRule) update(r Rule) {
+func (u *udpRule) update(r Rule)      { u.reconfigure(r, u.protection) }
+func (u *udpRule) reconfigure(r Rule, p Protection) {
 	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.protection = p
+	if u.rule == r {
+		return
+	}
 	u.rule = r
 	u.generation++
 	u.cancelSetups()
@@ -600,7 +791,6 @@ func (u *udpRule) update(r Rule) {
 		_ = c.conn.Close()
 	}
 	u.clients = make(map[string]*udpClient)
-	u.mu.Unlock()
 }
 func (u *udpRule) stop() {
 	u.mu.Lock()
@@ -634,44 +824,89 @@ func (u *udpRule) serve() {
 			}
 			return
 		}
+		key := client.String()
+		ip := ddos.IP(client)
+		u.mu.Lock()
+		if u.stopping {
+			u.mu.Unlock()
+			return
+		}
+		p, ctx := u.protection, u.forceCtx
+		for _, b := range [...]*ddos.Binding{p.Listener, p.Endpoint} {
+			b.Count(ddos.PreFilter, 1)
+			b.Count("packets", 1)
+			b.Observe("udp_packets", ip, 1)
+			b.Observe("udp_bytes", ip, float64(n))
+			b.Source(ip, "peer")
+		}
 		if flags&syscall.MSG_TRUNC != 0 {
+			p.Listener.Observe("protocol_errors", ip, 1)
+			p.Listener.Denied("truncated_datagram")
+			u.mu.Unlock()
 			continue
 		}
-		key := client.String()
-		u.mu.Lock()
+		amounts := [...]ddos.Amount{{Metric: "udp_packets", Value: 1}, {Metric: "udp_bytes", Value: float64(n)}, {Metric: "udp_datagram_bytes", Value: float64(n)}}
+		d := p.Listener.Check(ip, amounts[:]...)
+		if !d.Rejected() {
+			p.Listener.Count(ddos.Accepted, 1)
+			p.Endpoint.Count(ddos.Routed, 1)
+		}
 		c := u.clients[key]
-		canCreate := c == nil && u.pending[key] == nil && !u.stopping &&
-			u.pendingCount < udpSetupLimit && n <= udpSetupBytes-u.pendingBytes
-		if canCreate && !admit(&u.stats.udpActive, u.opts.MaxUDPAssociations) {
-			canCreate = false
+		if c == nil && u.pending[key] == nil {
+			d.Combine(p.Endpoint.Check(ip, append(amounts[:], ddos.Amount{Metric: "backend_active", Value: 1})...))
+		} else {
+			d.Combine(p.Endpoint.Check(ip, amounts[:]...))
 		}
-		if c == nil && u.pending[key] == nil && !u.stopping && !canCreate {
+		if d.Rejected() {
+			d.Record()
+			d.Release()
 			u.stats.rejects.Add(1)
+			u.mu.Unlock()
+			continue
 		}
-		if canCreate {
-			ctx, cancel := context.WithTimeout(u.forceCtx, u.opts.DialTimeout)
-			task := &udpSetup{key: key, client: client, packet: append([]byte{}, buf[:n]...),
-				rule: u.rule, generation: u.generation, ctx: ctx, cancel: cancel}
-			u.stats.accepted.Add(1)
-			u.stats.active.Add(1)
-			u.pending[key] = task
-			u.pendingCount++
-			u.pendingBytes += n
-			u.setupQueue = append(u.setupQueue, task)
-			if u.setupWorkers < udpSetupParallelism {
-				u.setupWorkers++
-				u.wg.Add(1)
-				go u.setupWorker()
+		if c != nil {
+			u.mu.Unlock()
+			d.Record()
+			if d.Wait(ctx) {
+				p.Endpoint.Count(ddos.Accepted, 1)
+				u.send(c, buf[:n], p)
 			}
+			d.Release()
+			continue
+		}
+		if u.pending[key] != nil || u.pendingCount >= udpSetupLimit || n > udpSetupBytes-u.pendingBytes || !admit(&u.stats.udpActive, u.opts.MaxUDPAssociations) {
+			if u.pending[key] == nil {
+				u.stats.rejects.Add(1)
+			}
+			d.Fail(p.Endpoint, "udp_setup_queue")
+			d.Record()
+			d.Release()
+			u.mu.Unlock()
+			continue
+		}
+		d.Record()
+		ctx, cancel := context.WithTimeout(ctx, u.opts.DialTimeout)
+		task := &udpSetup{key: key, client: client, packet: append([]byte{}, buf[:n]...), rule: u.rule, generation: u.generation, ctx: ctx, cancel: cancel, protection: p, decision: d}
+		u.stats.accepted.Add(1)
+		u.stats.active.Add(1)
+		p.Endpoint.Count(ddos.Accepted, 1)
+		p.Listener.InFlight(1)
+		p.Endpoint.InFlight(1)
+		p.Listener.Queue(1)
+		p.Listener.QueueBytes(int64(n))
+		u.pending[key] = task
+		u.pendingCount++
+		u.pendingBytes += n
+		u.setupQueue = append(u.setupQueue, task)
+		if u.setupWorkers < udpSetupParallelism {
+			u.setupWorkers++
+			u.wg.Add(1)
+			go u.setupWorker()
 		}
 		u.mu.Unlock()
-		// Pending-client followups are still dropped. Established clients bypass
-		// the setup queue, so slow DNS cannot block their receive path.
-		if c != nil {
-			u.send(c, buf[:n])
-		}
 	}
 }
+
 func (u *udpRule) finishAssociation() {
 	u.stats.active.Add(^uint64(0))
 	u.stats.udpActive.Add(-1)
@@ -685,8 +920,28 @@ func (u *udpRule) failed(c *udpClient, err error) {
 		u.stats.errors.Add(1)
 	}
 }
-func (u *udpRule) send(c *udpClient, packet []byte) {
-	_ = u.sendUntil(c, packet, time.Now().Add(u.opts.DialTimeout))
+func (u *udpRule) send(c *udpClient, packet []byte, p Protection) {
+	started := time.Now()
+	err := u.sendUntil(c, packet, started.Add(u.opts.DialTimeout))
+	u.udpForwarded(c, packet, p, started, err)
+}
+
+func (u *udpRule) udpForwarded(c *udpClient, packet []byte, p Protection, started time.Time, err error) {
+	if err == nil {
+		p.bytes("bytes_in", int64(len(packet)))
+		p.Endpoint.Count(ddos.Forwarded, 1)
+		p.Listener.Count(ddos.Forwarded, 1)
+	}
+	if !errors.Is(err, net.ErrClosed) && (err != nil || !p.Endpoint.ExpectsUDPResponse()) {
+		p.Endpoint.Backend(ddos.IP(c.client), started, err)
+		p.Listener.Backend(ddos.IP(c.client), started, err)
+	}
+}
+
+func releaseUDP(p Protection, d *ddos.Decision) {
+	d.Release()
+	p.Listener.InFlight(-1)
+	p.Endpoint.InFlight(-1)
 }
 func (u *udpRule) sendUntil(c *udpClient, packet []byte, deadline time.Time) error {
 	_ = c.conn.SetReadDeadline(time.Now().Add(u.opts.UDPIdleTimeout))
@@ -711,6 +966,7 @@ func (u *udpRule) cancelSetups() {
 	}
 	for _, task := range u.setupQueue {
 		u.finishSetup(task)
+		releaseUDP(task.protection, &task.decision)
 		u.finishAssociation()
 	}
 	u.setupQueue = nil
@@ -723,6 +979,8 @@ func (u *udpRule) finishSetup(task *udpSetup) {
 	}
 	u.pendingCount--
 	u.pendingBytes -= len(task.packet)
+	task.protection.Listener.Queue(-1)
+	task.protection.Listener.QueueBytes(-int64(len(task.packet)))
 }
 func (u *udpRule) setupWorker() {
 	defer u.wg.Done()
@@ -757,15 +1015,23 @@ func (u *udpRule) associate(task *udpSetup) {
 	var conn net.Conn
 	var c *udpClient
 	var err error
+	started := time.Now()
+	if !task.decision.Wait(task.ctx) {
+		u.completeSetup(task, nil, nil, task.ctx.Err())
+		return
+	}
 	if err = task.ctx.Err(); err == nil {
 		conn, err = (&net.Dialer{}).DialContext(task.ctx, "udp", address(task.rule.TargetAddress, task.rule.TargetPort))
 	}
 	if err == nil && u.registerSetup(task, conn.(*net.UDPConn)) {
-		c = &udpClient{conn: conn.(*net.UDPConn), client: task.client}
+		c = &udpClient{conn: conn.(*net.UDPConn), client: task.client, protection: task.protection, decision: task.decision, firstWrite: started}
 		// Followups cannot overtake the first packet. Its deadline includes
 		// time already spent queued and dialing, rather than restarting it.
 		deadline, _ := task.ctx.Deadline()
 		err = u.sendUntil(c, task.packet, deadline)
+		u.udpForwarded(c, task.packet, task.protection, started, err)
+	} else if err != nil && task.ctx.Err() == nil {
+		task.protection.Endpoint.Backend(ddos.IP(task.client), started, err)
 	}
 	u.completeSetup(task, c, conn, err)
 }
@@ -786,6 +1052,7 @@ func (u *udpRule) completeSetup(task *udpSetup, c *udpClient, conn net.Conn, err
 			}
 		}
 		u.finishAssociation()
+		releaseUDP(task.protection, &task.decision)
 		u.mu.Unlock()
 		if conn != nil {
 			_ = conn.Close()
@@ -801,6 +1068,7 @@ func (u *udpRule) completeSetup(task *udpSetup, c *udpClient, conn net.Conn, err
 func (u *udpRule) reply(key string, c *udpClient) {
 	defer u.wg.Done()
 	defer u.finishAssociation()
+	defer releaseUDP(c.protection, &c.decision)
 	defer func() {
 		u.mu.Lock()
 		if u.clients[key] == c {
@@ -813,8 +1081,12 @@ func (u *udpRule) reply(key string, c *udpClient) {
 	for {
 		n, _, flags, _, err := c.conn.ReadMsgUDP(buf, nil)
 		if err != nil {
-			if e, ok := err.(net.Error); !ok || !e.Timeout() {
+			if !isTimeout(err) {
 				u.failed(c, err)
+			} else if c.protection.Endpoint.ExpectsUDPResponse() && !c.replied.Load() {
+				ip := ddos.IP(c.client)
+				c.protection.Endpoint.Observe("udp_unanswered", ip, 1)
+				c.protection.Endpoint.Backend(ip, c.firstWrite, err)
 			}
 			return
 		}
@@ -832,6 +1104,12 @@ func (u *udpRule) reply(key string, c *udpClient) {
 		_ = u.listener.SetWriteDeadline(time.Now().Add(u.opts.DialTimeout))
 		_, err = u.listener.WriteToUDP(buf[:n], c.client)
 		u.writeMu.Unlock()
+		if err == nil {
+			c.protection.bytes("bytes_out", int64(n))
+			if c.replied.CompareAndSwap(false, true) && c.protection.Endpoint.ExpectsUDPResponse() {
+				c.protection.Endpoint.Backend(ddos.IP(c.client), c.firstWrite, nil)
+			}
+		}
 		if err != nil {
 			u.failed(c, err)
 			return

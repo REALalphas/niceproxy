@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -39,6 +41,13 @@ func envInt(key string, fallback int) int {
 		log.Fatalf("%s must be an integer", key)
 	}
 	return n
+}
+func bridgeToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
@@ -159,9 +168,18 @@ func run() error {
 		Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir,
 		PanelListen: *panel, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort,
 		PanelCertFile: os.Getenv("NICEPROXY_PANEL_CERT_FILE"), PanelKeyFile: os.Getenv("NICEPROXY_PANEL_KEY_FILE"),
+		PanelDomain: good.PanelDomain, PanelDomainProxied: good.PanelDomainProxied,
+		PanelDNSObserved:     good.PanelDNSObserved,
+		PanelCloudflareCIDRs: os.Getenv("NICEPROXY_PANEL_CLOUDFLARE_CIDRS"),
 	}
+	bridgeSecret, err := bridgeToken()
+	if err != nil {
+		return err
+	}
+	caddyOptions.BridgeToken = bridgeSecret
 	caddyOptions.PanelDomain, caddyOptions.PanelDomainProxied = good.PanelDomain, good.PanelDomainProxied
 	caddyOptions.PanelDNSObserved = good.PanelDNSObserved
+	caddyOptions.Protection = good.AntiDDoS
 	cm := caddy.New(caddyOptions)
 	startedConfig := good
 	if err := cm.Start(ctx, startedConfig.HTTPRoutes, startedConfig.PortOwners); err != nil {
@@ -192,6 +210,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	app.SetBridgeToken(bridgeSecret)
+	go app.RunProtection(ctx)
 	app.SetCaddyActive(startedConfig)
 	initialDomain := cfg.PanelDomain
 	if initialDomain == "" {

@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
+	"niceproxy/internal/ddos"
 	"niceproxy/internal/model"
 )
 
@@ -20,9 +24,43 @@ type Options struct {
 	PortOwners                                              model.PortOwners
 	Binary, RuntimeDir, DataDir, PanelListen, BackendSocket string
 	PanelDomain, PanelCertFile, PanelKeyFile                string
+	BridgeToken                                             string
 	PanelDomainProxied, PanelDNSObserved                    bool
+	PanelCloudflareCIDRs                                    string
 	HTTPPort, HTTPSPort                                     int
+	Protection                                              ddos.Config
 }
+
+const (
+	PanelPeerIPHeader       = "X-Niceproxy-Peer-IP"
+	PanelCloudflareIPHeader = "X-Niceproxy-Cloudflare-IP"
+)
+
+// Cloudflare's public IPv4 and IPv6 ranges from https://api.cloudflare.com/client/v4/ips.
+const cloudflarePanelCIDRs = `
+173.245.48.0/20
+103.21.244.0/22
+103.22.200.0/22
+103.31.4.0/22
+141.101.64.0/18
+108.162.192.0/18
+190.93.240.0/20
+188.114.96.0/20
+197.234.240.0/22
+198.41.128.0/17
+162.158.0.0/15
+104.16.0.0/13
+104.24.0.0/14
+172.64.0.0/13
+131.0.72.0/22
+2400:cb00::/32
+2606:4700::/32
+2803:f800::/32
+2405:b500::/32
+2405:8100::/32
+2a06:98c0::/29
+2c0f:f248::/32
+`
 
 func defaults(o Options) Options {
 	if o.Binary == "" {
@@ -88,6 +126,22 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 	if panelDomain != "" && owners.HTTPS != "caddy" && owners.HTTP3 != "caddy" {
 		return nil, fmt.Errorf("panel domain %q requires Caddy ownership of HTTPS TCP or HTTP3 UDP", panelDomain)
 	}
+	var cloudflareRanges []string
+	if panelDomain != "" {
+		panelCIDRs := strings.TrimSpace(o.PanelCloudflareCIDRs)
+		if panelCIDRs == "" {
+			panelCIDRs = cloudflarePanelCIDRs
+		}
+		for _, value := range strings.FieldsFunc(panelCIDRs, func(r rune) bool {
+			return r == ',' || unicode.IsSpace(r)
+		}) {
+			prefix, err := netip.ParsePrefix(value)
+			if err != nil || prefix.Bits() == 0 || prefix.Addr().Is4In6() {
+				return nil, fmt.Errorf("invalid Cloudflare panel proxy CIDR %q", value)
+			}
+			cloudflareRanges = append(cloudflareRanges, prefix.Masked().String())
+		}
+	}
 	proxy := func(dial string, transport object) object {
 		h := object{"handler": "reverse_proxy", "upstreams": []object{{"dial": dial}}}
 		if transport != nil {
@@ -95,7 +149,24 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 		}
 		return h
 	}
-	servers := object{"panel": object{"listen": []string{o.PanelListen}, "automatic_https": object{"disable": true}, "routes": []object{{"handle": []object{proxy("unix/"+o.BackendSocket, nil)}}}}}
+	panelProxy := func(cloudflare bool) object {
+		h := proxy("unix/"+o.BackendSocket, nil)
+		set := object{PanelPeerIPHeader: []string{"{http.request.remote.host}"}}
+		headers := object{"set": set, "delete": []string{"X-Niceproxy-Bridge-Route", "X-Niceproxy-Forwarded-By", "X-Niceproxy-Client-IP", "X-Niceproxy-Bridge-Token"}}
+		if cloudflare {
+			// Caddy joins repeated fields with commas. The panel validates the
+			// result as a single address before treating it as a client IP.
+			set[PanelCloudflareIPHeader] = []string{"{http.request.header.CF-Connecting-IP}"}
+		} else {
+			headers["delete"] = []string{PanelCloudflareIPHeader}
+		}
+		h["headers"] = object{"request": headers}
+		return h
+	}
+	servers := object{"panel": object{"listen": []string{o.PanelListen}, "automatic_https": object{"disable": true}, "routes": []object{{"handle": []object{panelProxy(false)}}}}}
+	bridgeHeaders := func(id string) object {
+		return object{"handler": "headers", "request": object{"set": object{"X-Niceproxy-Bridge-Route": []string{id}, "X-Niceproxy-Client-IP": []string{"{http.request.remote.host}"}, "X-Niceproxy-Forwarded-By": []string{"niceproxy-caddy"}, "X-Niceproxy-Bridge-Token": []string{"{env.NICEPROXY_BRIDGE_TOKEN}"}}}}
+	}
 	var plain, secure []object
 	var policies []object
 	var panelCertificate object
@@ -103,11 +174,28 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 	hasInternal := false
 	seen := map[string]bool{}
 	domainTLS := map[string]string{}
+	originPullCA := map[string]string{}
 	if panelDomain != "" {
 		domainTLS[panelDomain] = "auto"
+		handler := panelProxy(false)
+		if len(cloudflareRanges) > 0 {
+			// Match the hostname first. Caddy's IP matcher can return HTTP 425
+			// before the TLS handshake finishes on an HTTP/3 request.
+			handler = object{
+				"handler": "subroute",
+				"routes": []object{{
+					"match":    []object{{"remote_ip": object{"ranges": cloudflareRanges}}},
+					"handle":   []object{panelProxy(true)},
+					"terminal": true,
+				}, {
+					"handle":   []object{handler},
+					"terminal": true,
+				}},
+			}
+		}
 		secure = append(secure, object{
 			"match":    []object{{"host": []string{panelDomain}}},
-			"handle":   []object{proxy("unix/"+o.BackendSocket, nil)},
+			"handle":   []object{handler},
 			"terminal": true,
 		})
 		certFile, keyFile, chain, _, err := panelCertificateFiles(o.DataDir, o.PanelCertFile, o.PanelKeyFile, panelDomain, o.panelDNSMode())
@@ -171,8 +259,8 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 			return nil, fmt.Errorf("invalid TLS mode")
 		}
 		u, err := url.Parse(r.Target)
-		if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Hostname() == "" || u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" {
-			return nil, fmt.Errorf("target must be an http(s) origin")
+		if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "tcp" && u.Scheme != "udp") || u.User != nil || u.Hostname() == "" || u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" {
+			return nil, fmt.Errorf("target must be an http(s), tcp or udp origin")
 		}
 		uphost := u.Hostname()
 		if net.ParseIP(uphost) == nil && !hostname(strings.ToLower(uphost)) {
@@ -182,6 +270,9 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 		if port == "" {
 			if strings.HasSuffix(u.Host, ":") {
 				return nil, fmt.Errorf("invalid upstream port")
+			}
+			if u.Scheme == "tcp" || u.Scheme == "udp" {
+				return nil, fmt.Errorf("%s route target must include a port", u.Scheme)
 			}
 			port = "80"
 			if u.Scheme == "https" {
@@ -194,6 +285,24 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 		}
 		if !r.Enabled {
 			continue
+		}
+		bridgeTarget := u.Scheme == "tcp" || u.Scheme == "udp"
+		protectionActive := func(p *ddos.Policy) bool {
+			return p != nil && (p.Detect || p.AutoFilter || p.EnforceLimits || len(p.Limits) != 0 || len(p.Rules) != 0 || p.CloudflareOnly)
+		}
+		gatewayTarget := bridgeTarget || protectionActive(o.Protection.Listener) || protectionActive(o.Protection.Endpoints[r.ID])
+		if policy := o.Protection.Endpoints[r.ID]; policy != nil && policy.CloudflareOnly {
+			if policy.OriginPullCA == "" {
+				return nil, fmt.Errorf("route %s requires an Origin Pull CA", r.ID)
+			}
+			if err := os.MkdirAll(o.DataDir, 0700); err != nil {
+				return nil, err
+			}
+			caPath := filepath.Join(o.DataDir, "anti-ddos-origin-pull-ca.pem")
+			if err := os.WriteFile(caPath, []byte(policy.OriginPullCA), 0600); err != nil {
+				return nil, fmt.Errorf("write Origin Pull CA: %w", err)
+			}
+			originPullCA[host] = caPath
 		}
 		if mode == "off" && owners.HTTP != "caddy" {
 			return nil, fmt.Errorf("route %s requires HTTP owner caddy", r.ID)
@@ -231,7 +340,14 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 			// in RawPath. An upstream needs an origin-form request target.
 			handlers = append(handlers, object{"handler": "rewrite", "path_regexp": []object{{"find": "^(%2[fF])+", "replace": "/"}}})
 		}
-		handlers = append(handlers, proxy(net.JoinHostPort(uphost, port), transport))
+		if gatewayTarget {
+			handlers = append(handlers,
+				bridgeHeaders(r.ID),
+				proxy("unix/"+o.BackendSocket, nil),
+			)
+		} else {
+			handlers = append(handlers, proxy(net.JoinHostPort(uphost, port), transport))
+		}
 		route := object{"match": []object{match}, "handle": handlers, "terminal": true}
 		if mode == "off" {
 			plain = append(plain, route)
@@ -280,6 +396,9 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 				"match":                 object{"sni": []string{panelDomain}},
 				"certificate_selection": object{"any_tag": []string{panelCertTag}},
 			}, {}}
+		}
+		for domain, caPath := range originPullCA {
+			connectionPolicies = append([]object{{"match": object{"sni": []string{domain}}, "client_authentication": object{"mode": "require_and_verify", "trusted_ca_certs_pem_files": []string{caPath}}}}, connectionPolicies...)
 		}
 		servers["public_https"] = object{"protocols": protocols, "listen": []string{":" + strconv.Itoa(o.HTTPSPort)}, "automatic_https": autoHTTPS, "tls_connection_policies": connectionPolicies, "routes": secure}
 	}

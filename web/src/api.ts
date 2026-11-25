@@ -28,6 +28,11 @@ export type HttpRoute = {
   systemManaged?: boolean;
 };
 export type PortOwners = Record<"http" | "https" | "http3", "caddy" | "direct">;
+export type PortOwnerSettings = {
+  httpPort: number;
+  httpsPort: number;
+  owners: PortOwners;
+};
 export type PanelDomainSettings = {
   panelDomain: string;
   proxied: boolean;
@@ -69,6 +74,7 @@ export type NewDirectRule = Omit<
 >;
 export type ProxyConfig = {
   revision: number;
+  antiDDoS?: AntiDDoSConfig;
   panelDomain?: string;
   portOwners: PortOwners;
   httpRoutes: HttpRoute[];
@@ -85,7 +91,7 @@ export type ServiceHealth = {
   error?: string;
 };
 const record = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null;
+  typeof v === "object" && v !== null && !Array.isArray(v);
 const port = (v: unknown) =>
   Number.isInteger(v) && Number(v) >= 1 && Number(v) <= 65535;
 const base = (v: unknown): v is Record<string, unknown> =>
@@ -137,6 +143,283 @@ const owners = (v: unknown): v is PortOwners =>
   );
 const count = (v: unknown) =>
   typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+export const scopes = [
+  "ip",
+  "subnet",
+  "listener",
+  "endpoint",
+  "group",
+  "all_instances",
+] as const;
+export const actions = ["pass", "slow", "reject", "block"] as const;
+export const units = ["count", "bytes", "ms", "percent"] as const;
+export const signals = [
+  "tcp_new",
+  "tls_new",
+  "requests",
+  "udp_packets",
+  "udp_bytes",
+  "protocol_errors",
+  "timeouts",
+  "short_connections",
+  "backend_errors",
+  "backend_latency_ms",
+  "pressure",
+  "distinct_sources",
+  "distinct_subnets",
+  "kernel_drops",
+  "udp_unanswered",
+] as const;
+export type Limit = {
+  id: string;
+  metric: string;
+  value: number;
+  unit: (typeof units)[number];
+  windowSeconds?: number;
+  burst?: number;
+  scope: (typeof scopes)[number];
+  action: (typeof actions)[number];
+  ttlSeconds?: number;
+};
+export type DetectionRule = {
+  id: string;
+  signal: (typeof signals)[number];
+  scope: (typeof scopes)[number];
+  threshold: number;
+  clearThreshold: number;
+  windowSeconds: number;
+  burst: number;
+  minSamples: number;
+  action: (typeof actions)[number];
+  cooldownSeconds: number;
+};
+export type Policy = {
+  detect: boolean;
+  autoFilter: boolean;
+  enforceLimits: boolean;
+  stableWindows?: number;
+  group?: string;
+  limits?: Limit[];
+  rules?: DetectionRule[];
+  expectUDPResponse?: boolean;
+  cloudflareOnly?: boolean;
+  originPullCA?: string;
+};
+export type AntiDDoSConfig = {
+  listener?: Policy;
+  endpoints?: Record<string, Policy>;
+  cloudflare?: {
+    enabled: boolean;
+    ipv4URL?: string;
+    ipv6URL?: string;
+    trustedProxies?: string[];
+  };
+};
+type ClearRestriction = {
+  instance: string;
+  target: string;
+  rule?: string;
+  subject?: string;
+  ttlSeconds: number;
+};
+type Restriction = {
+  rule: string;
+  scope: (typeof scopes)[number];
+  target: string;
+  action: (typeof actions)[number];
+  expiresAt: string;
+  automatic: boolean;
+};
+type DetectorTarget = {
+  id: string;
+  label: string;
+  kind: string;
+  policy: Policy;
+  state: string;
+  score: number;
+  reason: string;
+  observability: string;
+  metrics: Record<string, { value: number | null; source: string }>;
+  restrictions?: Restriction[];
+  events?: {
+    at: string;
+    reason: string;
+    action: (typeof actions)[number];
+    rules: string[] | null;
+  }[];
+  history?: {
+    at: string;
+    load: number;
+    normalLow?: number;
+    normalHigh?: number;
+  }[];
+  sources?: {
+    address: string;
+    subnet: string;
+    count: number;
+    reason?: string;
+  }[];
+};
+export type DDoSStatus = {
+  revision: number;
+  appliedRevision: number;
+  status: "active" | "applying" | "partial";
+  instances: {
+    id: string;
+    version: string | number;
+    error?: string;
+    targets: DetectorTarget[];
+    cloudflare?: {
+      networks?: string[] | number;
+      updatedAt?: string;
+      ipv4URL?: string;
+      ipv6URL?: string;
+      error?: string;
+    };
+  }[];
+};
+
+const string = (v: unknown) => typeof v === "string";
+const boolean = (v: unknown) => typeof v === "boolean";
+const nonnegative = (v: unknown) =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0;
+const optional = (v: unknown, valid: (value: unknown) => boolean) =>
+  v === undefined || valid(v);
+const arrayOf = (v: unknown, valid: (value: unknown) => boolean) =>
+  Array.isArray(v) && v.every(valid);
+const oneOf = (v: unknown, values: readonly string[]) =>
+  typeof v === "string" && values.includes(v);
+const limit = (v: unknown): v is Limit =>
+  record(v) &&
+  string(v.id) &&
+  string(v.metric) &&
+  nonnegative(v.value) &&
+  oneOf(v.unit, units) &&
+  oneOf(v.scope, scopes) &&
+  oneOf(v.action, actions) &&
+  optional(v.windowSeconds, count) &&
+  optional(v.burst, nonnegative) &&
+  optional(v.ttlSeconds, count);
+const detectionRule = (v: unknown): v is DetectionRule =>
+  record(v) &&
+  string(v.id) &&
+  oneOf(v.signal, signals) &&
+  oneOf(v.scope, scopes) &&
+  oneOf(v.action, actions) &&
+  [v.threshold, v.clearThreshold, v.burst].every(nonnegative) &&
+  [v.windowSeconds, v.minSamples, v.cooldownSeconds].every(count);
+export const validPolicy = (v: unknown): v is Policy =>
+  record(v) &&
+  boolean(v.detect) &&
+  boolean(v.autoFilter) &&
+  boolean(v.enforceLimits) &&
+  optional(v.stableWindows, count) &&
+  optional(v.group, string) &&
+  optional(v.originPullCA, string) &&
+  optional(v.cloudflareOnly, boolean) &&
+  optional(v.expectUDPResponse, boolean) &&
+  optional(v.limits, (items) => arrayOf(items, limit)) &&
+  optional(v.rules, (items) => arrayOf(items, detectionRule));
+const antiDDoSConfig = (v: unknown): v is AntiDDoSConfig =>
+  record(v) &&
+  optional(v.listener, validPolicy) &&
+  optional(
+    v.endpoints,
+    (items) => record(items) && Object.values(items).every(validPolicy),
+  ) &&
+  optional(
+    v.cloudflare,
+    (cf) =>
+      record(cf) &&
+      boolean(cf.enabled) &&
+      optional(cf.ipv4URL, string) &&
+      optional(cf.ipv6URL, string) &&
+      optional(cf.trustedProxies, (items) => arrayOf(items, string)),
+  );
+const timestamp = (v: unknown) =>
+  typeof v === "string" && Number.isFinite(Date.parse(v));
+const restriction = (v: unknown): v is Restriction =>
+  record(v) &&
+  string(v.rule) &&
+  oneOf(v.scope, scopes) &&
+  string(v.target) &&
+  oneOf(v.action, actions) &&
+  timestamp(v.expiresAt) &&
+  boolean(v.automatic);
+const detectorTarget = (v: unknown): v is DetectorTarget =>
+  record(v) &&
+  [v.id, v.label, v.kind, v.state, v.reason, v.observability].every(string) &&
+  validPolicy(v.policy) &&
+  nonnegative(v.score) &&
+  record(v.metrics) &&
+  Object.values(v.metrics).every(
+    (metric) =>
+      record(metric) &&
+      (metric.value === null || nonnegative(metric.value)) &&
+      string(metric.source),
+  ) &&
+  optional(v.restrictions, (items) => arrayOf(items, restriction)) &&
+  optional(v.events, (items) =>
+    arrayOf(
+      items,
+      (item) =>
+        record(item) &&
+        timestamp(item.at) &&
+        string(item.reason) &&
+        oneOf(item.action, actions) &&
+        (item.rules === null || arrayOf(item.rules, string)),
+    ),
+  ) &&
+  optional(v.history, (items) =>
+    arrayOf(
+      items,
+      (item) =>
+        record(item) &&
+        timestamp(item.at) &&
+        nonnegative(item.load) &&
+        optional(item.normalLow, nonnegative) &&
+        optional(item.normalHigh, nonnegative),
+    ),
+  ) &&
+  optional(v.sources, (items) =>
+    arrayOf(
+      items,
+      (item) =>
+        record(item) &&
+        string(item.address) &&
+        string(item.subnet) &&
+        count(item.count) &&
+        optional(item.reason, string),
+    ),
+  );
+const ddosStatus = (v: unknown): v is DDoSStatus =>
+  record(v) &&
+  count(v.revision) &&
+  typeof v.appliedRevision === "number" && Number.isSafeInteger(v.appliedRevision) && v.appliedRevision >= -1 &&
+  oneOf(v.status, ["active", "applying", "partial"]) &&
+  arrayOf(
+    v.instances,
+    (instance) =>
+      record(instance) &&
+      string(instance.id) &&
+      (string(instance.version) || (typeof instance.version === "number" && Number.isSafeInteger(instance.version) && instance.version >= -1)) &&
+      optional(instance.error, string) &&
+      arrayOf(instance.targets, detectorTarget) &&
+      optional(
+        instance.cloudflare,
+        (cf) =>
+          record(cf) &&
+          optional(
+            cf.networks,
+            (items) => count(items) || arrayOf(items, string),
+          ) &&
+          optional(cf.updatedAt, timestamp) &&
+          optional(cf.ipv4URL, string) &&
+          optional(cf.ipv6URL, string) &&
+          optional(cf.error, string),
+      ),
+  );
+
 const stats = (v: unknown): v is DirectStats =>
   record(v) &&
   [v.accepted, v.active, v.closed, v.errors, v.rejects].every(count) &&
@@ -157,6 +440,7 @@ const direct = (v: unknown): v is DirectRule =>
 const config = (v: unknown): v is StoredConfig =>
   record(v) &&
   Number.isInteger(v.revision) &&
+  (v.antiDDoS === undefined || antiDDoSConfig(v.antiDDoS)) &&
   (v.panelDomain == null || typeof v.panelDomain === "string") &&
   (v.portOwners === undefined || owners(v.portOwners)) &&
   Array.isArray(v.httpRoutes) &&
@@ -250,6 +534,11 @@ export function request<T>(
 const itemPath = (collection: string, id: string) =>
   `/${collection}/${encodeURIComponent(id)}`;
 export const api = {
+  antiDDoS: () => request("/anti-ddos", ddosStatus),
+  saveAntiDDoS: (data: AntiDDoSConfig & { revision?: number }) =>
+    request("/anti-ddos", config, "PATCH", data).then(normalizeConfig),
+  clearAntiDDoS: (data: ClearRestriction) =>
+    request("/anti-ddos/clear", ok, "POST", data),
   panelDomain: () =>
     request(
       "/panel-domain",
@@ -273,6 +562,14 @@ export const api = {
     request("/panel-domain", config, "PATCH", { panelDomain }).then(
       normalizeConfig,
     ),
+  portOwners: () =>
+    request(
+      "/port-owners",
+      (v): v is PortOwnerSettings =>
+        record(v) && port(v.httpPort) && port(v.httpsPort) && owners(v.owners),
+    ),
+  savePortOwners: (data: Partial<PortOwners>) =>
+    request("/port-owners", config, "PATCH", data).then(normalizeConfig),
   reconcile: () => request("/reconcile", config, "POST").then(normalizeConfig),
   auth: () => request("/auth", auth),
   login: (password: string, setup: boolean) =>
