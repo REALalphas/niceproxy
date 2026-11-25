@@ -299,3 +299,96 @@ func TestDeletedDirectRuleReleasesRuntimeStats(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+func TestAutoSetupDirectPortOwners(t *testing.T) {
+	for _, tc := range []struct {
+		name, protocol string
+		port           int
+		want           model.PortOwners
+	}{
+		{"HTTP", "tcp", 80, model.PortOwners{HTTP: "direct"}},
+		{"HTTPS TCP", "tcp", 443, model.PortOwners{HTTPS: "direct"}},
+		{"HTTPS UDP", "udp", 443, model.PortOwners{HTTP3: "direct"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, s, cookie := fixture(t)
+			a.mu.Lock()
+			a.httpPort, a.httpsPort = unusedTCPPort(t), unusedTCPPort(t)
+			if tc.name == "HTTP" {
+				tc.port = a.httpPort
+			} else {
+				tc.port = a.httpsPort
+			}
+			a.reserved = map[int]bool{9080: true}
+			a.mu.Unlock()
+			resp := call(t, s, "POST", "/api/direct-rules", fmt.Sprintf(`{"protocol":%q,"listenHost":"127.0.0.1","listenPort":%d,"targetHost":"127.0.0.1","targetPort":3300,"enabled":true,"autoSetup":true}`, tc.protocol, tc.port), cookie)
+			var saved model.DirectRule
+			err := json.NewDecoder(resp.Body).Decode(&saved)
+			resp.Body.Close()
+			if resp.StatusCode != 200 || err != nil || saved.ID == "" || !saved.AutoSetup {
+				t.Fatalf("create: %s %+v %v", resp.Status, saved, err)
+			}
+			cfg, _, err := a.db.Load()
+			if err != nil || cfg.PortOwners != tc.want.Defaults() || !cfg.DirectRules[0].AutoSetup {
+				t.Fatalf("saved config: %+v %v", cfg, err)
+			}
+
+			path := "/api/direct-rules/" + saved.ID
+			for _, step := range []struct {
+				method, body string
+				want         model.PortOwners
+			}{
+				{"PATCH", `{"enabled":false}`, model.PortOwners{}},
+				{"PATCH", `{"enabled":true}`, tc.want},
+				{"DELETE", "", model.PortOwners{}},
+			} {
+				resp = call(t, s, step.method, path, step.body, cookie)
+				resp.Body.Close()
+				cfg, _, err = a.db.Load()
+				if resp.StatusCode != 200 || err != nil || cfg.PortOwners != step.want.Defaults() {
+					t.Fatalf("%s %s: %s owners=%+v %v", step.method, step.body, resp.Status, cfg.PortOwners, err)
+				}
+			}
+		})
+	}
+}
+
+func TestAutoSetupHTTPRouteOwnershipConflict(t *testing.T) {
+	a, s, cookie := fixture(t)
+	a.mu.Lock()
+	a.httpPort = unusedTCPPort(t)
+	a.reserved = map[int]bool{9080: true}
+	httpPort := a.httpPort
+	a.mu.Unlock()
+	request := func(method, path, body string, status int) []byte {
+		t.Helper()
+		resp := call(t, s, method, path, body, cookie)
+		defer resp.Body.Close()
+		result, err := io.ReadAll(resp.Body)
+		if resp.StatusCode != status || err != nil {
+			t.Fatalf("%s %s: %s %s %v", method, path, resp.Status, result, err)
+		}
+		return result
+	}
+	request("PATCH", "/api/port-owners", `{"http":"direct"}`, 200)
+	raw := request("POST", "/api/http-routes", `{"host":"plain.example.com","tls":"off","target":"http://localhost:3000","enabled":true,"autoSetup":true}`, 200)
+	var route model.HTTPRoute
+	if err := json.Unmarshal(raw, &route); err != nil || route.ID == "" || !route.AutoSetup {
+		t.Fatalf("create route: %s %v", raw, err)
+	}
+	cfg, _, err := a.db.Load()
+	if err != nil || cfg.PortOwners.HTTP != "caddy" || !cfg.HTTPRoutes[0].AutoSetup {
+		t.Fatalf("saved route: %+v %v", cfg, err)
+	}
+	direct := fmt.Sprintf(`{"protocol":"tcp","listenHost":"127.0.0.1","listenPort":%d,"targetHost":"127.0.0.1","targetPort":3300,"enabled":true,"autoSetup":true}`, httpPort)
+	result := request("POST", "/api/direct-rules", direct, 409)
+	if !strings.Contains(string(result), "HTTP route") {
+		t.Fatalf("expected HTTP route conflict: %s", result)
+	}
+	cfg, _, err = a.db.Load()
+	if err != nil || cfg.Revision != 2 || cfg.PortOwners.HTTP != "caddy" || len(cfg.DirectRules) != 0 {
+		t.Fatalf("conflicting mutation saved: %+v %v", cfg, err)
+	}
+	request("PATCH", "/api/http-routes/"+route.ID, `{"enabled":false}`, 200)
+	request("POST", "/api/direct-rules", direct, 200)
+}

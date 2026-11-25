@@ -35,16 +35,6 @@ test("normalizes legacy owner absence and preserves explicit ownership", async (
   await assert.rejects(api.config(), /неизвестном формате/);
 });
 
-test("uses configured ports and validates owner settings", async (t) => {
-  const settings = { httpPort: 8081, httpsPort: 8443, owners };
-  setup(t, async (url) => { assert.equal(url, "/api/port-owners"); return reply(settings); });
-  assert.deepEqual(await api.portOwners(), settings);
-  for (const httpPort of ["8081", 0, 65536, 1.5]) {
-    globalThis.fetch = async () => reply({ ...settings, httpPort });
-    await assert.rejects(api.portOwners(), /неизвестном формате/);
-  }
-});
-
 test("distinguishes missing statistics from real zero and rejects malformed counters", async (t) => {
   setup(t, async () => reply({ ...snapshot, directRules: [rule] }));
   assert.equal((await api.config()).directRules[0].stats, undefined);
@@ -62,42 +52,53 @@ test("distinguishes missing statistics from real zero and rejects malformed coun
   }
 });
 
-test("ownership conflicts are surfaced and the shared mutation queue recovers", async (t) => {
+test("route conflicts show the user message and the mutation queue recovers", async (t) => {
   let release;
   const blocked = new Promise((resolve) => { release = resolve; });
   const calls = [];
   let changed = 0;
   setup(t, async (url, options) => {
     calls.push({ url, options });
-    if (url === "/api/port-owners") {
+    if (options.method === "PATCH") {
       await blocked;
-      return reply({ error: "Отключите конфликтующие правила" }, 409);
+      return reply({ error: "ownership conflict", message: "Выберите другой входящий порт" }, 409);
     }
     return reply({ ok: true });
   });
   window.addEventListener("niceproxy:changed", () => { changed++; });
-  const save = api.savePortOwners({ http: "direct" });
-  const rejection = assert.rejects(save, /Отключите конфликтующие правила/);
+  const save = api.toggle("direct-rules", "one", true);
+  const rejection = assert.rejects(save, /Выберите другой входящий порт/);
   const remove = api.remove("direct-rules", "one");
   await Promise.resolve();
   assert.equal(calls.length, 1);
   assert.equal(calls[0].options.method, "PATCH");
-  assert.deepEqual(JSON.parse(calls[0].options.body), { http: "direct" });
+  assert.deepEqual(JSON.parse(calls[0].options.body), { enabled: true, autoSetup: true });
   release();
   await rejection;
   await remove;
   assert.equal(calls.length, 2);
+  assert.equal(calls[1].url, "/api/direct-rules/one");
   assert.equal(changed, 1);
 });
 
-test("saving owners returns the updated normalized snapshot and emits a change", async (t) => {
-  setup(t, async () => reply({ ...snapshot, revision: 2, portOwners: owners }));
+test("route forms request automatic setup on create and edit", async (t) => {
+  const { id, status, ...direct } = rule;
+  const web = { host: "example.test", target: "http://127.0.0.1:9000", tls: "off", enabled: true };
+  const draft = { ...web, path: "/", stripPrefix: false };
+  const calls = [];
+  setup(t, async (url, options) => {
+    calls.push([url, options.method, JSON.parse(options.body)]);
+    return reply(url.startsWith("/api/direct-rules") ? rule : { ...web, id, status });
+  });
   let changed = 0;
   window.addEventListener("niceproxy:changed", () => { changed++; });
-  const result = await api.savePortOwners(owners);
-  assert.deepEqual(result.portOwners, owners);
-  assert.equal(result.revision, 2);
-  assert.equal(changed, 1);
+  assert.deepEqual(await api.saveHttp(draft), { ...draft, id, status });
+  assert.deepEqual(await api.saveDirect(direct, id), rule);
+  assert.deepEqual(calls, [
+    ["/api/http-routes", "POST", { ...draft, autoSetup: true }],
+    ["/api/direct-rules/one", "PATCH", { ...direct, autoSetup: true }],
+  ]);
+  assert.equal(changed, 2);
 });
 
 function deferred() {
@@ -145,9 +146,9 @@ test("expired-session mutations cannot publish stale state or send queued writes
     return reply({ error: "expired" }, 401);
   });
   window.addEventListener("niceproxy:changed", () => changed++);
-  const saving = assert.rejects(api.savePortOwners({ http: "direct" }), /Сессия/);
+  const saving = assert.rejects(api.toggle("direct-rules", "one", true), /Сессия/);
   await saveStarted.promise;
-  const queued = assert.rejects(api.savePortOwners({ https: "direct" }), /Сессия/);
+  const queued = assert.rejects(api.remove("direct-rules", "one"), /Сессия/);
   await assert.rejects(api.health(), /Сессия/);
   saveResponse.resolve(reply({ ...snapshot, portOwners: owners }));
   await Promise.all([saving, queued]);

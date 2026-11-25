@@ -35,8 +35,6 @@ import {
   type HttpRoute,
   type PanelDomainSettings,
   type ProxyConfig,
-  type PortOwners,
-  type PortOwnerSettings,
   type ServiceHealth,
   Unauthorized,
 } from "./api";
@@ -48,6 +46,17 @@ function ErrorMessage({ children }: { children: string }) {
     <div role="alert">
       <Text>{children}</Text>
     </div>
+  );
+}
+function TechnicalDetails({ children }: { children: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Stack gap={2}>
+      <Button variant="blank" onPress={() => setOpen(!open)}>
+        {open ? "Скрыть подробности" : "Технические подробности"}
+      </Button>
+      {open && <Text tone="secondary">{children}</Text>}
+    </Stack>
   );
 }
 function AuthScreen({
@@ -132,7 +141,7 @@ function statusLabel(route: HttpRoute | DirectRule) {
             ? "Недействительный сертификат"
             : route.status === "error"
               ? "Ошибка применения"
-              : "Не подтверждён";
+              : "Применение не подтверждено";
 }
 function endpoint(host: string, port: number) {
   return `${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}`;
@@ -147,11 +156,36 @@ function source(route: HttpRoute | DirectRule) {
     ? `${route.host}${route.path === "/" ? "" : route.path}`
     : `${route.protocol.toUpperCase()} ${endpoint(route.listenHost, route.listenPort)}`;
 }
-function target(route: HttpRoute | DirectRule) {
-  return "host" in route
-    ? route.target
-    : endpoint(route.targetHost, route.targetPort);
+function routeProtocol(route: HttpRoute | DirectRule) {
+  if (!("host" in route)) return route.protocol.toUpperCase();
+  if (route.tls === "off") return "HTTP";
+  return "HTTPS";
 }
+function target(route: HttpRoute | DirectRule) {
+  if ("host" in route)
+    return route.systemManaged ? "Панель управления" : route.target;
+  return endpoint(route.targetHost, route.targetPort);
+}
+const certificateLabels: Record<HttpRoute["tls"], string> = {
+  auto: "Автоматический сертификат",
+  internal: "Локальный сертификат",
+  off: "Без HTTPS (HTTP)",
+};
+const localCertificateStatus: Record<string, string> = {
+  bootstrap: "локальный сертификат",
+  served: "доверенный сертификат",
+  cloudflare_origin: "сертификат Cloudflare для Full (strict)",
+  busy: "проверка ещё не завершена",
+  caddy_stopped: "веб-сервер недоступен",
+  no_caddy_tcp_listener: "HTTPS по TCP отключён",
+  unreachable: "не удалось подключиться",
+  handshake_failed: "не удалось установить защищённое соединение",
+  missing: "сертификат отсутствует",
+  wrong_host: "сертификат выдан для другого домена",
+  not_yet_valid: "срок действия ещё не начался",
+  expired: "срок действия истёк",
+  untrusted: "сертификат не прошёл проверку доверия",
+};
 function HttpForm({
   route,
   onDone,
@@ -213,7 +247,7 @@ function HttpForm({
             path: effectivePath,
             stripPrefix: canStripPrefix && stripPrefix,
             target: target.trim(),
-            tls: tls as HttpRoute["tls"],
+            tls,
             enabled,
           },
           route?.id,
@@ -270,20 +304,20 @@ function HttpForm({
           <Select
             popup="overlay"
             id="tls"
-            label="TLS"
+            label="Доступ по HTTPS"
             value={tls}
             onValueChange={(v) => setTls(v as HttpRoute["tls"])}
             disabled={busy}
             options={[
-              { value: "auto", label: "Автоматически" },
-              { value: "internal", label: "Внутренний сертификат" },
-              { value: "off", label: "Выключен" },
+              { value: "auto", label: certificateLabels.auto },
+              { value: "internal", label: certificateLabels.internal },
+              { value: "off", label: certificateLabels.off },
             ]}
           />
         </Stack>
         <Text tone="secondary">
           По умолчанию путь и параметры запроса передаются без изменений. Для
-          разных путей одного домена выбирайте одинаковый TLS.
+          разных путей одного домена выбирайте одинаковый режим HTTPS.
         </Text>
         <Switch
           id="http-strip-prefix"
@@ -317,110 +351,6 @@ function HttpForm({
               Отмена
             </Button>
           )}
-        </Stack>
-      </Stack>
-    </form>
-  );
-}
-function PortOwnersCard({
-  settings,
-  error,
-  onSaved,
-}: {
-  settings: PortOwnerSettings | null;
-  error: string;
-  onSaved: (config: ProxyConfig) => void;
-}) {
-  const [draft, setDraft] = useState<Partial<PortOwners>>({});
-  const [busy, setBusy] = useState(false);
-  const [saveError, setSaveError] = useState("");
-  const value = settings ? { ...settings.owners, ...draft } : null;
-  const dirty =
-    !!settings &&
-    Object.entries(draft).some(
-      ([key, owner]) => settings.owners[key as keyof PortOwners] !== owner,
-    );
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    if (!value || !settings || error || busy) return;
-    setBusy(true);
-    setSaveError("");
-    try {
-      const config = await api.savePortOwners(draft);
-      onSaved(config);
-      setDraft({});
-    } catch (e) {
-      setSaveError(err(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <form onSubmit={submit}>
-      <Stack gap={3}>
-        <Text tone="secondary">
-          Выберите HTTP/HTTPS или прямой проброс для каждого порта. Перед сменой
-          отключите конфликтующие маршруты.
-        </Text>
-        {error && <ErrorMessage>{error}</ErrorMessage>}
-        {settings && value && (
-          <Stack gap={4}>
-            {(
-              [
-                [
-                  "http",
-                  `HTTP · TCP ${settings.httpPort}`,
-                  "Caddy — HTTP",
-                  "Прямой TCP",
-                ],
-                [
-                  "https",
-                  `HTTPS · TCP ${settings.httpsPort}`,
-                  "Caddy — HTTPS",
-                  "Прямой TCP",
-                ],
-                [
-                  "http3",
-                  `HTTP/3 · UDP ${settings.httpsPort}`,
-                  "Caddy — HTTP/3",
-                  "Прямой UDP",
-                ],
-              ] as const
-            ).map(([key, label, caddyLabel, directLabel]) => (
-              <Select
-                popup="overlay"
-                key={key}
-                id={`port-owner-${key}`}
-                label={label}
-                value={value[key]}
-                onValueChange={(owner) => {
-                  if (owner === "caddy" || owner === "direct") {
-                    setDraft((current) => ({ ...current, [key]: owner }));
-                    setSaveError("");
-                  }
-                }}
-                disabled={busy || !!error}
-                options={[
-                  { value: "caddy", label: caddyLabel },
-                  { value: "direct", label: directLabel },
-                ]}
-              />
-            ))}
-          </Stack>
-        )}
-        <Text tone="secondary">
-          Сохранение и применение — отдельные состояния. Результат доступен в
-          разделе «Сервис».
-        </Text>
-        {saveError && <ErrorMessage>{saveError}</ErrorMessage>}
-        <Stack direction="row" gap={3}>
-          <Button
-            type="submit"
-            disabled={!settings || !!error || busy || !dirty}
-            loading={busy}
-          >
-            Сохранить назначения
-          </Button>
         </Stack>
       </Stack>
     </form>
@@ -485,7 +415,7 @@ function DirectForm({
       onDone(
         await api.saveDirect(
           {
-            protocol: protocol as DirectRule["protocol"],
+            protocol,
             listenHost: listenHost.trim() || "0.0.0.0",
             listenPort: +listenPort,
             targetHost: targetHost.trim(),
@@ -598,7 +528,7 @@ function DirectForm({
         </Stack>
         <Switch
           id="direct-enabled"
-          label="Включить правило"
+          label="Маршрут включён"
           checked={enabled}
           onCheckedChange={setEnabled}
           disabled={busy}
@@ -606,7 +536,7 @@ function DirectForm({
         {error && <ErrorMessage>{error}</ErrorMessage>}
         <Stack direction="row" gap={3}>
           <Button type="submit" loading={busy} disabled={busy}>
-            {rule ? "Сохранить правило" : "Создать правило"}
+            {rule ? "Сохранить маршрут" : "Создать маршрут"}
           </Button>
           {onCancel && (
             <Button
@@ -627,12 +557,7 @@ function readPage() {
   const hash = window.location.hash.slice(1);
   if (hash === "cloudflare" || hash === "settings/cloudflare")
     return "settings/cloudflare";
-  if (
-    hash === "settings/ports" ||
-    hash === "settings/account" ||
-    hash === "settings"
-  )
-    return hash;
+  if (hash === "settings/account" || hash === "settings") return hash;
   if (hash === "overview") return "overview";
   if (hash.startsWith("routes/")) return hash;
   return "routes";
@@ -646,8 +571,6 @@ function App() {
   );
   const [panelDomainSettings, setPanelDomainSettings] =
     useState<PanelDomainSettings | null>(null);
-  const [owners, setOwners] = useState<PortOwnerSettings | null>(null);
-  const [ownersError, setOwnersError] = useState("");
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [pending, setPending] = useState(false);
@@ -684,10 +607,9 @@ function App() {
       do {
         refreshAgain.current = false;
         const readingVersion = dataVersion.current;
-        const [c, h, o, cert, panel] = await Promise.allSettled([
+        const [c, h, cert, panel] = await Promise.allSettled([
           api.config(),
           api.health(),
-          api.portOwners(),
           cloudflareApi.certificate(),
           api.panelDomain(),
         ]);
@@ -700,10 +622,6 @@ function App() {
         else setCertificate(null);
         if (panel.status === "fulfilled") setPanelDomainSettings(panel.value);
         else setPanelDomainSettings(null);
-        if (o.status === "fulfilled") {
-          setOwners(o.value);
-          setOwnersError("");
-        } else setOwnersError(err(o.reason));
         const failure =
           c.status === "rejected"
             ? c.reason
@@ -742,7 +660,6 @@ function App() {
       setAuth({ configured: true, authenticated: false });
       setConfig(null);
       setHealth(null);
-      setOwners(null);
       setPending(false);
       setError("");
     };
@@ -802,7 +719,6 @@ function App() {
       setAuth({ configured: true, authenticated: false });
       setConfig(null);
       setHealth(null);
-      setOwners(null);
     } catch (e) {
       setError(err(e));
     } finally {
@@ -874,37 +790,36 @@ function App() {
   const isList = page === "routes";
   const isCreating = mode === "new";
   const routeScreen = section === "routes" && !isList && !isCreating;
+  const titles: Record<string, string> = {
+    overview: "Сервис",
+    "settings/cloudflare": "Cloudflare DNS",
+    "settings/account": "Доступ к панели",
+    settings: "Настройки",
+    routes: "Маршруты",
+    "routes/new": "Новый маршрут",
+    "routes/new/http": "Веб-доступ",
+  };
   const title =
-    page === "overview"
-      ? "Сервис"
-      : page === "settings/ports"
-        ? "Назначение портов"
-        : page === "settings/cloudflare"
-          ? "Cloudflare DNS"
-          : page === "settings/account"
-            ? "Доступ к панели"
-            : page === "settings"
-              ? "Настройки"
-              : isList
-                ? "Маршруты"
-                : isCreating
-                  ? page.endsWith("/http")
-                    ? "Новый HTTP/HTTPS маршрут"
-                    : page.endsWith("/direct") ||
-                        page.endsWith("/tcp") ||
-                        page.endsWith("/udp")
-                      ? "Новое TCP/UDP правило"
-                      : "Новый маршрут"
-                  : mode === "edit"
-                    ? "Редактирование маршрута"
-                    : mode === "delete"
-                      ? "Удаление маршрута"
-                      : "Маршрут";
+    titles[page] ??
+    (isCreating
+      ? "Проброс порта"
+      : mode === "edit"
+        ? "Редактирование маршрута"
+        : mode === "delete"
+          ? "Удаление маршрута"
+          : "Маршрут");
   const converged =
     !!health &&
     health.appliedRevision === config.revision &&
     health.revision === config.revision;
   const applied = converged && health?.status === "healthy";
+  const serviceDetails = [
+    health?.error,
+    certificate?.error,
+    certificate?.dnsError,
+    certificate?.tlsError,
+    panelDomainSettings?.automation?.detail || panelDomainSettings?.proxyWarning,
+  ].filter(Boolean).join("\n");
   const panelAutomation = panelDomainSettings?.automation;
   const cloudflareSSLMode = panelAutomation?.zoneSSL;
   const cloudflareSSLLabel =
@@ -981,15 +896,7 @@ function App() {
           <Text as="h1">{title}</Text>
           {isList && (
             <Stack direction="row" gap={3} align="center">
-              <Button
-                onPress={() =>
-                  navigate(
-                    filter === "udp" || filter === "tcp"
-                      ? "routes/new/direct"
-                      : "routes/new",
-                  )
-                }
-              >
+              <Button onPress={() => navigate("routes/new")}>
                 Добавить маршрут
               </Button>
               <IconButton
@@ -1031,11 +938,7 @@ function App() {
                       <Stack direction="row" gap={3} align="center">
                         <Icon name={"host" in route ? "link" : "device"} />
                         <Text font="heading" weight="bold">
-                          {"host" in route
-                            ? route.tls === "off"
-                              ? "HTTP"
-                              : "HTTPS"
-                            : route.protocol.toUpperCase()}
+                          {routeProtocol(route)}
                         </Text>
                         <Text tone="secondary">{statusLabel(route)}</Text>
                       </Stack>
@@ -1062,11 +965,11 @@ function App() {
                       ? "Нет маршрутов этого типа"
                       : "Подключите первый сервис"}
                   </Text>
-                  <Text tone="secondary">
-                    {mappings.length
-                      ? "Выберите другой протокол или добавьте маршрут."
-                      : "HTTP/HTTPS — по домену и пути. TCP/UDP — по порту."}
-                  </Text>
+                  {mappings.length > 0 && (
+                    <Text tone="secondary">
+                      Выберите другой протокол или добавьте маршрут.
+                    </Text>
+                  )}
                 </Stack>
               </Card>
             )}
@@ -1077,17 +980,20 @@ function App() {
             {page === "routes/new" ? (
               <Stack gap={1}>
                 <Text tone="secondary">Как подключить сервис?</Text>
+                <Text tone="secondary">
+                  Нужный способ подключения настроится автоматически.
+                </Text>
                 <DrawerButton
-                  label="HTTP/HTTPS"
+                  label="Веб-доступ"
                   icon="link"
-                  secondaryText="По домену и пути, с TLS"
+                  secondaryText="Сайт или API по домену и пути"
                   secondaryPlacement="below"
                   onPress={() => navigate("routes/new/http")}
                 />
                 <DrawerButton
-                  label="TCP/UDP"
+                  label="Проброс порта"
                   icon="device"
-                  secondaryText="Проброс порта на другой сервис"
+                  secondaryText="Подключение к сервису по порту TCP или UDP"
                   secondaryPlacement="below"
                   onPress={() => navigate("routes/new/direct")}
                 />
@@ -1148,7 +1054,11 @@ function App() {
                     loading={pending}
                     onPress={() =>
                       void mutate(
-                        () => api.remove(mapping.kind, mapping.route.id),
+                        () =>
+                          api.remove(
+                            mapping.kind,
+                            mapping.route.id,
+                          ),
                         () => navigate("routes"),
                       )
                     }
@@ -1190,20 +1100,10 @@ function App() {
                   />
                   <Text>{statusLabel(mapping.route)}</Text>
                 </Stack>
-                {mapping.route.error && (
-                  <ErrorMessage>{mapping.route.error}</ErrorMessage>
-                )}
                 {"host" in mapping.route ? (
                   <Text tone="secondary">
-                    {mapping.route.tls === "auto"
-                      ? "Автоматический TLS"
-                      : mapping.route.tls === "internal"
-                        ? "Внутренний сертификат"
-                        : "Без TLS"}{" "}
-                    ·{" "}
-                    {mapping.route.stripPrefix
-                      ? "Префикс пути удаляется"
-                      : "Путь сохраняется"}
+                    {certificateLabels[mapping.route.tls]}
+                    {mapping.route.stripPrefix && " · Префикс пути удаляется"}
                   </Text>
                 ) : (
                   <Text tone="secondary">
@@ -1211,6 +1111,9 @@ function App() {
                       ? `Активно ${mapping.route.stats.active} · всего ${mapping.route.stats.accepted} · ошибок ${mapping.route.stats.errors} · отклонено ${mapping.route.stats.rejects}. ${mapping.route.protocol === "udp" ? "UDP-сессии" : "TCP-соединения"} с запуска процесса.`
                       : "Статистика недоступна"}
                   </Text>
+                )}
+                {mapping.route.error && (
+                  <TechnicalDetails>{mapping.route.error}</TechnicalDetails>
                 )}
                 {!("host" in mapping.route && mapping.route.systemManaged) && (
                   <Switch
@@ -1224,12 +1127,6 @@ function App() {
                       )
                     }
                   />
-                )}
-                {"host" in mapping.route && mapping.route.systemManaged && (
-                  <Text tone="secondary">
-                    Системный маршрут панели управляется настройкой домена
-                    панели.
-                  </Text>
                 )}
                 <Stack direction="row" gap={3}>
                   {!(
@@ -1297,16 +1194,12 @@ function App() {
                 </Text>
               </Stack>
               <Text>
-                Caddy:{" "}
-                {!health
-                  ? "состояние неизвестно"
-                  : health.caddy === true || health.caddy === "healthy"
-                    ? "доступен"
-                    : health.caddy === false || health.caddy === "error"
-                      ? "недоступен"
-                      : String(health.caddy)}
+                {health?.caddy === true || health?.caddy === "healthy"
+                  ? "Веб-сервер доступен"
+                  : health?.caddy === false || health?.caddy === "error"
+                    ? "Веб-сервер недоступен"
+                    : "Состояние веб-сервера неизвестно"}
               </Text>
-              {health?.error && <ErrorMessage>{health.error}</ErrorMessage>}
               {certificate?.configured && (
                 <Text tone="secondary">
                   Сертификат{" "}
@@ -1315,29 +1208,22 @@ function App() {
                     ? "ожидается выдача"
                     : certificate.state === "issued"
                       ? "выдан"
-                      : certificate.state}
-                  {certificate.error ? `. ${certificate.error}` : ""}
+                      : certificate.state === "expired"
+                        ? "срок действия истёк"
+                        : "требует проверки"}
                 </Text>
               )}
               {certificate?.dnsState && (
                 <Text tone="secondary">
-                  Системный резолвер, включая hosts:{" "}
-                  {certificate.addresses?.join(", ") ||
-                    certificate.dnsError ||
-                    "нет адресов"}
+                  Адреса домена на сервере —{" "}
+                  {certificate.addresses?.join(", ") || "нет адресов"}
                 </Text>
               )}
               {certificate?.tlsState && (
                 <Text tone="secondary">
-                  TLS на локальном origin:{" "}
-                  {certificate.tlsState === "bootstrap"
-                    ? "сертификат Caddy Local Authority"
-                    : certificate.tlsState === "served"
-                      ? "доверенный сертификат"
-                      : certificate.tlsState === "cloudflare_origin"
-                        ? "Cloudflare Origin CA для Full (strict)"
-                        : certificate.tlsState}
-                  {certificate.tlsError ? `. ${certificate.tlsError}` : ""}
+                  HTTPS на сервере —{" "}
+                  {localCertificateStatus[certificate.tlsState] ??
+                    "состояние неизвестно"}
                 </Text>
               )}
               {panelAutomation?.dnsMode && (
@@ -1349,12 +1235,7 @@ function App() {
                   {cloudflareSSLLabel && ` · режим зоны: ${cloudflareSSLLabel}`}
                 </Text>
               )}
-              {panelAutomation?.detail && (
-                <Text tone="secondary">{panelAutomation.detail}</Text>
-              )}
-              {!panelAutomation?.dnsMode && panelDomainSettings?.proxyWarning && (
-                <ErrorMessage>{panelDomainSettings.proxyWarning}</ErrorMessage>
-              )}
+              {serviceDetails && <TechnicalDetails>{serviceDetails}</TechnicalDetails>}
               <Stack direction="row" gap={3}>
                 {!converged && health && (
                   <Button
@@ -1379,22 +1260,12 @@ function App() {
                 HTTP/HTTPS: {config.httpRoutes.length} · TCP/UDP:{" "}
                 {config.directRules.length}
               </Text>
-              <Text tone="secondary">
-                Сохранение изменений не означает их успешного применения.
-              </Text>
             </Stack>
           </Card>
         )}
         {page === "settings" && (
           <Card>
             <Stack gap={1}>
-              <DrawerButton
-                label="Назначение портов"
-                secondaryText="HTTP/HTTPS или прямой TCP/UDP"
-                secondaryPlacement="below"
-                icon="device"
-                onPress={() => navigate("settings/ports")}
-              />
               <DrawerButton
                 label="Cloudflare DNS"
                 secondaryText="Подключение аккаунта и записи доменов"
@@ -1411,20 +1282,6 @@ function App() {
               />
             </Stack>
           </Card>
-        )}
-        {page === "settings/ports" && (
-          <PortOwnersCard
-            settings={owners}
-            error={ownersError}
-            onSaved={(next) => {
-              if (renderEpoch !== epoch.current || !authenticated.current)
-                return;
-              setConfig(next);
-              setOwners(
-                (current) => current && { ...current, owners: next.portOwners },
-              );
-            }}
-          />
         )}
         {page === "settings/cloudflare" && (
           <Card>

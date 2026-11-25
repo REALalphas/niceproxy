@@ -730,14 +730,24 @@ func (a *App) direct(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	var previous model.DirectRule
+	if index >= 0 {
+		previous = c.DirectRules[index]
+	}
 	if id != "" && index < 0 {
 		fail(w, 404, "rule not found")
 		return
 	}
 	if r.Method == "DELETE" && index >= 0 {
 		c.DirectRules = append(c.DirectRules[:index], c.DirectRules[index+1:]...)
+		if previous.AutoSetup {
+			if err := a.setupDirectPorts(&c, previous, model.DirectRule{}); err != nil {
+				mutationFail(w, err)
+				return
+			}
+		}
 		if err := a.commit(r.Context(), c); err != nil {
-			fail(w, 500, err.Error())
+			mutationFail(w, err)
 			return
 		}
 		write(w, 200, map[string]bool{"ok": true})
@@ -745,7 +755,7 @@ func (a *App) direct(w http.ResponseWriter, r *http.Request) {
 	}
 	var item model.DirectRule
 	if r.Method == "PATCH" && index >= 0 {
-		item = c.DirectRules[index]
+		item = previous
 	} else if r.Method != "POST" || id != "" {
 		fail(w, 405, "method not allowed")
 		return
@@ -770,13 +780,22 @@ func (a *App) direct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.reserved[item.ListenPort] {
-		fail(w, 409, "port is reserved for the management panel")
+		mutationFail(w, portConflict(
+			fmt.Sprintf("Порт %d используется панелью управления. Выберите другой входящий порт.", item.ListenPort),
+			"port is reserved for the management panel",
+		))
 		return
 	}
 	if index < 0 {
 		c.DirectRules = append(c.DirectRules, item)
 	} else {
 		c.DirectRules[index] = item
+	}
+	if item.AutoSetup || previous.AutoSetup {
+		if err := a.setupDirectPorts(&c, previous, item); err != nil {
+			mutationFail(w, err)
+			return
+		}
 	}
 	if err := a.commit(r.Context(), c); err != nil {
 		mutationFail(w, err)
@@ -816,7 +835,7 @@ func (a *App) httpRoute(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "DELETE" && index >= 0 {
 		c.HTTPRoutes = append(c.HTTPRoutes[:index], c.HTTPRoutes[index+1:]...)
 		if err := a.commit(r.Context(), c); err != nil {
-			fail(w, 500, err.Error())
+			mutationFail(w, err)
 			return
 		}
 		write(w, 200, map[string]bool{"ok": true})
@@ -864,6 +883,9 @@ func (a *App) httpRoute(w http.ResponseWriter, r *http.Request) {
 		c.HTTPRoutes = append(c.HTTPRoutes, item)
 	} else {
 		c.HTTPRoutes[index] = item
+	}
+	if item.AutoSetup {
+		a.setupHTTPPorts(&c, item)
 	}
 	if err := a.commit(r.Context(), c); err != nil {
 		mutationFail(w, err)
