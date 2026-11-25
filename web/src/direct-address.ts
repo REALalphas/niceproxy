@@ -27,3 +27,7 @@ export function isDirectTarget(value: string): boolean {
         ))
   );
 }
+
+export function formatEndpoint(host: string, port: number | "…"): string {
+  return `${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}`;
+}

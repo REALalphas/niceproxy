@@ -24,8 +24,8 @@ import {
 import "@alpha/core/fonts.css";
 import "@alpha/core/styles.css";
 import { changeView } from "./view";
-import { validHttpPath } from "./http-path";
-import { isDirectIP, isDirectTarget } from "./direct-address";
+import { formatEndpoint } from "./direct-address";
+import { RouteForm } from "./RouteForm";
 import { Cloudflare } from "./Cloudflare";
 import { cloudflareApi, type CertificateStatus } from "./cloudflare-api";
 import {
@@ -134,9 +134,6 @@ function statusLabel(route: HttpRoute | DirectRule) {
               ? "Ошибка применения"
               : "Не подтверждён";
 }
-function endpoint(host: string, port: number) {
-  return `${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}`;
-}
 type Mapping = {
   key: string;
   kind: "http-routes" | "direct-rules";
@@ -145,182 +142,12 @@ type Mapping = {
 function source(route: HttpRoute | DirectRule) {
   return "host" in route
     ? `${route.host}${route.path === "/" ? "" : route.path}`
-    : `${route.protocol.toUpperCase()} ${endpoint(route.listenHost, route.listenPort)}`;
+    : `${route.protocol.toUpperCase()} ${formatEndpoint(route.listenHost, route.listenPort)}`;
 }
 function target(route: HttpRoute | DirectRule) {
   return "host" in route
     ? route.target
-    : endpoint(route.targetHost, route.targetPort);
-}
-function HttpForm({
-  route,
-  onDone,
-  onCancel,
-}: {
-  route?: HttpRoute;
-  onDone: (r: HttpRoute) => void;
-  onCancel?: () => void;
-}) {
-  const [host, setHost] = useState(route?.host ?? "");
-  const [target, setTarget] = useState(route?.target ?? "");
-  const [path, setPath] = useState(
-    route?.path && route.path !== "/" ? route.path : "",
-  );
-  const effectivePath = path || "/";
-  const canStripPrefix = path !== "" && path !== "/" && validHttpPath(path);
-  const [stripPrefix, setStripPrefix] = useState(
-    !!route?.stripPrefix && !!route.path && route.path !== "/",
-  );
-  const [tls, setTls] = useState(route?.tls ?? "auto");
-  const [enabled, setEnabled] = useState(route?.enabled ?? true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    if (busy) return;
-    setError("");
-    try {
-      let u: URL;
-      try {
-        u = new URL(target);
-      } catch {
-        throw new Error(
-          "Введите корректный целевой URL: http:// или https://.",
-        );
-      }
-      if (!["http:", "https:"].includes(u.protocol))
-        throw new Error("Цель должна начинаться с http:// или https://");
-      if (
-        u.username ||
-        u.password ||
-        u.search ||
-        u.hash ||
-        (u.pathname !== "/" && u.pathname !== "")
-      )
-        throw new Error(
-          "Укажите только адрес сервиса и порт, без пути, параметров и пароля.",
-        );
-      if (!host.trim()) throw new Error("Укажите домен.");
-      if (!validHttpPath(path))
-        throw new Error(
-          "Укажите буквальный путь от / без пробелов, управляющих символов, //, . и .., параметров и шаблонов (до 2048 байт).",
-        );
-      setBusy(true);
-      onDone(
-        await api.saveHttp(
-          {
-            host: host.trim(),
-            path: effectivePath,
-            stripPrefix: canStripPrefix && stripPrefix,
-            target: target.trim(),
-            tls: tls as HttpRoute["tls"],
-            enabled,
-          },
-          route?.id,
-        ),
-      );
-    } catch (e) {
-      setError(err(e));
-      setBusy(false);
-    }
-  }
-  return (
-    <form onSubmit={submit}>
-      <Stack gap={5}>
-        <Stack gap={4}>
-          <TextInput
-            showIcon={false}
-            labelPlacement="inside"
-            id="http-host"
-            label="Домен"
-            value={host}
-            onValueChange={setHost}
-            placeholder="example.com"
-            required
-            disabled={busy}
-          />
-          <TextInput
-            showIcon={false}
-            labelPlacement="inside"
-            id="http-path"
-            label="Путь"
-            value={path}
-            onValueChange={(value) => {
-              setPath(value);
-              if (!value || value === "/" || !validHttpPath(value))
-                setStripPrefix(false);
-            }}
-            placeholder="/"
-            hint="По умолчанию / — все запросы. /api — только /api и /api/*."
-            disabled={busy}
-          />
-          <TextInput
-            showIcon={false}
-            labelPlacement="inside"
-            id="http-target"
-            label="Адрес сервиса"
-            hint="Например, http://127.0.0.1:8080. Без пути и параметров."
-            type="url"
-            value={target}
-            onValueChange={setTarget}
-            placeholder="http://127.0.0.1:8080"
-            required
-            disabled={busy}
-          />
-          <Select
-            popup="overlay"
-            id="tls"
-            label="TLS"
-            value={tls}
-            onValueChange={(v) => setTls(v as HttpRoute["tls"])}
-            disabled={busy}
-            options={[
-              { value: "auto", label: "Автоматически" },
-              { value: "internal", label: "Внутренний сертификат" },
-              { value: "off", label: "Выключен" },
-            ]}
-          />
-        </Stack>
-        <Text tone="secondary">
-          По умолчанию путь и параметры запроса передаются без изменений. Для
-          разных путей одного домена выбирайте одинаковый TLS.
-        </Text>
-        <Switch
-          id="http-strip-prefix"
-          label="Убирать префикс пути"
-          hint="Например, /api/users → /users; параметры запроса сохраняются."
-          checked={canStripPrefix && stripPrefix}
-          onCheckedChange={(checked) =>
-            setStripPrefix(canStripPrefix && checked)
-          }
-          disabled={busy || !canStripPrefix}
-        />
-        <Switch
-          id="http-enabled"
-          label="Включён"
-          checked={enabled}
-          onCheckedChange={setEnabled}
-          disabled={busy}
-        />
-        {error && <ErrorMessage>{error}</ErrorMessage>}
-        <Stack direction="row" gap={3}>
-          <Button type="submit" loading={busy} disabled={busy}>
-            {route ? "Сохранить маршрут" : "Создать маршрут"}
-          </Button>
-          {onCancel && (
-            <Button
-              type="button"
-              variant="blank"
-              onPress={onCancel}
-              disabled={busy}
-            >
-              Отмена
-            </Button>
-          )}
-        </Stack>
-      </Stack>
-    </form>
-  );
+    : formatEndpoint(route.targetHost, route.targetPort);
 }
 function PortOwnersCard({
   settings,
@@ -421,203 +248,6 @@ function PortOwnersCard({
           >
             Сохранить назначения
           </Button>
-        </Stack>
-      </Stack>
-    </form>
-  );
-}
-function DirectForm({
-  rule,
-  onDone,
-  onCancel,
-  initialProtocol = "tcp",
-}: {
-  rule?: DirectRule;
-  initialProtocol?: "tcp" | "udp";
-  onDone: (r: DirectRule) => void;
-  onCancel?: () => void;
-}) {
-  const [protocol, setProtocol] = useState(rule?.protocol ?? initialProtocol);
-  const [listenHost, setListenHost] = useState(
-    rule?.listenHost && rule.listenHost !== "0.0.0.0" ? rule.listenHost : "",
-  );
-  const [listenPort, setListenPort] = useState(String(rule?.listenPort ?? ""));
-  const [targetHost, setTargetHost] = useState(rule?.targetHost ?? "");
-  const [targetPort, setTargetPort] = useState(String(rule?.targetPort ?? ""));
-  const [enabled, setEnabled] = useState(rule?.enabled ?? true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [fieldErrors, setFieldErrors] = useState<{
-    listenHost?: string;
-    listenPort?: string;
-    targetHost?: string;
-    targetPort?: string;
-  }>({});
-  const validPort = (value: string) =>
-    /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 65535;
-  const effectiveTargetPort = targetPort || listenPort;
-  function clearFieldError(field: keyof typeof fieldErrors) {
-    setFieldErrors((current) => ({ ...current, [field]: undefined }));
-    setError("");
-  }
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    if (busy) return;
-    const errors: typeof fieldErrors = {};
-    if (!validPort(listenPort))
-      errors.listenPort = "Укажите входящий порт от 1 до 65535.";
-    if (listenHost.trim() && !isDirectIP(listenHost.trim()))
-      errors.listenHost =
-        "Укажите IP интерфейса без порта или оставьте поле пустым.";
-    if (!targetHost.trim())
-      errors.targetHost = "Укажите IP-адрес или домен сервиса.";
-    else if (!isDirectTarget(targetHost.trim()))
-      errors.targetHost =
-        "Введите только IP-адрес или домен, без схемы, пути и порта.";
-    if (targetPort && !validPort(targetPort))
-      errors.targetPort =
-        "Укажите порт сервиса от 1 до 65535 или оставьте пустым.";
-    setFieldErrors(errors);
-    if (Object.keys(errors).length) return;
-    setBusy(true);
-    setError("");
-    try {
-      onDone(
-        await api.saveDirect(
-          {
-            protocol: protocol as DirectRule["protocol"],
-            listenHost: listenHost.trim() || "0.0.0.0",
-            listenPort: +listenPort,
-            targetHost: targetHost.trim(),
-            targetPort: +effectiveTargetPort,
-            enabled,
-          },
-          rule?.id,
-        ),
-      );
-    } catch (e) {
-      setError(err(e));
-      setBusy(false);
-    }
-  }
-  return (
-    <form onSubmit={submit}>
-      <Stack gap={5}>
-        <Select
-          popup="overlay"
-          id="protocol"
-          label="Протокол"
-          value={protocol}
-          onValueChange={(v) => {
-            if (v === "tcp" || v === "udp") setProtocol(v);
-          }}
-          disabled={busy}
-          options={[
-            { value: "tcp", label: "TCP" },
-            { value: "udp", label: "UDP" },
-          ]}
-        />
-        <Stack direction="row" columns="wide-start" align="start" gap={3}>
-          <TextInput
-            id="listen-host"
-            label="IP сервера"
-            labelPlacement="inside"
-            showIcon={false}
-            value={listenHost}
-            onValueChange={(value) => {
-              setListenHost(value);
-              clearFieldError("listenHost");
-            }}
-            error={fieldErrors.listenHost}
-            placeholder="0.0.0.0"
-            disabled={busy}
-          />
-          <TextInput
-            id="listen-port"
-            label="Входящий порт"
-            labelPlacement="inside"
-            showIcon={false}
-            value={listenPort}
-            onValueChange={(value) => {
-              setListenPort(value);
-              clearFieldError("listenPort");
-            }}
-            placeholder="Порт"
-            error={fieldErrors.listenPort}
-            disabled={busy}
-          />
-        </Stack>
-        <Stack direction="row" columns="wide-start" align="start" gap={3}>
-          <TextInput
-            id="target-host"
-            label="IP или домен сервиса"
-            labelPlacement="inside"
-            showIcon={false}
-            value={targetHost}
-            onValueChange={(value) => {
-              setTargetHost(value);
-              clearFieldError("targetHost");
-            }}
-            placeholder="IP или домен сервиса"
-            error={fieldErrors.targetHost}
-            disabled={busy}
-          />
-          <TextInput
-            id="target-port"
-            label="Порт сервиса"
-            labelPlacement="inside"
-            showIcon={false}
-            value={targetPort}
-            onValueChange={(value) => {
-              setTargetPort(value);
-              clearFieldError("targetPort");
-            }}
-            placeholder="Порт"
-            error={fieldErrors.targetPort}
-            disabled={busy}
-          />
-        </Stack>
-        <Stack gap={2}>
-          <Text tone="muted">Схема проброса</Text>
-          <Text font="mono">
-            {protocol.toUpperCase()}{" "}
-            {endpoint(
-              listenHost.trim() || "0.0.0.0",
-              validPort(listenPort) ? Number(listenPort) : 0,
-            ).replace(/:0$/, ":…")}{" "}
-            →{" "}
-            {targetHost.trim()
-              ? endpoint(
-                  targetHost.trim(),
-                  validPort(effectiveTargetPort)
-                    ? Number(effectiveTargetPort)
-                    : 0,
-                ).replace(/:0$/, ":…")
-              : "адрес сервиса:порт"}
-          </Text>
-        </Stack>
-        <Switch
-          id="direct-enabled"
-          label="Включить правило"
-          checked={enabled}
-          onCheckedChange={setEnabled}
-          disabled={busy}
-        />
-        {error && <ErrorMessage>{error}</ErrorMessage>}
-        <Stack direction="row" gap={3}>
-          <Button type="submit" loading={busy} disabled={busy}>
-            {rule ? "Сохранить правило" : "Создать правило"}
-          </Button>
-          {onCancel && (
-            <Button
-              type="button"
-              variant="blank"
-              onPress={onCancel}
-              disabled={busy}
-            >
-              Отмена
-            </Button>
-          )}
         </Stack>
       </Stack>
     </form>
@@ -874,6 +504,15 @@ function App() {
   const isList = page === "routes";
   const isCreating = mode === "new";
   const routeScreen = section === "routes" && !isList && !isCreating;
+  const systemRoute =
+    mapping && "host" in mapping.route && mapping.route.systemManaged;
+  const isEditing = routeScreen && mode === "edit" && !systemRoute;
+  const newProtocol =
+    selectedKey === "direct"
+      ? filter === "udp" ? "udp" : "tcp"
+      : selectedKey === "tcp" || selectedKey === "udp"
+        ? selectedKey
+        : "http";
   const title =
     page === "overview"
       ? "Сервис"
@@ -888,13 +527,7 @@ function App() {
               : isList
                 ? "Маршруты"
                 : isCreating
-                  ? page.endsWith("/http")
-                    ? "Новый HTTP/HTTPS маршрут"
-                    : page.endsWith("/direct") ||
-                        page.endsWith("/tcp") ||
-                        page.endsWith("/udp")
-                      ? "Новое TCP/UDP правило"
-                      : "Новый маршрут"
+                  ? "Новый маршрут"
                   : mode === "edit"
                     ? "Редактирование маршрута"
                     : mode === "delete"
@@ -920,29 +553,30 @@ function App() {
               ? "Strict (SSL-Only Origin Pull)"
               : cloudflareSSLMode;
   const renderEpoch = epoch.current;
-  const saved = (kind: "http" | "direct", item: HttpRoute | DirectRule) => {
+  const saved = (item: HttpRoute | DirectRule) => {
     if (renderEpoch !== epoch.current || !authenticated.current) return;
+    const isHttp = "host" in item;
     setConfig(
       (current) =>
         current && {
           ...current,
           httpRoutes:
-            kind === "http"
+            isHttp
               ? [
                   ...current.httpRoutes.filter((r) => r.id !== item.id),
-                  item as HttpRoute,
+                  item,
                 ]
               : current.httpRoutes,
           directRules:
-            kind === "direct"
-              ? [
+            isHttp
+              ? current.directRules
+              : [
                   ...current.directRules.filter((r) => r.id !== item.id),
-                  item as DirectRule,
-                ]
-              : current.directRules,
+                  item,
+                ],
         },
     );
-    navigate(`routes/view/${kind}/${encodeURIComponent(item.id)}`);
+    navigate(`routes/view/${isHttp ? "http" : "direct"}/${encodeURIComponent(item.id)}`);
   };
   return (
     <AppShell
@@ -984,9 +618,7 @@ function App() {
               <Button
                 onPress={() =>
                   navigate(
-                    filter === "udp" || filter === "tcp"
-                      ? "routes/new/direct"
-                      : "routes/new",
+                    filter === "all" ? "routes/new" : `routes/new/${filter}`,
                   )
                 }
               >
@@ -1073,41 +705,12 @@ function App() {
           </Stack>
         )}
         {isCreating && (
-          <Card>
-            {page === "routes/new" ? (
-              <Stack gap={1}>
-                <Text tone="secondary">Как подключить сервис?</Text>
-                <DrawerButton
-                  label="HTTP/HTTPS"
-                  icon="link"
-                  secondaryText="По домену и пути, с TLS"
-                  secondaryPlacement="below"
-                  onPress={() => navigate("routes/new/http")}
-                />
-                <DrawerButton
-                  label="TCP/UDP"
-                  icon="device"
-                  secondaryText="Проброс порта на другой сервис"
-                  secondaryPlacement="below"
-                  onPress={() => navigate("routes/new/direct")}
-                />
-              </Stack>
-            ) : page.endsWith("/http") ? (
-              <HttpForm
-                onDone={(r) => saved("http", r)}
-                onCancel={() => navigate("routes")}
-              />
-            ) : (
-              <DirectForm
-                key={page}
-                initialProtocol={
-                  page.endsWith("/udp") || filter === "udp" ? "udp" : "tcp"
-                }
-                onDone={(r) => saved("direct", r)}
-                onCancel={() => navigate("routes")}
-              />
-            )}
-          </Card>
+          <RouteForm
+            key={page}
+            initialProtocol={newProtocol}
+            onDone={saved}
+            onCancel={() => navigate("routes")}
+          />
         )}
         {routeScreen && !mapping && (
           <Card>
@@ -1117,27 +720,17 @@ function App() {
             </Stack>
           </Card>
         )}
-        {routeScreen && mapping && (
+        {mapping && isEditing && (
+          <RouteForm
+            key={mapping.key}
+            route={mapping.route}
+            onDone={saved}
+            onCancel={() => navigate(`routes/view/${mapping.key}`)}
+          />
+        )}
+        {routeScreen && mapping && !isEditing && (
           <Card>
-            {mode === "edit" &&
-            !("host" in mapping.route && mapping.route.systemManaged) ? (
-              "host" in mapping.route ? (
-                <HttpForm
-                  key={mapping.key}
-                  route={mapping.route}
-                  onDone={(r) => saved("http", r)}
-                  onCancel={() => navigate(`routes/view/${mapping.key}`)}
-                />
-              ) : (
-                <DirectForm
-                  key={mapping.key}
-                  rule={mapping.route}
-                  onDone={(r) => saved("direct", r)}
-                  onCancel={() => navigate(`routes/view/${mapping.key}`)}
-                />
-              )
-            ) : mode === "delete" &&
-              !("host" in mapping.route && mapping.route.systemManaged) ? (
+            {mode === "delete" && !systemRoute ? (
               <Stack gap={4}>
                 <Text font="mono">{source(mapping.route)}</Text>
                 <Text>
@@ -1212,7 +805,7 @@ function App() {
                       : "Статистика недоступна"}
                   </Text>
                 )}
-                {!("host" in mapping.route && mapping.route.systemManaged) && (
+                {!systemRoute && (
                   <Switch
                     id="route-enabled"
                     label="Маршрут включён"
@@ -1225,16 +818,14 @@ function App() {
                     }
                   />
                 )}
-                {"host" in mapping.route && mapping.route.systemManaged && (
+                {systemRoute && (
                   <Text tone="secondary">
                     Системный маршрут панели управляется настройкой домена
                     панели.
                   </Text>
                 )}
                 <Stack direction="row" gap={3}>
-                  {!(
-                    "host" in mapping.route && mapping.route.systemManaged
-                  ) && (
+                  {!systemRoute && (
                     <Button
                       variant="simple"
                       onPress={() => navigate(`routes/edit/${mapping.key}`)}
@@ -1249,9 +840,7 @@ function App() {
                   >
                     Обновить
                   </Button>
-                  {!(
-                    "host" in mapping.route && mapping.route.systemManaged
-                  ) && (
+                  {!systemRoute && (
                     <Button
                       variant="blank"
                       onPress={() => navigate(`routes/delete/${mapping.key}`)}
