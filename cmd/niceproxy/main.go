@@ -168,6 +168,9 @@ func run() error {
 		Binary: *caddyBin, RuntimeDir: *runtimeDir, DataDir: *dataDir,
 		PanelListen: *panel, BackendSocket: socket, HTTPPort: *httpPort, HTTPSPort: *httpsPort,
 		PanelCertFile: os.Getenv("NICEPROXY_PANEL_CERT_FILE"), PanelKeyFile: os.Getenv("NICEPROXY_PANEL_KEY_FILE"),
+		PanelDomain: good.PanelDomain, PanelDomainProxied: good.PanelDomainProxied,
+		PanelDNSObserved:     good.PanelDNSObserved,
+		PanelCloudflareCIDRs: os.Getenv("NICEPROXY_PANEL_CLOUDFLARE_CIDRS"),
 	}
 	bridgeSecret, err := bridgeToken()
 	if err != nil {

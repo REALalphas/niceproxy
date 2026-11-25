@@ -149,6 +149,12 @@ After sign-in, the panel lists zones and records allowed by the grant. It can ex
 
 DNS points to a server address, without a port or path. Cloudflare proxy defaults to DNS only and does not publish arbitrary TCP/UDP ports. This integration does not create a Cloudflare Tunnel or change niceproxy traffic flow. Caddy still issues HTTP/HTTPS certificates. Cloudflare DNS-01 is not integrated in this version.
 
+## Client IP for the panel
+
+The public HTTPS panel automatically uses `CF-Connecting-IP` for login rate limiting when the connecting peer matches one of the official Cloudflare IPv4 or IPv6 ranges bundled with niceproxy. Direct and local access, a missing or invalid header, and connections where SNAT or a load balancer hides the Cloudflare peer all fall back to the visible peer address.
+
+The bundled list works offline. If the published ranges change before the next niceproxy upgrade, set `NICEPROXY_PANEL_CLOUDFLARE_CIDRS` to the full replacement list, separated by commas or whitespace, and restart niceproxy. [Cloudflare's published ranges](https://www.cloudflare.com/ips/)
+
 ## Data and access
 
 Access and refresh tokens are encrypted in SQLite with AES-GCM. `/data/cloudflare.key` uses mode `0600`. Native runs store it under `--data`. Back up the database and key together. A lost key cannot be replaced while the saved connection remains. Tokens are never returned by the panel API or written to logs.

@@ -22,6 +22,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"niceproxy/internal/bridge"
+	"niceproxy/internal/caddy"
 	"niceproxy/internal/cloudflare"
 	"niceproxy/internal/ddos"
 	"niceproxy/internal/ddos/trust"
@@ -891,18 +892,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "already configured")
 		return
 	}
-	key := r.RemoteAddr
-	if host, _, splitErr := net.SplitHostPort(r.RemoteAddr); splitErr == nil {
-		key = host
-	}
-	// Only the bundled Caddy reaches the private Unix listener. Its default
-	// proxy handler replaces untrusted client-supplied X-Forwarded-For.
-	if r.RemoteAddr == "@" || r.RemoteAddr == "" {
-		forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
-		if net.ParseIP(forwarded) != nil {
-			key = forwarded
-		}
-	}
+	key := loginClientKey(r)
 	if len(a.authByClient) >= 4096 {
 		if _, ok := a.authByClient[key]; !ok {
 			fail(w, 429, "authentication client limit reached")
@@ -954,6 +944,27 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	a.authAttempts = 0
 	delete(a.authByClient, key)
 	write(w, 200, map[string]bool{"configured": true, "authenticated": true})
+}
+
+func loginClientKey(r *http.Request) string {
+	// The private control listener is reached through the bundled Caddy,
+	// which overwrites these headers and gates the Cloudflare value by CIDR.
+	if _, ok := r.Context().Value(http.LocalAddrContextKey).(*net.UnixAddr); ok {
+		for _, header := range []string{caddy.PanelCloudflareIPHeader, caddy.PanelPeerIPHeader} {
+			values := r.Header.Values(header)
+			if len(values) != 1 {
+				continue
+			}
+			ip, err := netip.ParseAddr(strings.TrimSpace(values[0]))
+			if err == nil && (header == caddy.PanelPeerIPHeader || ip.Zone() == "") {
+				return ip.WithZone("").Unmap().String()
+			}
+		}
+	}
+	if ip, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+		return ip.Addr().WithZone("").Unmap().String()
+	}
+	return r.RemoteAddr
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dst any) error {

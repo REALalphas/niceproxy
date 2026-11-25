@@ -345,9 +345,13 @@ func TestBuildConfigRejectsUnsafeInputs(t *testing.T) {
 
 func fakeManager(t *testing.T, mode string) (*Manager, Options) {
 	t.Helper()
+	return fakeManagerWithOptions(t, mode, options(t))
+}
+
+func fakeManagerWithOptions(t *testing.T, mode string, o Options) (*Manager, Options) {
+	t.Helper()
 	t.Setenv("NICEPROXY_FAKE_CADDY", "1")
 	t.Setenv("NICEPROXY_FAKE_MODE", mode)
-	o := options(t)
 	var err error
 	o.Binary, err = os.Executable()
 	if err != nil {

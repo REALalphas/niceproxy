@@ -1,0 +1,40 @@
+.route-flow-container {
+  container-type: inline-size;
+}
+
+.route-flow {
+  display: grid;
+  grid-template-columns: var(--as-size-icon) max-content minmax(0, 1fr);
+  gap: var(--as-space-2) var(--as-space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.route-flow-step {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: start;
+}
+
+.route-flow-arrow {
+  grid-column: 1;
+  justify-self: center;
+  color: var(--as-color-text-secondary);
+}
+
+@container (width < 26rem) {
+  .route-flow {
+    grid-template-columns: var(--as-size-icon) minmax(0, 1fr);
+    column-gap: var(--as-space-3);
+  }
+
+  .route-flow-detail {
+    grid-column: 2;
+  }
+
+  .route-flow-arrow {
+    grid-row: 2;
+  }
+}
