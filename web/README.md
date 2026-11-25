@@ -12,6 +12,10 @@ npm run build
 npm start
 ```
 
+Для dev-сервера, открытого через публичное имя, задайте `NICEPROXY_DOMAIN` или
+список имён через `VITE_ALLOWED_HOSTS`, например `VITE_ALLOWED_HOSTS=cf.toxl.fun npm run dev -- --host 0.0.0.0`.
+Не направляйте публичные TCP 80 и 443 на Vite, пока Caddy получает ACME-сертификат.
+
 `npm start` запускает `scripts/alpha-bootstrap.mjs`. При `NICEPROXY_ALPHA_RELEASE_URL` скрипт проверяет `latest.json`, manifest и SHA-512 архивов core/react/project-server, собирает staging в пределах общего таймаута 20 секунд и активирует только готовую сборку. Без URL явно используется локальная версия; ошибки и таймауты откатываются к последней рабочей сборке. `node scripts/alpha-bootstrap.mjs --prepare` печатает путь активной сборки без запуска сервера.
 
 API: `GET /api/auth`; `POST /api/setup` и `/api/login` `{password}`; `POST /api/logout`; `GET /api/config` `{revision,panelDomain,httpRoutes,directRules}`; `GET/PATCH /api/panel-domain`; CRUD `/api/http-routes/:id` и `/api/direct-rules/:id`; `GET /api/health` `{status,state,caddy,revision,appliedRevision,panelDomain,certificate,error?}`. Non-2xx ответы содержат JSON `error`, а 401 возвращает экран входа. UI builds are selected from `/data/ui` only after atomic marker, version and digest validation.
