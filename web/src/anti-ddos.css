@@ -1,0 +1,124 @@
+.ddos-page {
+  container-type: inline-size;
+}
+
+.ddos-editor-toolbar,
+.ddos-status-toolbar,
+.ddos-target-heading,
+.ddos-instance-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--as-space-3);
+  flex-wrap: wrap;
+}
+
+.ddos-editor-select,
+.ddos-status-heading {
+  flex: 1 1 18rem;
+}
+
+.ddos-summary-grid,
+.ddos-target-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--as-space-3);
+}
+
+.ddos-summary-item,
+.ddos-target-summary-item {
+  min-width: 0;
+  display: grid;
+  gap: var(--as-space-1);
+  overflow-wrap: anywhere;
+}
+
+.ddos-section-list,
+.ddos-target-list {
+  display: grid;
+  gap: var(--as-space-4);
+}
+
+.ddos-metric-list,
+.ddos-detail-list {
+  display: grid;
+  gap: var(--as-space-2);
+}
+
+.ddos-metric-row {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1.2fr) minmax(7rem, 0.7fr) minmax(0, 1.5fr);
+  gap: var(--as-space-3);
+  align-items: baseline;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ddos-metric-source {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ddos-detail-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: var(--as-space-3);
+  align-items: baseline;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ddos-form-section {
+  display: grid;
+  gap: var(--as-space-3);
+}
+
+.ddos-form-grid,
+.ddos-row-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--as-space-3);
+}
+
+.ddos-policy-switches {
+  display: grid;
+  gap: var(--as-space-2);
+}
+
+.ddos-empty {
+  overflow-wrap: anywhere;
+}
+
+@container (width < 42rem) {
+  .ddos-summary-grid,
+  .ddos-target-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ddos-metric-row {
+    grid-template-columns: minmax(0, 1fr) minmax(7rem, 0.8fr);
+  }
+
+  .ddos-metric-source {
+    grid-column: 1 / -1;
+  }
+}
+
+@container (width < 30rem) {
+  .ddos-summary-grid,
+  .ddos-target-summary,
+  .ddos-form-grid,
+  .ddos-row-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ddos-detail-row,
+  .ddos-metric-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--as-space-1);
+  }
+
+  .ddos-metric-source {
+    grid-column: auto;
+  }
+}

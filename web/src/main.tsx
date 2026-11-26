@@ -5,11 +5,13 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type ReactNode,
 } from "react";
 import { createRoot } from "react-dom/client";
 import { installControlMotion } from "@alpha/core";
 import {
   AppShell,
+  Badge,
   Button,
   Card,
   Page,
@@ -25,6 +27,7 @@ import {
 } from "@alpha/react";
 import "@alpha/core/fonts.css";
 import "@alpha/core/styles.css";
+import "./anti-ddos.css";
 import { changeView } from "./view";
 import { formatEndpoint } from "./direct-address";
 import { RouteForm } from "./RouteForm";
@@ -307,63 +310,65 @@ function PolicyRows({
   defaults: Record<string, string | number>;
 }) {
   return (
-    <Stack gap={3}>
+    <div className="ddos-form-section">
       <Text as="h3">{heading}</Text>
       {rows.map((row, index) => (
         <Card key={row.key}>
           <Stack gap={3}>
-            {fields.map(({ key, label, choices, optional }) => {
-              const id = `ddos-${row.key}-${key}`;
-              const value = row.values[key] ?? "";
-              const onValueChange = (next: string) =>
-                onChange(
-                  rows.map((item) =>
-                    item.key === row.key
-                      ? {
-                          ...item,
-                          values: {
-                            ...item.values,
-                            ...(key === "metric"
-                              ? {
-                                  unit: metricUnit(next),
-                                  windowSeconds: rateMetrics.has(next)
-                                    ? "1"
-                                    : "",
-                                  burst: "",
-                                }
-                              : {}),
-                            [key]: next,
-                          },
-                        }
-                      : item,
-                  ),
+            <div className="ddos-row-fields">
+              {fields.map(({ key, label, choices, optional }) => {
+                const id = `ddos-${row.key}-${key}`;
+                const value = row.values[key] ?? "";
+                const onValueChange = (next: string) =>
+                  onChange(
+                    rows.map((item) =>
+                      item.key === row.key
+                        ? {
+                            ...item,
+                            values: {
+                              ...item.values,
+                              ...(key === "metric"
+                                ? {
+                                    unit: metricUnit(next),
+                                    windowSeconds: rateMetrics.has(next)
+                                      ? "1"
+                                      : "",
+                                    burst: "",
+                                  }
+                                : {}),
+                              [key]: next,
+                            },
+                          }
+                        : item,
+                    ),
+                  );
+                return choices ? (
+                  <Select
+                    key={key}
+                    id={id}
+                    label={label}
+                    value={value}
+                    popup="overlay"
+                    options={Object.entries(choices).map(([value, label]) => ({
+                      value,
+                      label,
+                    }))}
+                    onValueChange={onValueChange}
+                    disabled={disabled}
+                  />
+                ) : (
+                  <TextInput
+                    key={key}
+                    id={id}
+                    label={label}
+                    value={value}
+                    onValueChange={onValueChange}
+                    disabled={disabled}
+                    required={!optional}
+                  />
                 );
-              return choices ? (
-                <Select
-                  key={key}
-                  id={id}
-                  label={label}
-                  value={value}
-                  popup="overlay"
-                  options={Object.entries(choices).map(([value, label]) => ({
-                    value,
-                    label,
-                  }))}
-                  onValueChange={onValueChange}
-                  disabled={disabled}
-                />
-              ) : (
-                <TextInput
-                  key={key}
-                  id={id}
-                  label={label}
-                  value={value}
-                  onValueChange={onValueChange}
-                  disabled={disabled}
-                  required={!optional}
-                />
-              );
-            })}
+              })}
+            </div>
             <Button
               variant="blank"
               disabled={disabled}
@@ -382,7 +387,7 @@ function PolicyRows({
       >
         Добавить запись
       </Button>
-    </Stack>
+    </div>
   );
 }
 
@@ -506,40 +511,51 @@ export function ProtectionForm({
     <form onSubmit={submit}>
       <Stack gap={4}>
         <Text as="h2">{route ? "Защита маршрута" : "Защита слушателя"}</Text>
-        {(
-          [
-            ["detect", "Обнаружение атак"],
-            ["autoFilter", "Автоматическая фильтрация"],
-            ["enforceLimits", "Применение лимитов"],
-          ] as const
-        ).map(([key, label]) => (
-          <Switch
-            key={key}
-            id={`${formId}-${key}`}
-            label={label}
-            checked={policy[key] ?? false}
-            disabled={busy}
-            onCheckedChange={(checked) =>
-              setPolicy({ ...policy, [key]: checked })
-            }
-          />
-        ))}
-        <TextInput
-          id={`${formId}-stable`}
-          label="Количество стабильных окон"
-          value={stableWindows}
-          onValueChange={setStableWindows}
-          disabled={busy}
-        />
-        <TextInput
-          id={`${formId}-group`}
-          label="Группа защиты"
-          value={policy.group ?? ""}
-          onValueChange={(group) => setPolicy({ ...policy, group })}
-          disabled={busy}
-        />
+        <div className="ddos-form-section">
+          <Text as="h3">Режим защиты</Text>
+          <div className="ddos-policy-switches">
+            {(
+              [
+                ["detect", "Обнаружение атак"],
+                ["autoFilter", "Автоматическая фильтрация"],
+                ["enforceLimits", "Применение лимитов"],
+              ] as const
+            ).map(([key, label]) => (
+              <Switch
+                key={key}
+                id={`${formId}-${key}`}
+                label={label}
+                checked={policy[key] ?? false}
+                disabled={busy}
+                onCheckedChange={(checked) =>
+                  setPolicy({ ...policy, [key]: checked })
+                }
+              />
+            ))}
+          </div>
+        </div>
+        <div className="ddos-form-section">
+          <Text as="h3">Параметры области</Text>
+          <div className="ddos-form-grid">
+            <TextInput
+              id={`${formId}-stable`}
+              label="Количество стабильных окон"
+              value={stableWindows}
+              onValueChange={setStableWindows}
+              disabled={busy}
+            />
+            <TextInput
+              id={`${formId}-group`}
+              label="Группа защиты"
+              value={policy.group ?? ""}
+              onValueChange={(group) => setPolicy({ ...policy, group })}
+              disabled={busy}
+            />
+          </div>
+        </div>
         {hasTLS && (
-          <Stack gap={3}>
+          <div className="ddos-form-section">
+            <Text as="h3">Доверие к Cloudflare</Text>
             <Switch
               id={`${formId}-cloudflare-only`}
               label="Разрешать трафик только от Cloudflare"
@@ -558,16 +574,19 @@ export function ProtectionForm({
               }
               disabled={busy}
             />
-          </Stack>
+          </div>
         )}
         {route && (("host" in route && /^udp:\/\//i.test(route.target)) || (!("host" in route) && route.protocol === "udp")) && (
-          <Switch
-            id={`${formId}-udp-response`}
-            label="Ожидать ответ UDP"
-            checked={policy.expectUDPResponse ?? false}
-            disabled={busy}
-            onCheckedChange={(expectUDPResponse) => setPolicy({ ...policy, expectUDPResponse })}
-          />
+          <div className="ddos-form-section">
+            <Text as="h3">UDP</Text>
+            <Switch
+              id={`${formId}-udp-response`}
+              label="Ожидать ответ UDP"
+              checked={policy.expectUDPResponse ?? false}
+              disabled={busy}
+              onCheckedChange={(expectUDPResponse) => setPolicy({ ...policy, expectUDPResponse })}
+            />
+          </div>
         )}
         <PolicyRows
           heading="Лимиты"
@@ -671,6 +690,32 @@ const formatMetric = (value: number | null | undefined) =>
   value == null ? "нет данных" : displayNumber.format(value);
 const displayTime = (value: string) => new Date(value).toLocaleString("ru-RU");
 
+function StatusItem({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="ddos-summary-item">
+      <div className="ddos-summary-label">
+        <Text tone="muted">{label}</Text>
+      </div>
+      <div className="ddos-summary-value">
+        <Text>{children}</Text>
+      </div>
+    </div>
+  );
+}
+
+function DetailRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="ddos-detail-row">
+      <div className="ddos-detail-label">
+        <Text tone="muted">{label}</Text>
+      </div>
+      <div className="ddos-detail-value">
+        <Text>{children}</Text>
+      </div>
+    </div>
+  );
+}
+
 function DDoSDashboard({
   status,
   error,
@@ -684,194 +729,248 @@ function DDoSDashboard({
   onRefresh: () => void;
   onClear: (data: Parameters<typeof api.clearAntiDDoS>[0]) => void;
 }) {
+  const statusLabel = status ? applyLabels[status.status] : "Нет данных";
+  const hasTargets = !!status?.instances.some(
+    (instance) => instance.targets.length,
+  );
   return (
-    <Card>
-      <Stack gap={4}>
-        <Text as="h2">Состояние защиты</Text>
-        <Button onPress={onRefresh} disabled={busy}>
-          Обновить сводку
-        </Button>
-        {error && <ErrorMessage>{error}</ErrorMessage>}
-        <Text>
-          {status
-            ? `${applyLabels[status.status]} · желаемая ревизия ${status.revision} · применённая ревизия ${status.appliedRevision}`
-            : "Состояние применения — нет данных"}
-        </Text>
-        {!status?.instances.some((instance) => instance.targets.length) &&
-          Object.values(trafficStages).map((label) => (
-            <Text key={label}>{label} — нет данных</Text>
-          ))}
-        {status?.instances.map((instance) => (
-          <Stack key={instance.id} gap={3}>
-            <Text as="h3">
-              Экземпляр {instance.id} · {instance.version}
-            </Text>
+    <div className="ddos-section-list">
+      <Card>
+        <Stack gap={4}>
+          <div className="ddos-status-toolbar">
+            <div className="ddos-status-heading">
+              <Stack gap={1}>
+                <Text as="h2">Состояние защиты</Text>
+                <Text tone="secondary">
+                  Применение конфигурации и наблюдаемость экземпляров
+                </Text>
+              </Stack>
+            </div>
+            <Badge value={statusLabel} />
+            <Button onPress={onRefresh} disabled={busy}>
+              Обновить сводку
+            </Button>
+          </div>
+          <div className="ddos-summary-grid">
+            <StatusItem label="Желаемая ревизия">
+              {status ? status.revision : "нет данных"}
+            </StatusItem>
+            <StatusItem label="Применённая ревизия">
+              {status ? status.appliedRevision : "нет данных"}
+            </StatusItem>
+            <StatusItem label="Экземпляры">
+              {status ? status.instances.length : "нет данных"}
+            </StatusItem>
+          </div>
+          {error && <ErrorMessage>{error}</ErrorMessage>}
+          {!status && !error && <Text tone="muted">Состояние применения — нет данных</Text>}
+          {status && !hasTargets && (
+            <Card>
+              <Stack gap={2}>
+                <Text as="h3">Нет активных целей наблюдения</Text>
+                <div className="ddos-empty">
+                  <Text tone="secondary">
+                    Метрики появятся после настройки слушателя или маршрута.
+                  </Text>
+                </div>
+              </Stack>
+            </Card>
+          )}
+        </Stack>
+      </Card>
+
+      {status?.instances.map((instance) => (
+        <Card key={instance.id}>
+          <Stack gap={4}>
+            <div className="ddos-instance-heading">
+              <Stack gap={1}>
+                <Text as="h2">Экземпляр {instance.id}</Text>
+                <Text tone="secondary">Версия {instance.version}</Text>
+              </Stack>
+              {instance.error && <Badge value="Ошибка экземпляра" />}
+            </div>
             {instance.error && <ErrorMessage>{instance.error}</ErrorMessage>}
             {instance.cloudflare && (
-              <Stack gap={1}>
-                <Text as="h3">Сети Cloudflare</Text>
-                <Text>
-                  Количество сетей —{" "}
-                  {formatMetric(
-                    typeof instance.cloudflare.networks === "number"
-                      ? instance.cloudflare.networks
-                      : instance.cloudflare.networks?.length,
-                  )}
-                </Text>
-                <Text>
-                  Обновлено —{" "}
-                  {instance.cloudflare.updatedAt
-                    ? displayTime(instance.cloudflare.updatedAt)
-                    : "нет данных"}
-                </Text>
-                {instance.cloudflare.error && (
-                  <ErrorMessage>{instance.cloudflare.error}</ErrorMessage>
-                )}
-              </Stack>
-            )}
-            {!instance.targets.length && (
-              <Text>Цели наблюдения — нет данных</Text>
-            )}
-            {instance.targets.map((target) => (
-              <Card key={target.id}>
+              <Card>
                 <Stack gap={3}>
-                  <Text as="h3">{target.label || target.id}</Text>
-                  <Text>
-                    Детектор — {translated(detectorLabels, target.state)}
-                  </Text>
-                  <Text>Оценка детектора — {formatMetric(target.score)}</Text>
-                  {target.reason && (
-                    <Text>Причина — {translated(detectorReasons, target.reason)}</Text>
-                  )}
-                  <Text>
-                    Применённая политика · обнаружение{" "}
-                    {target.policy.detect ? "включено" : "выключено"}
-                    {" · "}автофильтрация{" "}
-                    {target.policy.autoFilter ? "включена" : "выключена"}
-                    {" · "}лимиты{" "}
-                    {target.policy.enforceLimits ? "включены" : "выключены"}
-                  </Text>
-                  <Text>
-                    Наблюдаемость —{" "}
-                    {translated(observationLabels, target.observability)}
-                  </Text>
                   <Stack gap={1}>
-                    <Text weight="medium">Этапы обработки и метрики</Text>
-                    {[
-                      ...new Set([
-                        ...Object.keys(trafficStages),
-                        ...Object.keys(target.metrics),
-                      ]),
-                    ].map((key) => {
-                      const metric = target.metrics[key];
-                      return (
-                        <Text key={key}>
-                          {translated(metricLabels, key)} —{" "}
-                          {formatMetric(metric?.value)}
-                          {metric?.source && ` · источник: ${metric.source}`}
-                        </Text>
-                      );
-                    })}
+                    <Text as="h3">Сети Cloudflare</Text>
+                    <Text tone="secondary">Доверенные адреса для фильтрации источников</Text>
                   </Stack>
-                  <Stack gap={2}>
-                    <Text weight="medium">Активные лимиты</Text>
-                    {target.policy.enforceLimits ? (
-                      target.policy.limits?.length ? (
-                        target.policy.limits.map((limit) => (
-                          <Text key={limit.id}>
-                            {translated(metricLabels, limit.metric)} —{" "}
-                            {formatMetric(limit.value)} ·{" "}
-                            {unitLabels[limit.unit]}
-                            {limit.windowSeconds !== undefined &&
-                              ` · окно ${limit.windowSeconds} с`}
-                            {" · "}
-                            {scopeLabels[limit.scope]} ·{" "}
-                            {actionLabels[limit.action]}
-                          </Text>
-                        ))
-                      ) : (
-                        <Text>Лимиты не заданы</Text>
-                      )
-                    ) : (
-                      <Text>Применение лимитов выключено</Text>
-                    )}
-                  </Stack>
-                  <Stack gap={2}>
-                    <Text weight="medium">Активные ограничения</Text>
-                    {!target.restrictions?.length && (
-                      <Text>Ограничений нет</Text>
-                    )}
-                    {target.restrictions?.map((restriction, index) => (
-                      <Stack key={index} gap={1}>
-                        <Text>
-                          {actionLabels[restriction.action]} ·{" "}
-                          {scopeLabels[restriction.scope]} {restriction.target}
-                          {" · "}правило {restriction.rule} · до{" "}
-                          {displayTime(restriction.expiresAt)}
-                          {" · "}
-                          {restriction.automatic ? "автоматическое" : "ручное"}
-                        </Text>
-                        {restriction.automatic && (
-                          <Button
-                            variant="blank"
-                            disabled={busy}
-                            onPress={() =>
-                              onClear({
-                                instance: instance.id,
-                                target: target.id,
-                                rule: restriction.rule,
-                                subject: restriction.target,
-                                ttlSeconds: 60,
-                              })
-                            }
-                          >
-                            Снять ограничение на 60 секунд
-                          </Button>
-                        )}
-                      </Stack>
-                    ))}
-                  </Stack>
-                  {!!target.events?.length && (
-                    <Stack gap={1}>
-                      <Text weight="medium">События детектора</Text>
-                      {target.events.map((event, index) => (
-                        <Text key={index}>
-                          {displayTime(event.at)} · {actionLabels[event.action]}{" "}
-                          · {event.reason} {event.rules?.join(", ")}
-                        </Text>
-                      ))}
-                    </Stack>
-                  )}
-                  {!!target.history?.length && (
-                    <Stack gap={1}>
-                      <Text weight="medium">История нагрузки</Text>
-                      {target.history.map((point, index) => (
-                        <Text key={index}>
-                          {displayTime(point.at)} · {formatMetric(point.load)} ·
-                          норма {formatMetric(point.normalLow)}–
-                          {formatMetric(point.normalHigh)}
-                        </Text>
-                      ))}
-                    </Stack>
-                  )}
-                  {!!target.sources?.length && (
-                    <Stack gap={1}>
-                      <Text weight="medium">Источники трафика</Text>
-                      {target.sources.map((origin, index) => (
-                        <Text key={index}>
-                          {origin.address} · {origin.subnet} ·{" "}
-                          {formatMetric(origin.count)} {origin.reason}
-                        </Text>
-                      ))}
-                    </Stack>
-                  )}
+                  <div className="ddos-summary-grid">
+                    <StatusItem label="Количество сетей">
+                      {formatMetric(
+                        typeof instance.cloudflare.networks === "number"
+                          ? instance.cloudflare.networks
+                          : instance.cloudflare.networks?.length,
+                      )}
+                    </StatusItem>
+                    <StatusItem label="Обновлено">
+                      {instance.cloudflare.updatedAt
+                        ? displayTime(instance.cloudflare.updatedAt)
+                        : "нет данных"}
+                    </StatusItem>
+                    <StatusItem label="Источник">
+                      {instance.cloudflare.ipv4URL || instance.cloudflare.ipv6URL || "не настроен"}
+                    </StatusItem>
+                  </div>
+                  {instance.cloudflare.error && <ErrorMessage>{instance.cloudflare.error}</ErrorMessage>}
                 </Stack>
               </Card>
-            ))}
+            )}
+            {!instance.targets.length && <Text tone="muted">Цели наблюдения — нет данных</Text>}
+            <div className="ddos-target-list">
+              {instance.targets.map((target) => (
+                <Card key={target.id}>
+                  <Stack gap={4}>
+                    <div className="ddos-target-heading">
+                      <Stack gap={1}>
+                        <Text as="h2">{target.label || target.id}</Text>
+                        <Text tone="secondary">Цель {target.id}</Text>
+                      </Stack>
+                      <Badge value={translated(detectorLabels, target.state)} />
+                    </div>
+                    <div className="ddos-target-summary">
+                      <div className="ddos-target-summary-item">
+                        <Text tone="muted">Оценка детектора</Text>
+                        <Text font="mono">{formatMetric(target.score)}</Text>
+                      </div>
+                      <div className="ddos-target-summary-item">
+                        <Text tone="muted">Причина</Text>
+                        <Text>{target.reason ? translated(detectorReasons, target.reason) : "нет данных"}</Text>
+                      </div>
+                      <div className="ddos-target-summary-item">
+                        <Text tone="muted">Наблюдаемость</Text>
+                        <Text>{translated(observationLabels, target.observability)}</Text>
+                      </div>
+                    </div>
+                    <Card>
+                      <Stack gap={2}>
+                        <Text as="h3">Применённая политика</Text>
+                        <Text>
+                          Обнаружение {target.policy.detect ? "включено" : "выключено"} · автофильтрация {target.policy.autoFilter ? "включена" : "выключена"} · лимиты {target.policy.enforceLimits ? "включены" : "выключены"}
+                        </Text>
+                      </Stack>
+                    </Card>
+                    <Card>
+                      <Stack gap={3}>
+                        <Text as="h3">Этапы обработки и метрики</Text>
+                        <div className="ddos-metric-list">
+                          {[...new Set([...Object.keys(trafficStages), ...Object.keys(target.metrics)])].map((key) => {
+                            const metric = target.metrics[key];
+                            return (
+                              <div className="ddos-metric-row" key={key}>
+                                <div className="ddos-metric-label">
+                                  <Text>{translated(metricLabels, key)}</Text>
+                                </div>
+                                <div className="ddos-metric-value">
+                                  <Text font="mono">{formatMetric(metric?.value)}</Text>
+                                </div>
+                                <div className="ddos-metric-source">
+                                  <Text tone="muted">{metric?.source ? `Источник: ${metric.source}` : "Источник не указан"}</Text>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </Stack>
+                    </Card>
+                    <Card>
+                      <Stack gap={3}>
+                        <Text as="h3">Активные лимиты</Text>
+                        {!target.policy.enforceLimits ? (
+                          <Text tone="muted">Применение лимитов выключено</Text>
+                        ) : target.policy.limits?.length ? (
+                          <div className="ddos-detail-list">
+                            {target.policy.limits.map((limit) => (
+                              <DetailRow key={limit.id} label={limit.id}>
+                                {translated(metricLabels, limit.metric)} · {formatMetric(limit.value)} {unitLabels[limit.unit]} · {scopeLabels[limit.scope]} · {actionLabels[limit.action]}{limit.windowSeconds !== undefined ? ` · окно ${limit.windowSeconds} с` : ""}
+                              </DetailRow>
+                            ))}
+                          </div>
+                        ) : (
+                          <Text tone="muted">Лимиты не заданы</Text>
+                        )}
+                      </Stack>
+                    </Card>
+                    <Card>
+                      <Stack gap={3}>
+                        <Text as="h3">Активные ограничения</Text>
+                        {!target.restrictions?.length && <Text tone="muted">Ограничений нет</Text>}
+                        {target.restrictions?.map((restriction, index) => (
+                          <Stack key={index} gap={2}>
+                            <DetailRow label={`${actionLabels[restriction.action]} · ${scopeLabels[restriction.scope]}`}>
+                              {restriction.target} · правило {restriction.rule} · до {displayTime(restriction.expiresAt)} · {restriction.automatic ? "автоматическое" : "ручное"}
+                            </DetailRow>
+                            {restriction.automatic && (
+                              <Button
+                                variant="blank"
+                                disabled={busy}
+                                onPress={() => onClear({
+                                  instance: instance.id,
+                                  target: target.id,
+                                  rule: restriction.rule,
+                                  subject: restriction.target,
+                                  ttlSeconds: 60,
+                                })}
+                              >
+                                Снять ограничение на 60 секунд
+                              </Button>
+                            )}
+                          </Stack>
+                        ))}
+                      </Stack>
+                    </Card>
+                    {!!target.events?.length && (
+                      <Card>
+                        <Stack gap={3}>
+                          <Text as="h3">События детектора</Text>
+                          <div className="ddos-detail-list">
+                            {target.events.map((event, index) => (
+                              <DetailRow key={index} label={displayTime(event.at)}>
+                                {actionLabels[event.action]} · {event.reason} {event.rules?.join(", ")}
+                              </DetailRow>
+                            ))}
+                          </div>
+                        </Stack>
+                      </Card>
+                    )}
+                    {!!target.history?.length && (
+                      <Card>
+                        <Stack gap={3}>
+                          <Text as="h3">История нагрузки</Text>
+                          <div className="ddos-detail-list">
+                            {target.history.map((point, index) => (
+                              <DetailRow key={index} label={displayTime(point.at)}>
+                                {formatMetric(point.load)} · норма {formatMetric(point.normalLow)}–{formatMetric(point.normalHigh)}
+                              </DetailRow>
+                            ))}
+                          </div>
+                        </Stack>
+                      </Card>
+                    )}
+                    {!!target.sources?.length && (
+                      <Card>
+                        <Stack gap={3}>
+                          <Text as="h3">Источники трафика</Text>
+                          <div className="ddos-detail-list">
+                            {target.sources.map((origin, index) => (
+                              <DetailRow key={index} label={`${origin.address} · ${origin.subnet}`}>
+                                {formatMetric(origin.count)}{origin.reason ? ` · ${origin.reason}` : ""}
+                              </DetailRow>
+                            ))}
+                          </div>
+                        </Stack>
+                      </Card>
+                    )}
+                  </Stack>
+                </Card>
+              ))}
+            </div>
           </Stack>
-        ))}
-      </Stack>
-    </Card>
+        </Card>
+      ))}
+    </div>
   );
 }
 
@@ -1060,51 +1159,57 @@ function AntiDDoSPage({
     }
   }
   return (
-    <Stack gap={4}>
-      <Card>
-        <Stack gap={4}>
-          <Select
-            id="ddos-editor"
-            label="Область настройки защиты"
-            value={selected}
-            onValueChange={setEditor}
-            popup="overlay"
-            options={[
-              { value: "listener", label: "Глобальный слушатель" },
-              { value: "cloudflare", label: "Доверенные сети Cloudflare" },
-              ...routes.map((item) => ({
-                value: `route:${item.id}`,
-                label: `Маршрут · ${source(item)}`,
-              })),
-            ]}
-          />
-          <Button
-            variant="blank"
-            onPress={() => setEditorVersion((current) => current + 1)}
-          >
-            Сбросить правки и загрузить сохранённые настройки
-          </Button>
-          <ProtectionSettings
-            key={`${selected}:${editorVersion}`}
-            config={config}
-            route={route}
-            cloudflare={selected === "cloudflare"}
-            onSaved={(next) => {
-              onSaved(next);
-              setRefresh((current) => current + 1);
-            }}
-          />
-        </Stack>
-      </Card>
-      {clearError && <ErrorMessage>{clearError}</ErrorMessage>}
-      <DDoSDashboard
-        status={status}
-        error={readError}
-        busy={clearing}
-        onRefresh={() => setRefresh((current) => current + 1)}
-        onClear={(data) => void clear(data)}
-      />
-    </Stack>
+    <div className="ddos-page">
+      <Stack gap={4}>
+        <Card>
+          <Stack gap={4}>
+            <div className="ddos-editor-toolbar">
+              <div className="ddos-editor-select">
+                <Select
+                  id="ddos-editor"
+                  label="Область настройки защиты"
+                  value={selected}
+                  onValueChange={setEditor}
+                  popup="overlay"
+                  options={[
+                    { value: "listener", label: "Глобальный слушатель" },
+                    { value: "cloudflare", label: "Доверенные сети Cloudflare" },
+                    ...routes.map((item) => ({
+                      value: `route:${item.id}`,
+                      label: `Маршрут · ${source(item)}`,
+                    })),
+                  ]}
+                />
+              </div>
+              <Button
+                variant="blank"
+                onPress={() => setEditorVersion((current) => current + 1)}
+              >
+                Сбросить правки
+              </Button>
+            </div>
+            <ProtectionSettings
+              key={`${selected}:${editorVersion}`}
+              config={config}
+              route={route}
+              cloudflare={selected === "cloudflare"}
+              onSaved={(next) => {
+                onSaved(next);
+                setRefresh((current) => current + 1);
+              }}
+            />
+          </Stack>
+        </Card>
+        {clearError && <ErrorMessage>{clearError}</ErrorMessage>}
+        <DDoSDashboard
+          status={status}
+          error={readError}
+          busy={clearing}
+          onRefresh={() => setRefresh((current) => current + 1)}
+          onClear={(data) => void clear(data)}
+        />
+      </Stack>
+    </div>
   );
 }
 
@@ -1576,7 +1681,10 @@ function App() {
       onServicePress={() => navigate("routes")}
       onAccountPress={() => navigate("settings/account")}
     >
-      <Page width={isList ? "content" : "form"} gap={6}>
+      <Page
+        width={isList || page === "settings/anti-ddos" ? "content" : "form"}
+        gap={6}
+      >
         <Stack gap={3}>
           {page !== section && (
             <Button
