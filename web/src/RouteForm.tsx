@@ -17,6 +17,7 @@ import {
 } from "./api";
 import { formatEndpoint, isDirectIP, isDirectTarget } from "./direct-address";
 import { validHttpPath } from "./http-path";
+import { t, useI18n } from "./i18n";
 import "./route-form.css";
 
 type Route = HttpRoute | DirectRule;
@@ -36,13 +37,15 @@ const validPort = (value: string) =>
 function httpTargetError(value: string): string | undefined {
   // Caddy accepts DNS names such as app.123 that the browser URL parser rejects.
   const match =
-    /^(https?|tcp|udp):\/\/(\[[^\]]+\]|[^:/?#@\\\[\]\s]+)(?::(\d*))?\/?#?$/i.exec(value);
+    /^(https?|tcp|udp):\/\/(\[[^\]]+\]|[^:/?#@\\\[\]\s]+)(?::(\d*))?\/?#?$/i.exec(
+      value,
+    );
   if (!match || !isDirectTarget(match[2].replace(/^\[|\]$/g, "")))
-    return "Укажите HTTP(S), TCP или UDP адрес сервиса без пути, параметров и пароля.";
+    return t("routeErrors.targetAddress");
   if ((match[1] === "tcp" || match[1] === "udp") && !match[3])
-    return "Для TCP/UDP укажите порт сервиса.";
+    return t("routeErrors.targetPort");
   if (match[3] !== undefined && !validPort(match[3]))
-    return "Укажите порт сервиса от 1 до 65535.";
+    return t("errors.invalidPort");
 }
 
 function RouteFlow({
@@ -56,31 +59,32 @@ function RouteFlow({
   rules: string;
   upstream: string;
 }) {
+  useI18n();
   const steps = [
     {
       icon: "link",
-      label: "Подключение",
-      detail: incoming || "Укажите входящий адрес",
+      label: t("route.connection"),
+      detail: incoming || t("route.incomingHint"),
       mono: !!incoming,
     },
     {
       icon: "device",
-      label: "Публичные порты",
+      label: t("route.publicPorts"),
       detail: ports,
       mono: false,
     },
-    { icon: "shield", label: "Правила", detail: rules, mono: false },
+    { icon: "shield", label: t("route.rules"), detail: rules, mono: false },
     {
       icon: "device",
-      label: "Сервис",
-      detail: upstream || "Укажите адрес сервиса",
+      label: t("routes.service"),
+      detail: upstream || t("route.serviceHint"),
       mono: !!upstream,
     },
   ] as const;
   return (
     <Card>
       <div className="route-flow-container">
-        <ol className="route-flow" role="list" aria-label="Схема маршрута">
+        <ol className="route-flow" role="list" aria-label={t("route.diagram")}>
           {steps.map((step, index) => (
             <li className="route-flow-step" key={step.label}>
               <Icon name={step.icon} />
@@ -202,39 +206,39 @@ export function RouteForm({
       ? `${protocol.toUpperCase()} ${formatEndpoint(trimmedTargetHost, validPort(effectiveTargetPort) ? Number(effectiveTargetPort) : "…")}`
       : "";
   const rules = !enabled
-    ? "Маршрут выключен"
+    ? t("routes.status.disabled")
     : isHttp
-      ? "Совпадение по домену и пути"
-      : "Прямой проброс";
+      ? t("route.domainPathMatch")
+      : t("route.directForward");
   const publicPorts = isHttp
     ? ports
       ? tls === "off"
         ? [
             `HTTP · TCP ${ports.httpPort} → ${
               ports.owners.http === "direct"
-                ? "занят прямым пробросом"
-                : "веб-доступ"
+                ? t("route.directBusy")
+                : t("route.webAccess")
             }`,
           ]
         : [
             `HTTPS · TCP ${ports.httpsPort} → ${
               ports.owners.https === "direct"
-                ? "занят прямым пробросом"
-                : "веб-доступ"
+                ? t("route.directBusy")
+                : t("route.webAccess")
             }`,
             `HTTP/3 · UDP ${ports.httpsPort} → ${
               ports.owners.http3 === "direct"
-                ? "занят прямым пробросом"
-                : "веб-доступ"
+                ? t("route.directBusy")
+                : t("route.webAccess")
             }`,
           ]
-      : ["Публичные порты будут выбраны автоматически"]
+      : [t("route.publicPortsAuto")]
     : [
         `${protocol.toUpperCase()} ${
           validPort(listenPort)
             ? formatEndpoint(effectiveListenHost, Number(listenPort))
-            : "входящий порт"
-        } → прямой проброс`,
+            : t("route.incomingPort")
+        } → ${t("route.directForward")}`,
       ];
 
   function clearFieldError(field: DirectField) {
@@ -249,11 +253,8 @@ export function RouteForm({
     try {
       if (protocol === "http") {
         if (originError) throw new Error(originError);
-        if (!httpHost) throw new Error("Укажите домен.");
-        if (!pathValid)
-          throw new Error(
-            "Укажите буквальный путь от / без пробелов, управляющих символов, //, . и .., параметров и шаблонов (до 2048 байт).",
-          );
+        if (!httpHost) throw new Error(t("routeErrors.domain"));
+        if (!pathValid) throw new Error(t("routeErrors.path"));
         setBusy(true);
         onDone(
           await api.saveHttp(
@@ -272,17 +273,14 @@ export function RouteForm({
       }
       const errors: DirectErrors = {};
       if (!isDirectIP(effectiveListenHost))
-        errors.listenHost = "Укажите IP интерфейса или оставьте поле пустым.";
+        errors.listenHost = t("routeErrors.listenHost");
       if (!validPort(listenPort))
-        errors.listenPort = "Укажите входящий порт от 1 до 65535.";
-      if (!trimmedTargetHost)
-        errors.targetHost = "Укажите IP-адрес или домен сервиса.";
+        errors.listenPort = t("routeErrors.listenPort");
+      if (!trimmedTargetHost) errors.targetHost = t("routeErrors.targetHost");
       else if (!isDirectTarget(trimmedTargetHost))
-        errors.targetHost =
-          "Введите IP-адрес или домен без схемы, пути и порта.";
+        errors.targetHost = t("routeErrors.targetHostFormat");
       if (targetPort && !validPort(targetPort))
-        errors.targetPort =
-          "Укажите порт от 1 до 65535 или оставьте поле пустым.";
+        errors.targetPort = t("routeErrors.targetPortOptional");
       setFieldErrors(errors);
       if (Object.keys(errors).length) return;
       setBusy(true);
@@ -300,9 +298,7 @@ export function RouteForm({
         ),
       );
     } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Не удалось сохранить маршрут.",
-      );
+      setError(e instanceof Error ? e.message : t("errors.saveRoute"));
       setBusy(false);
     }
   }
@@ -318,12 +314,12 @@ export function RouteForm({
         />
         <Card>
           <Stack gap={5}>
-            <RouteSection title="Точка подключения">
+            <RouteSection title={t("route.connectionPoint")}>
               {!httpRoute && (
                 <Select
                   popup="overlay"
                   id="route-protocol"
-                  label="Протокол"
+                  label={t("routes.protocol")}
                   value={protocol}
                   disabled={busy}
                   options={directRule ? directProtocols : protocols}
@@ -343,7 +339,7 @@ export function RouteForm({
                 <>
                   <div
                     role="group"
-                    aria-label="Домен и путь"
+                    aria-label={`${t("routes.domain")} ${t("routes.path")}`}
                     aria-describedby="http-path-example"
                   >
                     <Stack gap={2}>
@@ -355,7 +351,7 @@ export function RouteForm({
                       >
                         <TextInput
                           id="http-host"
-                          label="Домен"
+                          label={t("routes.domain")}
                           labelPlacement="above"
                           showIcon={false}
                           value={host}
@@ -369,7 +365,7 @@ export function RouteForm({
                         />
                         <TextInput
                           id="http-path"
-                          label="Путь"
+                          label={t("routes.path")}
                           labelPlacement="above"
                           showIcon={false}
                           value={path}
@@ -388,17 +384,14 @@ export function RouteForm({
                         />
                       </Stack>
                       <div id="http-path-example">
-                        <Text tone="secondary">
-                          Например, / подходит для всех путей, а /api — для /api
-                          и /api/users.
-                        </Text>
+                        <Text tone="secondary">{t("route.pathHint")}</Text>
                       </div>
                     </Stack>
                   </div>
                   <Select
                     popup="overlay"
                     id="tls"
-                    label="Доступ по HTTPS"
+                    label={t("route.httpsAccess")}
                     value={tls}
                     onValueChange={(value) => {
                       if (
@@ -410,15 +403,15 @@ export function RouteForm({
                         setError("");
                       }
                     }}
-                    hint="Для всех путей одного домена используйте одинаковый режим."
+                    hint={t("route.tlsHint")}
                     disabled={busy}
                     options={[
-                      { value: "auto", label: "Автоматический сертификат" },
+                      { value: "auto", label: t("route.tlsAuto") },
                       {
                         value: "internal",
-                        label: "Локальный сертификат",
+                        label: t("route.tlsInternal"),
                       },
-                      { value: "off", label: "Без HTTPS (HTTP)" },
+                      { value: "off", label: t("route.tlsOff") },
                     ]}
                   />
                 </>
@@ -432,7 +425,7 @@ export function RouteForm({
                   >
                     <TextInput
                       id="listen-host"
-                      label="IP сервера"
+                      label={t("route.serverIp")}
                       labelPlacement="above"
                       showIcon={false}
                       value={listenHost}
@@ -446,7 +439,7 @@ export function RouteForm({
                     />
                     <TextInput
                       id="listen-port"
-                      label="Порт"
+                      label={t("route.port")}
                       labelPlacement="above"
                       showIcon={false}
                       type="tel"
@@ -459,31 +452,26 @@ export function RouteForm({
                       disabled={busy}
                     />
                   </Stack>
-                  <Text tone="secondary">
-                    Оставьте IP пустым для приёма на всех интерфейсах.
-                  </Text>
+                  <Text tone="secondary">{t("route.listenHostHint")}</Text>
                 </>
               )}
             </RouteSection>
-            <RouteSection title="Правила">
+            <RouteSection title={t("route.rules")}>
               <Switch
                 id="route-form-enabled"
-                label="Маршрут включён"
+                label={t("routes.enabled")}
                 checked={enabled}
                 onCheckedChange={setEnabled}
                 disabled={busy}
               />
-              <Text tone="secondary">
-                Фильтры доступа, DDoS-защита и панель входа (Secured Route)
-                недоступны в настройках маршрута.
-              </Text>
+              <Text tone="secondary">{t("route.unavailableFeatures")}</Text>
             </RouteSection>
-            <RouteSection title="Проксирование">
+            <RouteSection title={t("route.proxying")}>
               {isHttp ? (
                 <>
                   <TextInput
                     id="http-target"
-                    label="URL сервиса"
+                    label={t("routes.serviceUrl")}
                     labelPlacement="above"
                     showIcon={false}
                     value={httpTarget}
@@ -492,14 +480,14 @@ export function RouteForm({
                       setError("");
                     }}
                     placeholder="http://127.0.0.1:8080"
-                    hint="Укажите HTTP(S)-адрес сервиса. Порт можно опустить, если он стандартный."
+                    hint={t("route.serviceUrlHint")}
                     required
                     disabled={busy}
                   />
                   <Switch
                     id="http-strip-prefix"
-                    label="Удалять префикс пути"
-                    hint="Например, /api/users → /users. Параметры запроса сохраняются."
+                    label={t("route.stripPrefix")}
+                    hint={t("route.stripPrefixHint")}
                     checked={strip}
                     onCheckedChange={setStripPrefix}
                     disabled={busy || !canStripPrefix}
@@ -515,7 +503,7 @@ export function RouteForm({
                   >
                     <TextInput
                       id="target-host"
-                      label="IP или домен"
+                      label={t("route.serverIpOrDomain")}
                       labelPlacement="above"
                       showIcon={false}
                       value={targetHost}
@@ -528,7 +516,7 @@ export function RouteForm({
                     />
                     <TextInput
                       id="target-port"
-                      label="Порт"
+                      label={t("route.port")}
                       labelPlacement="above"
                       showIcon={false}
                       type="tel"
@@ -544,9 +532,7 @@ export function RouteForm({
                       disabled={busy}
                     />
                   </Stack>
-                  <Text tone="secondary">
-                    Если порт сервиса пуст, используется входящий порт.
-                  </Text>
+                  <Text tone="secondary">{t("route.targetPortHint")}</Text>
                 </>
               )}
             </RouteSection>
@@ -557,7 +543,7 @@ export function RouteForm({
             )}
             <Stack direction="row" gap={3}>
               <Button type="submit" loading={busy} disabled={busy}>
-                {route ? "Сохранить маршрут" : "Создать маршрут"}
+                {route ? t("routes.save") : t("routes.create")}
               </Button>
               <Button
                 type="button"
@@ -565,7 +551,7 @@ export function RouteForm({
                 onPress={onCancel}
                 disabled={busy}
               >
-                Отмена
+                {t("nav.cancel")}
               </Button>
             </Stack>
           </Stack>
