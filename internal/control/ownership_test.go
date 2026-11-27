@@ -64,9 +64,13 @@ func TestDirectCanonicalConflictAndRuntimeStatsInput(t *testing.T) {
 		t.Fatal(resp.Status)
 	}
 	resp = call(t, s, "POST", "/api/direct-rules", fmt.Sprintf(`{"protocol":"tcp","listenHost":"127.0.0.1","listenPort":%d,"targetHost":"127.0.0.1","targetPort":3300,"enabled":true}`, port), c)
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != 409 {
 		t.Fatal(resp.Status)
+	}
+	if !strings.Contains(string(body), fmt.Sprintf("Forwarding 127.0.0.1:%d is already enabled on TCP.", port)) {
+		t.Fatalf("unexpected conflict message: %s", body)
 	}
 	cfg, _, _ := a.db.Load()
 	if cfg.Revision != 1 || cfg.DirectRules[0].Stats != nil {

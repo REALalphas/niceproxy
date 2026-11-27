@@ -176,7 +176,7 @@ func (a *App) ownershipConflict(c model.Config) error {
 			if x != nil && y != nil && (x.Equal(y) || (x.IsUnspecified() && (x.To4() == nil || y.To4() != nil)) || (y.IsUnspecified() && (y.To4() == nil || x.To4() != nil))) {
 				listen := net.JoinHostPort(other.ListenHost, fmt.Sprint(other.ListenPort))
 				return portConflict(
-					fmt.Sprintf("Forwarding %s is already enabled on %s. Choose another incoming port or disable the existing route.", strings.ToUpper(r.Protocol), listen),
+					fmt.Sprintf("Forwarding %s is already enabled on %s. Choose another incoming port or disable the existing route.", listen, strings.ToUpper(r.Protocol)),
 					"direct rule %s conflicts with enabled direct rule %s", r.ID, other.ID,
 				)
 			}

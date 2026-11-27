@@ -139,7 +139,7 @@ test("anti-DDoS status and mutations validate nested data and normalize config",
     ["/api/anti-ddos/clear", "POST", { instance: "node-1", target: "listener", ttlSeconds: 60 }],
   ]);
   setup(t, async () => reply({ ...status, instances: [{ ...status.instances[0], targets: [{ ...status.instances[0].targets[0], score: -1 }] }] }));
-  await assert.rejects(api.antiDDoS(), /неизвестном формате/);
+  await assert.rejects(api.antiDDoS(), /unknown format/);
 });
 
 test("route conflicts show the user message and the mutation queue recovers", async (t) => {
