@@ -188,3 +188,86 @@ func tcpBackend(t *testing.T, serve func(net.Conn) error) (string, <-chan error)
 	}()
 	return listener.Addr().String(), done
 }
+
+func TestHandleHTTPForwardsRequestAndResponse(t *testing.T) {
+	const requestBody = "hello bridge"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		if string(body) != requestBody {
+			t.Errorf("upstream body = %q, want %q", body, requestBody)
+		}
+		if got := r.Header.Get("X-Niceproxy-Bridge-Route"); got != "" {
+			t.Errorf("bridge route header leaked to upstream: %q", got)
+		}
+		if got := r.Header.Get("X-Test"); got != "kept" {
+			t.Errorf("ordinary request header = %q, want kept", got)
+		}
+		if r.URL.Path != "/echo" || r.URL.RawQuery != "x=1" {
+			t.Errorf("upstream URL = %s, want /echo?x=1", r.URL.RequestURI())
+		}
+		w.Header().Set("X-Upstream", "yes")
+		_, _ = io.WriteString(w, "reply")
+	}))
+	defer upstream.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/echo?x=1", bytes.NewBufferString(requestBody))
+	req.Header.Set("X-Niceproxy-Bridge-Route", "should-be-removed")
+	req.Header.Set("X-Test", "kept")
+	w := httptest.NewRecorder()
+	if err := HandleHTTP(w, req, upstream.URL, nil, nil, clientIP); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusOK || w.Header().Get("X-Upstream") != "yes" || w.Body.String() != "reply" {
+		t.Fatalf("unexpected bridge response: status=%d headers=%v body=%q", w.Code, w.Header(), w.Body.String())
+	}
+}
+
+func TestHandleHTTPRejectsInvalidTargets(t *testing.T) {
+	for _, target := range []string{
+		"",
+		"ftp://127.0.0.1:8080",
+		"http://user:pass@127.0.0.1:8080",
+		"http://127.0.0.1:8080/path",
+		"http://127.0.0.1:8080?secret=1",
+		"http://127.0.0.1:8080#fragment",
+		"http://:8080",
+	} {
+		t.Run(target, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			w := httptest.NewRecorder()
+			if err := HandleHTTP(w, r, target, nil, nil, clientIP); err == nil {
+				t.Fatalf("accepted invalid target %q", target)
+			}
+			if w.Code != http.StatusOK || w.Body.Len() != 0 {
+				t.Fatalf("invalid target wrote HTTP response: %d %q", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleHTTPRequestBodyLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		chunked bool
+	}{
+		{name: "content-length", chunked: false},
+		{name: "chunked", chunked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(make([]byte, httpMaxBytes+1)))
+			if tc.chunked {
+				r.ContentLength = -1
+			}
+			w := httptest.NewRecorder()
+			if err := HandleHTTP(w, r, "http://127.0.0.1:1", nil, nil, clientIP); !errors.Is(err, ErrBodyTooLarge) {
+				t.Fatalf("got %v, want body limit error", err)
+			}
+			if w.Code != http.StatusOK || w.Body.Len() != 0 {
+				t.Fatalf("body limit wrote HTTP response: %d %q", w.Code, w.Body.String())
+			}
+		})
+	}
+}

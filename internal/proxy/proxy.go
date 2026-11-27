@@ -530,9 +530,22 @@ func (t *tcpRule) metrics() *counters { return t.stats }
 func (t *tcpRule) addr() net.Addr     { return t.listener.Addr() }
 func (t *tcpRule) stop()              { t.mu.Lock(); t.stopping = true; _ = t.listener.Close(); t.mu.Unlock() }
 func (t *tcpRule) wait(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		t.forceCancel()
+		t.mu.Lock()
+		for c := range t.conns {
+			_ = c.Close()
+		}
+		t.mu.Unlock()
+		<-t.done
+		return err
+	}
 	select {
 	case <-t.done:
 		t.forceCancel()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return nil
 	case <-ctx.Done():
 		t.forceCancel()
@@ -803,8 +816,16 @@ func (u *udpRule) stop() {
 	u.mu.Unlock()
 }
 func (u *udpRule) wait(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		u.stop()
+		<-u.done
+		return err
+	}
 	select {
 	case <-u.done:
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return nil
 	case <-ctx.Done():
 		u.stop()

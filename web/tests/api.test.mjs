@@ -7,7 +7,7 @@ const source = await readFile(new URL("../src/api.ts", import.meta.url), "utf8")
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 });
-const { api } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+const { api, validPolicy } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 const snapshot = { revision: 1, httpRoutes: [], directRules: [] };
 const owners = { http: "caddy", https: "direct", http3: "direct" };
 const rule = {
@@ -50,6 +50,96 @@ test("distinguishes missing statistics from real zero and rejects malformed coun
     globalThis.fetch = async () => reply({ ...snapshot, directRules: [{ ...rule, stats: badStats }] });
     await assert.rejects(api.config(), /неизвестном формате/);
   }
+});
+
+test("validates anti-DDoS policy primitives and nested optional values", () => {
+  const policy = {
+    detect: true,
+    autoFilter: true,
+    enforceLimits: false,
+    stableWindows: 2,
+    group: "edge",
+    expectUDPResponse: true,
+    cloudflareOnly: false,
+    limits: [{
+      id: "udp-rate",
+      metric: "udp_packets",
+      value: 100,
+      unit: "count",
+      windowSeconds: 10,
+      burst: 20,
+      scope: "listener",
+      action: "slow",
+      ttlSeconds: 60,
+    }],
+    rules: [{
+      id: "packet-loss",
+      signal: "udp_unanswered",
+      scope: "endpoint",
+      threshold: 4,
+      clearThreshold: 2,
+      windowSeconds: 30,
+      burst: 1,
+      minSamples: 5,
+      action: "block",
+      cooldownSeconds: 120,
+    }],
+  };
+  assert.equal(validPolicy(policy), true);
+  for (const [field, value] of [
+    ["stableWindows", -1],
+    ["limits", [{ ...policy.limits[0], unit: "packets" }]],
+    ["rules", [{ ...policy.rules[0], minSamples: 1.5 }]],
+    ["expectUDPResponse", "yes"],
+  ]) {
+    assert.equal(validPolicy({ ...policy, [field]: value }), false, field);
+  }
+  assert.equal(validPolicy({ detect: true, autoFilter: false, enforceLimits: false }), true);
+});
+
+test("anti-DDoS status and mutations validate nested data and normalize config", async (t) => {
+  const status = {
+    revision: 4,
+    appliedRevision: 4,
+    status: "active",
+    instances: [{
+      id: "node-1",
+      version: "v1",
+      targets: [{
+        id: "listener",
+        label: "Public listener",
+        kind: "listener",
+        policy: { detect: false, autoFilter: false, enforceLimits: false },
+        state: "normal",
+        score: 0,
+        reason: "none",
+        observability: "full",
+        metrics: { udp_packets: { value: null, source: "kernel" } },
+      }],
+      cloudflare: { networks: ["192.0.2.0/24"], updatedAt: "2026-11-08T12:00:00Z" },
+    }],
+  };
+  const responseConfig = { ...snapshot, httpRoutes: [{
+    id: "legacy", host: "example.test", target: "http://127.0.0.1:9000",
+    tls: "off", enabled: true, status: "healthy",
+  }] };
+  const calls = [];
+  setup(t, async (url, options) => {
+    calls.push([url, options.method, options.body === undefined ? undefined : JSON.parse(options.body)]);
+    if (url === "/api/anti-ddos" && options.method === "GET") return reply(status);
+    if (url === "/api/anti-ddos") return reply(responseConfig);
+    return reply({ ok: true });
+  });
+  assert.deepEqual(await api.antiDDoS(), status);
+  assert.equal((await api.saveAntiDDoS({ listener: { detect: false, autoFilter: false, enforceLimits: false } })).httpRoutes[0].path, "/");
+  await api.clearAntiDDoS({ instance: "node-1", target: "listener", ttlSeconds: 60 });
+  assert.deepEqual(calls.map(([url, method, body]) => [url, method, body]), [
+    ["/api/anti-ddos", "GET", undefined],
+    ["/api/anti-ddos", "PATCH", { listener: { detect: false, autoFilter: false, enforceLimits: false } }],
+    ["/api/anti-ddos/clear", "POST", { instance: "node-1", target: "listener", ttlSeconds: 60 }],
+  ]);
+  setup(t, async () => reply({ ...status, instances: [{ ...status.instances[0], targets: [{ ...status.instances[0].targets[0], score: -1 }] }] }));
+  await assert.rejects(api.antiDDoS(), /неизвестном формате/);
 });
 
 test("route conflicts show the user message and the mutation queue recovers", async (t) => {
