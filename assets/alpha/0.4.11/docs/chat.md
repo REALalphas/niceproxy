@@ -1,15 +1,15 @@
-# Компоненты чата
+# Chat components
 
-Публичные компоненты: ChatMessage, ChatButton, ChatInput, ChatComposer, ChatThread, ChatSurface.
+Public components: ChatMessage, ChatButton, ChatInput, ChatComposer, ChatThread, ChatSurface.
 
-- ChatMessage — текст, время, направление сообщения и необязательные действия. Без обработчиков группа действий не создаётся.
-- ChatButton — варианты plain, emoji, attach, record, send. Можно передать icon, label, disabled, pressed, onPress. Все варианты используют одну реализацию.
-- ChatInput — поле вместе с подложкой. onEmoji добавляет левую кнопку; children — правые кнопки. Отступы принадлежат полю, стили кнопок — ChatButton.
-- ChatComposer — готовая композиция ChatInput и ChatButton. Управляется value/onValueChange, onSend, onAttach, onRecord, onEmoji.
-- ChatThread — журнал сообщений с aria-live.
-- ChatSurface — общая область вертикального градиента для сообщений и отправки.
+- ChatMessage — text, timestamp, message direction, and optional actions. Without handlers, the action group is not created.
+- ChatButton — variants plain, emoji, attach, record, send. Accepts icon, label, disabled, pressed, onPress. All variants share one implementation.
+- ChatInput — input field together with its backdrop. onEmoji adds the left button; children are the right-side buttons. Padding belongs to the input; button styles belong to ChatButton.
+- ChatComposer — ready-made composition of ChatInput and ChatButton. Controlled via value/onValueChange, onSend, onAttach, onRecord, onEmoji.
+- ChatThread — message log with aria-live.
+- ChatSurface — shared vertical gradient area for messages and sending.
 
-В Qwik обработчики имеют суффикс $. Данные и операции с файлами/аудио контролируются приложением.
+In Qwik, handlers have the $ suffix. Data and file/audio operations are controlled by the application.
 
 ```tsx
 <ChatSurface>
@@ -22,14 +22,14 @@
 </ChatSurface>
 ```
 
-## Миграция исторических выпусков на 0.4.0
+## Migration from historical releases to 0.4.0
 
-Номер относится к истории выпусков, а не к версии текущего workspace. Версию установленной библиотеки проверяй в `@alpha/core/catalog.json`.
+The version number refers to release history, not the current workspace version. Check the installed library version in `@alpha/core/catalog.json`.
 
-ChatBubble заменён ChatMessage. ChatMessageActions — необязательные обработчики ChatMessage. ChatEmojiButton / ChatAttachButton / ChatRecordButton / ChatSendButton заменены ChatButton с соответствующим variant. ChatInputSurface и ChatInputActions стали внутренней разметкой ChatInput. Старые публичные экспорты удалены.
+ChatBubble was replaced by ChatMessage. ChatMessageActions became optional ChatMessage handlers. ChatEmojiButton / ChatAttachButton / ChatRecordButton / ChatSendButton were replaced by ChatButton with the corresponding variant. ChatInputSurface and ChatInputActions became internal markup of ChatInput. The old public exports have been removed.
 
-В исходном репозитории канонические компоненты находятся в `source/components/chat/*.mjs`; адаптеры генерируются в `packages/<framework>/src/components/*.tsx`. Не редактируй сгенерированные файлы. В установленном пакете используй типы адаптера и `@alpha/core/catalog.json`.
+In the source repository, canonical components live in `source/components/chat/*.mjs`; adapters are generated in `packages/<framework>/src/components/*.tsx`. Do not edit generated files. In an installed package, use the adapter types and `@alpha/core/catalog.json`.
 
-Группировка: передавай ChatMessage timestamp (Unix-время в миллисекундах) и author (стабильный идентификатор автора). ChatThread объединяет соседние сообщения одного автора и направления при интервале <= 30000 мс. У группы общие внутренние углы; время видно только на последнем сообщении. >30 секунд, другой автор или направление начинают новую группу. Без timestamp сообщение остаётся отдельным; строка time используется только для отображения.
+Grouping: pass ChatMessage a timestamp (Unix time in milliseconds) and author (stable author identifier). ChatThread merges adjacent messages from the same author and direction within an interval <= 30000 ms. A group shares inner corners; the time is visible only on the last message. >30 seconds, a different author, or a different direction starts a new group. Without a timestamp, a message remains standalone; the time string is used for display only.
 
-При timestamp видимая подпись времени вычисляется автоматически: now, 1m, 1h, 24h, 2d. Она обновляется без повторного открытия чата. Полная дата доступна через title/datetime; time используется только при отсутствии timestamp.
+When timestamp is provided, the visible time label is computed automatically: now, 1m, 1h, 24h, 2d. It updates without reopening the chat. The full date is available via title/datetime; time is used only when timestamp is absent.

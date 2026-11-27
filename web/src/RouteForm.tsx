@@ -17,7 +17,6 @@ import {
 } from "./api";
 import { formatEndpoint, isDirectIP, isDirectTarget } from "./direct-address";
 import { validHttpPath } from "./http-path";
-import { t, useI18n } from "./i18n";
 import "./route-form.css";
 
 type Route = HttpRoute | DirectRule;
@@ -37,15 +36,13 @@ const validPort = (value: string) =>
 function httpTargetError(value: string): string | undefined {
   // Caddy accepts DNS names such as app.123 that the browser URL parser rejects.
   const match =
-    /^(https?|tcp|udp):\/\/(\[[^\]]+\]|[^:/?#@\\\[\]\s]+)(?::(\d*))?\/?#?$/i.exec(
-      value,
-    );
+    /^(https?|tcp|udp):\/\/(\[[^\]]+\]|[^:/?#@\\\[\]\s]+)(?::(\d*))?\/?#?$/i.exec(value);
   if (!match || !isDirectTarget(match[2].replace(/^\[|\]$/g, "")))
-    return t("routeErrors.targetAddress");
+    return "Enter an HTTP(S), TCP, or UDP service address without path, query parameters, or password.";
   if ((match[1] === "tcp" || match[1] === "udp") && !match[3])
-    return t("routeErrors.targetPort");
+    return "Specify a service port for TCP/UDP.";
   if (match[3] !== undefined && !validPort(match[3]))
-    return t("errors.invalidPort");
+    return "Specify a service port from 1 to 65535.";
 }
 
 function RouteFlow({
@@ -59,32 +56,31 @@ function RouteFlow({
   rules: string;
   upstream: string;
 }) {
-  useI18n();
   const steps = [
     {
       icon: "link",
-      label: t("route.connection"),
-      detail: incoming || t("route.incomingHint"),
+      label: "Connection",
+      detail: incoming || "Enter incoming address",
       mono: !!incoming,
     },
     {
       icon: "device",
-      label: t("route.publicPorts"),
+      label: "Public ports",
       detail: ports,
       mono: false,
     },
-    { icon: "shield", label: t("route.rules"), detail: rules, mono: false },
+    { icon: "shield", label: "Rules", detail: rules, mono: false },
     {
       icon: "device",
-      label: t("routes.service"),
-      detail: upstream || t("route.serviceHint"),
+      label: "Service",
+      detail: upstream || "Enter service address",
       mono: !!upstream,
     },
   ] as const;
   return (
     <Card>
       <div className="route-flow-container">
-        <ol className="route-flow" role="list" aria-label={t("route.diagram")}>
+        <ol className="route-flow" role="list" aria-label="Route flow">
           {steps.map((step, index) => (
             <li className="route-flow-step" key={step.label}>
               <Icon name={step.icon} />
@@ -206,39 +202,39 @@ export function RouteForm({
       ? `${protocol.toUpperCase()} ${formatEndpoint(trimmedTargetHost, validPort(effectiveTargetPort) ? Number(effectiveTargetPort) : "…")}`
       : "";
   const rules = !enabled
-    ? t("routes.status.disabled")
+    ? "Route disabled"
     : isHttp
-      ? t("route.domainPathMatch")
-      : t("route.directForward");
+      ? "Match by domain and path"
+      : "Direct forwarding";
   const publicPorts = isHttp
     ? ports
       ? tls === "off"
         ? [
             `HTTP · TCP ${ports.httpPort} → ${
               ports.owners.http === "direct"
-                ? t("route.directBusy")
-                : t("route.webAccess")
+                ? "used by direct forwarding"
+                : "web access"
             }`,
           ]
         : [
             `HTTPS · TCP ${ports.httpsPort} → ${
               ports.owners.https === "direct"
-                ? t("route.directBusy")
-                : t("route.webAccess")
+                ? "used by direct forwarding"
+                : "web access"
             }`,
             `HTTP/3 · UDP ${ports.httpsPort} → ${
               ports.owners.http3 === "direct"
-                ? t("route.directBusy")
-                : t("route.webAccess")
+                ? "used by direct forwarding"
+                : "web access"
             }`,
           ]
-      : [t("route.publicPortsAuto")]
+      : ["Public ports will be selected automatically"]
     : [
         `${protocol.toUpperCase()} ${
           validPort(listenPort)
             ? formatEndpoint(effectiveListenHost, Number(listenPort))
-            : t("route.incomingPort")
-        } → ${t("route.directForward")}`,
+            : "incoming port"
+        } → direct forwarding`,
       ];
 
   function clearFieldError(field: DirectField) {
@@ -253,8 +249,11 @@ export function RouteForm({
     try {
       if (protocol === "http") {
         if (originError) throw new Error(originError);
-        if (!httpHost) throw new Error(t("routeErrors.domain"));
-        if (!pathValid) throw new Error(t("routeErrors.path"));
+        if (!httpHost) throw new Error("Enter a domain.");
+        if (!pathValid)
+          throw new Error(
+            "Enter a literal path starting with / without spaces, control characters, //, . or .., parameters, or wildcards (up to 2048 bytes).",
+          );
         setBusy(true);
         onDone(
           await api.saveHttp(
@@ -273,14 +272,17 @@ export function RouteForm({
       }
       const errors: DirectErrors = {};
       if (!isDirectIP(effectiveListenHost))
-        errors.listenHost = t("routeErrors.listenHost");
+        errors.listenHost = "Enter an interface IP or leave empty.";
       if (!validPort(listenPort))
-        errors.listenPort = t("routeErrors.listenPort");
-      if (!trimmedTargetHost) errors.targetHost = t("routeErrors.targetHost");
+        errors.listenPort = "Enter an incoming port from 1 to 65535.";
+      if (!trimmedTargetHost)
+        errors.targetHost = "Enter a service IP address or domain.";
       else if (!isDirectTarget(trimmedTargetHost))
-        errors.targetHost = t("routeErrors.targetHostFormat");
+        errors.targetHost =
+          "Enter an IP address or domain without scheme, path, or port.";
       if (targetPort && !validPort(targetPort))
-        errors.targetPort = t("routeErrors.targetPortOptional");
+        errors.targetPort =
+          "Enter a port from 1 to 65535 or leave empty.";
       setFieldErrors(errors);
       if (Object.keys(errors).length) return;
       setBusy(true);
@@ -298,7 +300,9 @@ export function RouteForm({
         ),
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : t("errors.saveRoute"));
+      setError(
+        e instanceof Error ? e.message : "Failed to save route.",
+      );
       setBusy(false);
     }
   }
@@ -314,12 +318,12 @@ export function RouteForm({
         />
         <Card>
           <Stack gap={5}>
-            <RouteSection title={t("route.connectionPoint")}>
+            <RouteSection title="Connection point">
               {!httpRoute && (
                 <Select
                   popup="overlay"
                   id="route-protocol"
-                  label={t("routes.protocol")}
+                  label="Protocol"
                   value={protocol}
                   disabled={busy}
                   options={directRule ? directProtocols : protocols}
@@ -339,7 +343,7 @@ export function RouteForm({
                 <>
                   <div
                     role="group"
-                    aria-label={`${t("routes.domain")} ${t("routes.path")}`}
+                    aria-label="Domain and path"
                     aria-describedby="http-path-example"
                   >
                     <Stack gap={2}>
@@ -351,7 +355,7 @@ export function RouteForm({
                       >
                         <TextInput
                           id="http-host"
-                          label={t("routes.domain")}
+                          label="Domain"
                           labelPlacement="above"
                           showIcon={false}
                           value={host}
@@ -365,7 +369,7 @@ export function RouteForm({
                         />
                         <TextInput
                           id="http-path"
-                          label={t("routes.path")}
+                          label="Path"
                           labelPlacement="above"
                           showIcon={false}
                           value={path}
@@ -384,14 +388,17 @@ export function RouteForm({
                         />
                       </Stack>
                       <div id="http-path-example">
-                        <Text tone="secondary">{t("route.pathHint")}</Text>
+                        <Text tone="secondary">
+                          For example, / matches all paths, while /api matches
+                          /api and /api/users.
+                        </Text>
                       </div>
                     </Stack>
                   </div>
                   <Select
                     popup="overlay"
                     id="tls"
-                    label={t("route.httpsAccess")}
+                    label="HTTPS access"
                     value={tls}
                     onValueChange={(value) => {
                       if (
@@ -403,15 +410,15 @@ export function RouteForm({
                         setError("");
                       }
                     }}
-                    hint={t("route.tlsHint")}
+                    hint="Use the same mode for all paths of the same domain."
                     disabled={busy}
                     options={[
-                      { value: "auto", label: t("route.tlsAuto") },
+                      { value: "auto", label: "Automatic certificate" },
                       {
                         value: "internal",
-                        label: t("route.tlsInternal"),
+                        label: "Local certificate",
                       },
-                      { value: "off", label: t("route.tlsOff") },
+                      { value: "off", label: "No HTTPS (HTTP)" },
                     ]}
                   />
                 </>
@@ -425,7 +432,7 @@ export function RouteForm({
                   >
                     <TextInput
                       id="listen-host"
-                      label={t("route.serverIp")}
+                      label="Server IP"
                       labelPlacement="above"
                       showIcon={false}
                       value={listenHost}
@@ -439,7 +446,7 @@ export function RouteForm({
                     />
                     <TextInput
                       id="listen-port"
-                      label={t("route.port")}
+                      label="Port"
                       labelPlacement="above"
                       showIcon={false}
                       type="tel"
@@ -452,26 +459,31 @@ export function RouteForm({
                       disabled={busy}
                     />
                   </Stack>
-                  <Text tone="secondary">{t("route.listenHostHint")}</Text>
+                  <Text tone="secondary">
+                    Leave IP empty to listen on all interfaces.
+                  </Text>
                 </>
               )}
             </RouteSection>
-            <RouteSection title={t("route.rules")}>
+            <RouteSection title="Rules">
               <Switch
                 id="route-form-enabled"
-                label={t("routes.enabled")}
+                label="Route enabled"
                 checked={enabled}
                 onCheckedChange={setEnabled}
                 disabled={busy}
               />
-              <Text tone="secondary">{t("route.unavailableFeatures")}</Text>
+              <Text tone="secondary">
+                Access filters, DDoS protection, and login panel (Secured Route)
+                are not available in route settings.
+              </Text>
             </RouteSection>
-            <RouteSection title={t("route.proxying")}>
+            <RouteSection title="Proxying">
               {isHttp ? (
                 <>
                   <TextInput
                     id="http-target"
-                    label={t("routes.serviceUrl")}
+                    label="Service URL"
                     labelPlacement="above"
                     showIcon={false}
                     value={httpTarget}
@@ -480,14 +492,14 @@ export function RouteForm({
                       setError("");
                     }}
                     placeholder="http://127.0.0.1:8080"
-                    hint={t("route.serviceUrlHint")}
+                    hint="Enter the service HTTP(S) address. You can omit the port if it is standard."
                     required
                     disabled={busy}
                   />
                   <Switch
                     id="http-strip-prefix"
-                    label={t("route.stripPrefix")}
-                    hint={t("route.stripPrefixHint")}
+                    label="Strip path prefix"
+                    hint="For example, /api/users → /users. Query parameters are preserved."
                     checked={strip}
                     onCheckedChange={setStripPrefix}
                     disabled={busy || !canStripPrefix}
@@ -503,7 +515,7 @@ export function RouteForm({
                   >
                     <TextInput
                       id="target-host"
-                      label={t("route.serverIpOrDomain")}
+                      label="IP or domain"
                       labelPlacement="above"
                       showIcon={false}
                       value={targetHost}
@@ -516,7 +528,7 @@ export function RouteForm({
                     />
                     <TextInput
                       id="target-port"
-                      label={t("route.port")}
+                      label="Port"
                       labelPlacement="above"
                       showIcon={false}
                       type="tel"
@@ -532,7 +544,9 @@ export function RouteForm({
                       disabled={busy}
                     />
                   </Stack>
-                  <Text tone="secondary">{t("route.targetPortHint")}</Text>
+                  <Text tone="secondary">
+                    If the service port is empty, the incoming port is used.
+                  </Text>
                 </>
               )}
             </RouteSection>
@@ -543,7 +557,7 @@ export function RouteForm({
             )}
             <Stack direction="row" gap={3}>
               <Button type="submit" loading={busy} disabled={busy}>
-                {route ? t("routes.save") : t("routes.create")}
+                {route ? "Save route" : "Create route"}
               </Button>
               <Button
                 type="button"
@@ -551,7 +565,7 @@ export function RouteForm({
                 onPress={onCancel}
                 disabled={busy}
               >
-                {t("nav.cancel")}
+                Cancel
               </Button>
             </Stack>
           </Stack>

@@ -5,28 +5,28 @@
   "packages": {
     "@alpha/core": {
       "file": "alpha-core-0.4.12-niceproxy.4.tgz",
-      "integrity": "sha512-KCi6AR5ZtHGWRq2ihYDUmkCUzXS75NmGCK1fOVhvLkzlDLyKK4G/1kdTP3WnSTIIbzjUr1CNadGYAujvGwscIQ==",
-      "size": 85252
+      "integrity": "sha512-mr0+mGv/15UxxhpOK7KL+YBkcGFTgD3KkDp74v9ZzyPqfjyb2Gzp4CxXLuddvaXlV1uMYcpTxsLxSgKKYrs+mQ==",
+      "size": 87423
     },
     "@alpha/react": {
       "file": "alpha-react-0.4.12-niceproxy.4.tgz",
-      "integrity": "sha512-CHmRGW34k+glksS87P90xVHu93RPEfbaV353R3CRBFI90vWNNIMz/nvmpCmy2SpyoqqcPMMqmOXvL/usi5RM0A==",
-      "size": 20535
+      "integrity": "sha512-dT0fet0TyUcWWbHCdj9IxH2vH5LExDhh0ecz4NcICz4dFCvehtv/AsUG6Mbg7U3RuKwoLAdCM5TCk/Pf9HbE2A==",
+      "size": 21181
     },
     "@alpha/qwik": {
       "file": "alpha-qwik-0.4.12-niceproxy.4.tgz",
-      "integrity": "sha512-DKmKnHpFF91zTPzLW1Vv02iMB1aWRXUgWQCYn6fG+PDgKG4KkBi8MBLgMGJkQdcld7dhXTdfot45gTudNhH0Ow==",
-      "size": 20384
+      "integrity": "sha512-DGWou4wp9EVVeSHqY2fQNJcgonr0sg95X7b5pAbWo7qp70Gg8R7+vn666+PWkimKxI7xc9wtHJYWiY/JymbYtA==",
+      "size": 21339
     },
     "@alpha/project-server": {
       "file": "alpha-project-server-0.4.12-niceproxy.4.tgz",
-      "integrity": "sha512-8Ea8H0NkfZ0qGzScu0JpazvEo2zLmn9njiEbexOQdk26fumYmzfNNj3NPlf+8YbrxIViof37H3a2PMWfRw9IOQ==",
-      "size": 13193
+      "integrity": "sha512-KOnu979kkeNT+I2K0SwSKFziEk8H8NVYaUiae3gIrjlAkWKsot9zaL4rxmd9IGzUEpTeiLqk9SmCcbQ7uG7Vgw==",
+      "size": 17227
     }
   },
   "source": {
     "file": "alpha-ui-source-0.4.12-niceproxy.4.tar.gz",
-    "integrity": "sha512-gHHMwAilOM6Xmk5TMtrSGUU3mY9z5TQbIZjhfJT+/9n8wByWqnmtn7uSczn4B3VqzBOUnqsQY4U4Ff3Xiur3kg==",
-    "size": 357934
+    "integrity": "sha512-/4fK9VFznilAGQ4LW89I0Ynq05g3UjiV5O5GH9M+ECF0JD5vSPqmbd0PQSQqN1+aSvcbO4sDuEZ6TUgnRZ+AMA==",
+    "size": 333058
   }
 }

@@ -28,9 +28,8 @@ import {
   type RecordInput,
   type Zone,
 } from "./cloudflare-api";
-import { t, useI18n } from "./i18n";
 const message = (e: unknown) =>
-  e instanceof Error ? e.message : t("errors.generic");
+  e instanceof Error ? e.message : "Failed to complete action.";
 function Alert({ children }: { children: string }) {
   return (
     <div role="alert">
@@ -52,7 +51,6 @@ function RecordForm({
   onSaved: (record: DNSRecord) => void;
   onCancel: () => void;
 }) {
-  useI18n();
   const [name, setName] = useState(record?.name ?? "");
   const [type, setType] = useState<RecordInput["type"]>(
     record && supportedRecord(record.type) ? record.type : "A",
@@ -101,24 +99,24 @@ function RecordForm({
     <form onSubmit={submit}>
       <Stack gap={4}>
         <Text as="h3" size="xl" font="heading" weight="bold">
-          {record ? t("cloudflare.editRecord") : t("cloudflare.newRecord")}
+          {record ? "Edit DNS record" : "New DNS record"}
         </Text>
         <Stack gap={4}>
           <TextInput
             showIcon={false}
             labelPlacement="inside"
             id="cf-record-name"
-            label={t("cloudflare.recordName")}
+            label="DNS record name"
             value={name}
             onValueChange={setName}
             required
             disabled={busy}
-            hint={t("cloudflare.zoneHint", { name: zone.name })}
+            hint={`Full name in zone ${zone.name}`}
           />
           <Select
             popup="overlay"
             id="cf-record-type"
-            label={t("cloudflare.type")}
+            label="Type"
             value={type}
             onValueChange={(v) => {
               if (supportedRecord(v)) setType(v);
@@ -135,30 +133,30 @@ function RecordForm({
             id="cf-record-content"
             label={
               type === "CNAME"
-                ? t("cloudflare.targetDomain")
+                ? "Target domain name"
                 : type === "AAAA"
-                  ? "IPv6"
-                  : "IPv4"
+                  ? "IPv6 address"
+                  : "IPv4 address"
             }
             value={content}
             onValueChange={setContent}
             required
             disabled={busy}
-            hint={t("cloudflare.valueHint")}
+            hint="Enter the value manually without scheme, path, or port."
           />
         </Stack>
         {suggestions.length > 0 && (
           <Select
             popup="overlay"
             id="cf-route-suggestion"
-            label={t("cloudflare.routeSuggestion")}
+            label="Fill name from HTTP route"
             value=""
             onValueChange={(v) => {
               if (v) setName(v);
             }}
             disabled={busy}
             options={[
-              { value: "", label: t("cloudflare.selectNameOptional") },
+              { value: "", label: "Select a name (optional)" },
               ...suggestions.map((value) => ({ value, label: value })),
             ]}
           />
@@ -169,19 +167,18 @@ function RecordForm({
           checked={proxied}
           onCheckedChange={setProxied}
           disabled={busy}
-          hint={t("cloudflare.proxyHint")}
+          hint="Off: DNS only. Standard Cloudflare proxy does not serve arbitrary TCP/UDP ports."
         />
         <Text tone="secondary">
-          {t("cloudflare.dnsNoPaths")} TTL:{" "}
+          DNS does not contain paths or ports. TTL:{" "}
           {record && record.ttl !== 1
-            ? t("cloudflare.ttlSaved", { ttl: record.ttl })
-            : t("cloudflare.auto")}
+            ? `${record.ttl} seconds (preserved)`
+            : "automatic"}
           .
         </Text>
         <Text font="mono">
-          {t("cloudflare.preview")}: {type}{" "}
-          {name.trim() || t("cloudflare.name")} →{" "}
-          {content.trim() || t("cloudflare.value")} ·{" "}
+          Preview: {type} {name.trim() || "name"} →{" "}
+          {content.trim() || "value"} ·{" "}
           {proxied ? "Cloudflare proxy" : "DNS only"}
         </Text>
         {error && <Alert>{error}</Alert>}
@@ -191,7 +188,7 @@ function RecordForm({
             loading={busy}
             disabled={busy || !name.trim() || !content.trim()}
           >
-            {record ? t("cloudflare.saveRecord") : t("cloudflare.createRecord")}
+            {record ? "Save DNS record" : "Create DNS record"}
           </Button>
           <Button
             type="button"
@@ -199,7 +196,7 @@ function RecordForm({
             onPress={onCancel}
             disabled={busy}
           >
-            {t("nav.cancel")}
+            Cancel
           </Button>
         </Stack>
       </Stack>
@@ -214,7 +211,6 @@ export function Cloudflare({
   routes?: HttpRoute[];
   callback?: string;
 }) {
-  useI18n();
   const [status, setStatus] = useState<CloudflareStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -332,7 +328,7 @@ export function Cloudflare({
         await cloudflareApi.settings(clientId.trim(), parseScopes(scopes)),
       );
       setSetup(false);
-      setNotice("Настройки сохранены. Войдите в аккаунт Cloudflare заново.");
+      setNotice("Settings saved. Sign in to your Cloudflare account again.");
     });
   }
   const loopback = status?.loopbackRedirectUrl;
@@ -354,9 +350,7 @@ export function Cloudflare({
       applyStatus(await cloudflareApi.complete(callbackURL.trim()));
       setAuthorization("");
       setCallbackURL("");
-      setNotice(
-        "Cloudflare подключён. Niceproxy проверяет DNS и HTTPS панели.",
-      );
+      setNotice("Cloudflare connected. Niceproxy is checking DNS and panel HTTPS.");
     });
   }
 
@@ -369,12 +363,11 @@ export function Cloudflare({
       <form onSubmit={saveSettings}>
         <Stack gap={4}>
           <Text as="h2" size="xl" font="heading">
-            {t("sections.cloudflare")}
+            Connect Cloudflare
           </Text>
           <Text tone="secondary">
-            Скопируйте адрес ниже в Redirect (Callback) URLs при регистрации
-            OAuth-приложения Cloudflare. Затем вставьте сюда Client ID и Scope
-            ID.
+            Copy the URL below into Redirect (Callback) URLs when registering a
+            Cloudflare OAuth app. Then paste the Client ID and Scope ID here.
           </Text>
           <Text>
             <a
@@ -382,7 +375,7 @@ export function Cloudflare({
               target="_blank"
               rel="noreferrer"
             >
-              Создать OAuth-приложение
+              Create OAuth app
             </a>{" "}
             ·{" "}
             <a
@@ -390,7 +383,7 @@ export function Cloudflare({
               target="_blank"
               rel="noreferrer"
             >
-              Инструкция Cloudflare
+              Cloudflare guide
             </a>
           </Text>
           <TextInput
@@ -405,7 +398,7 @@ export function Cloudflare({
             <TextInput
               showIcon={false}
               id="cf-public-callback"
-              label="Публичный Redirect URI для входа по домену"
+              label="Public Redirect URI for domain sign-in"
               labelPlacement="inside"
               value={status.redirectUrl}
               readOnly
@@ -428,14 +421,14 @@ export function Cloudflare({
             labelPlacement="inside"
             value={scopes}
             onValueChange={setScopes}
-            hint="Zone Read, DNS Read, DNS Write. Для автосертификата и Full (strict) добавьте Zone Settings Read, SSL and Certificates Edit, Config Settings Read/Write. Для обновления доступа добавьте offline_access. ID через пробел или запятую."
+            hint="Zone Read, DNS Read, DNS Write. For auto certificate and Full (strict), add Zone Settings Read, SSL and Certificates Edit, Config Settings Read/Write. To refresh access, add offline_access. Separate IDs with spaces or commas."
             required
             disabled={busy}
           />
           <Text tone="secondary">
             Private · response type: code · grant types: authorization_code,
-            refresh_token · authentication: none · PKCE: S256. Сохранение
-            отключит текущее подключение.
+            refresh_token · authentication: none · PKCE: S256. Saving will
+            disconnect the current connection.
           </Text>
           {error && <Alert>{error}</Alert>}
           <Stack direction="row" gap={3}>
@@ -444,14 +437,14 @@ export function Cloudflare({
               loading={busy}
               disabled={!clientId.trim() || !parseScopes(scopes).length}
             >
-              {t("cloudflare.saveConnection")}
+              Save connection
             </Button>
             <Button
               variant="blank"
               disabled={busy}
               onPress={() => change(() => setSetup(false))}
             >
-              {t("nav.cancel")}
+              Cancel
             </Button>
           </Stack>
         </Stack>
@@ -481,19 +474,23 @@ export function Cloudflare({
       <Stack gap={2}>
         <Text tone="secondary">
           {loading && !status
-            ? t("cloudflare.connecting")
+            ? "Connecting…"
             : !status
-              ? "Состояние недоступно"
+              ? "Status unavailable"
               : status.connected
-                ? t("cloudflare.connected")
+                ? "Account connected"
                 : status.configured
-                  ? t("cloudflare.signInHint")
-                  : t("cloudflare.connectHint")}
+                  ? "Sign in to your account to manage DNS."
+                  : "Connect Cloudflare to manage DNS records."}
         </Text>
       </Stack>
-      {callback === "error" && <Alert>{t("cloudflare.connectError")}</Alert>}
+      {callback === "error" && (
+        <Alert>
+          Failed to connect Cloudflare. Sign in again or check settings.
+        </Alert>
+      )}
       {callback === "connected" && status?.connected && (
-        <Text>{t("cloudflare.connectedSuccess")}</Text>
+        <Text>Cloudflare connected successfully.</Text>
       )}
       {status?.error && <Alert>{status.error}</Alert>}
       {error && <Alert>{error}</Alert>}
@@ -507,13 +504,17 @@ export function Cloudflare({
           <Stack gap={3}>
             <Text>
               <a href={authorization} target="_blank" rel="noreferrer">
-                {t("cloudflare.openAndAuthorize")}
+                Open Cloudflare and authorize access
               </a>
             </Text>
-            <Text tone="secondary">{t("cloudflare.callbackHint")}</Text>
+            <Text tone="secondary">
+              After approving, copy the full localhost URL from the new tab and
+              paste it here. This works even if the browser shows that the
+              localhost page is unavailable.
+            </Text>
             <TextInput
               id="cf-loopback-response"
-              label={t("cloudflare.callbackUrl")}
+              label="URL from localhost address bar"
               showIcon={false}
               labelPlacement="inside"
               value={callbackURL}
@@ -528,7 +529,7 @@ export function Cloudflare({
                 loading={busy}
                 disabled={!callbackURL.trim()}
               >
-                {t("cloudflare.finishConnection")}
+                Complete connection
               </Button>
               <Button
                 variant="blank"
@@ -539,7 +540,7 @@ export function Cloudflare({
                   setError("");
                 }}
               >
-                {t("nav.cancel")}
+                Cancel
               </Button>
             </Stack>
           </Stack>
@@ -549,7 +550,7 @@ export function Cloudflare({
         <Stack direction="row" gap={3}>
           {status && !status.configured && (
             <Button onPress={() => change(() => setSetup(true))}>
-              {t("cloudflare.connect")}
+              Connect Cloudflare
             </Button>
           )}
           {status?.configured && (
@@ -557,7 +558,7 @@ export function Cloudflare({
               loading={busy}
               onPress={() => void action(() => startOAuth(useLoopback))}
             >
-              {t("cloudflare.signIn")}
+              Sign in with Cloudflare
             </Button>
           )}
           {status?.configured && useLoopback && direct && (
@@ -566,7 +567,7 @@ export function Cloudflare({
               disabled={busy}
               onPress={() => void action(() => startOAuth(false))}
             >
-              {t("cloudflare.signInCallback")}
+              Sign in via panel callback
             </Button>
           )}
           {status?.configured && (
@@ -575,28 +576,26 @@ export function Cloudflare({
               disabled={busy}
               onPress={() => change(() => setSetup(true))}
             >
-              {t("cloudflare.oauthSettings")}
+              OAuth settings
             </Button>
           )}
           <Button variant="blank" loading={loading} onPress={() => void load()}>
-            {t("nav.refresh")}
+            Refresh
           </Button>
         </Stack>
       )}
       {status?.connected && (
         <Stack gap={4}>
-          {zonesLoading && !zones.length && (
-            <Text>{t("cloudflare.loadingZones")}</Text>
-          )}
+          {zonesLoading && !zones.length && <Text>Loading zones…</Text>}
           {zonesError && <Alert>{zonesError}</Alert>}
           {!zonesLoading && !zonesError && !zones.length && (
-            <Text>{t("cloudflare.noZones")}</Text>
+            <Text>No zones available. Check connection permissions.</Text>
           )}
           {!!zones.length && (
             <Select
               popup="overlay"
               id="cf-zone"
-              label={t("cloudflare.zone")}
+              label="Domain zone"
               value={zoneId}
               onValueChange={(value) => {
                 ++recordsVersion.current;
@@ -604,7 +603,7 @@ export function Cloudflare({
                 setZoneId(value);
               }}
               options={[
-                { value: "", label: t("cloudflare.selectZone") },
+                { value: "", label: "Select a zone" },
                 ...zones.map((z) => ({
                   value: z.id,
                   label: `${z.name} · ${z.account.name} · ${z.status}`,
@@ -618,7 +617,7 @@ export function Cloudflare({
                 onPress={() => change(() => setEditor("new"))}
                 disabled={recordsLoading}
               >
-                {t("cloudflare.addRecord")}
+                Add DNS record
               </Button>
             )}
             <Button
@@ -626,15 +625,15 @@ export function Cloudflare({
               loading={zonesLoading || recordsLoading}
               onPress={() => setRefresh((v) => v + 1)}
             >
-              {t("nav.refresh")}
+              Refresh
             </Button>
           </Stack>
           {recordsLoading && !records.length && (
-            <Text>{t("cloudflare.loadingRecords")}</Text>
+            <Text>Loading DNS records…</Text>
           )}
           {recordsError && <Alert>{recordsError}</Alert>}
           {zone && !recordsLoading && !recordsError && !records.length && (
-            <Text tone="secondary">{t("cloudflare.noRecords")}</Text>
+            <Text tone="secondary">No DNS records yet.</Text>
           )}
           <Stack gap={4}>
             {records.map((record) => (
@@ -647,7 +646,7 @@ export function Cloudflare({
                   <Text font="mono">{record.content}</Text>
                   <Text tone="secondary">
                     {record.proxied ? "Cloudflare proxy" : "DNS only"} · TTL{" "}
-                    {record.ttl === 1 ? t("cloudflare.auto") : record.ttl}
+                    {record.ttl === 1 ? "Auto" : record.ttl}
                   </Text>
                   {supportedRecord(record.type) ? (
                     <Button
@@ -657,23 +656,28 @@ export function Cloudflare({
                         change(() => setEditor(record));
                       }}
                     >
-                      {t("cloudflare.editRecord")}
+                      Edit DNS record
                     </Button>
                   ) : (
-                    <Text tone="muted">{t("cloudflare.readOnlyRecord")}</Text>
+                    <Text tone="muted">
+                      This record type is read-only.
+                    </Text>
                   )}
                 </Stack>
               </Card>
             ))}
           </Stack>
-          <Text tone="muted">{t("cloudflare.dnsHint")}</Text>
+          <Text tone="muted">
+            DNS stores addresses without paths or ports. Cloudflare proxy does
+            not serve arbitrary TCP/UDP ports.
+          </Text>
         </Stack>
       )}
       {status?.configured && (
         <Stack gap={1}>
-          <DrawerDivider label={t("cloudflare.connection")} />
+          <DrawerDivider label="Connection" />
           <DrawerButton
-            label={t("cloudflare.oauthSettings")}
+            label="OAuth settings"
             icon="settings"
             onPress={() => change(() => setSetup(true))}
           />
@@ -692,13 +696,13 @@ export function Cloudflare({
                   });
                   setNotice(
                     result.warning
-                      ? `Аккаунт отключён локально. ${result.warning}`
-                      : "Аккаунт отключён.",
+                      ? `Account disconnected locally. ${result.warning}`
+                      : "Account disconnected.",
                   );
                 })
               }
             >
-              {t("cloudflare.disconnect")}
+              Disconnect Cloudflare
             </Button>
           )}
           {status.error && (
@@ -708,12 +712,12 @@ export function Cloudflare({
                 target="_blank"
                 rel="noreferrer"
               >
-                Проверить и отозвать доступ
+                Review and revoke access
               </a>
             </Text>
           )}
           {status.connected && status.expiresAt && (
-            <Text tone="muted">Доступ действует до {status.expiresAt}</Text>
+            <Text tone="muted">Access valid until {status.expiresAt}</Text>
           )}
         </Stack>
       )}

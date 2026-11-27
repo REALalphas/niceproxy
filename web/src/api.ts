@@ -456,7 +456,7 @@ export class Unauthorized extends Error {}
 let sessionVersion = 0;
 function requireSession(version: number) {
   if (version !== sessionVersion)
-    throw new Unauthorized("Сессия изменилась. Ответ устарел.");
+    throw new Unauthorized("Session changed. Response is stale.");
 }
 async function performRequest<T>(
   path: string,
@@ -492,7 +492,7 @@ async function performRequest<T>(
     }
     ++sessionVersion;
     window.dispatchEvent(new Event("niceproxy:unauthorized"));
-    throw new Unauthorized("Сессия завершена. Войдите снова.");
+    throw new Unauthorized("Session expired. Sign in again.");
   }
   if (!response.ok)
     throw new Error(
@@ -500,10 +500,10 @@ async function performRequest<T>(
         ? body.message
         : record(body) && typeof body.error === "string"
           ? body.error
-          : `Ошибка сервера (HTTP ${response.status})`,
+          : `Server error (HTTP ${response.status})`,
     );
   if (!valid(body))
-    throw new Error("Сервер вернул данные в неизвестном формате.");
+    throw new Error("The server returned data in an unknown format.");
   return body;
 }
 // All mutations share one queue, including actions from different cards.

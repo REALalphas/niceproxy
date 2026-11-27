@@ -1,38 +1,38 @@
-# Владение портами
+# Port Ownership
 
-niceproxy не определяет протокол по содержимому соединения. На каждом адресе и порту отдельного транспорта работает один слушатель. HTTP(S), пути, WebSocket, сертификаты и ACME остаются у bundled Caddy; прямые TCP/UDP обслуживает Go. Домена в форме сырого проброса нет.
+niceproxy does not detect protocols by inspecting connection payloads. A single listener runs on each address and port for a given transport. HTTP(S), paths, WebSocket, certificates, and ACME stay with the bundled Caddy; direct TCP/UDP is served by Go. There is no domain field in the raw forwarding form.
 
-Конфигурация `portOwners` содержит три независимых назначения: `http`, `https`, `http3`, каждое `caddy` или `direct`. Для старой конфигурации отсутствующие назначения принимают `caddy`. Новая SQL-миграция для этого не нужна. Настройка относится к реальным номерам из `NICEPROXY_HTTP_PORT` и `NICEPROXY_HTTPS_PORT`, а не обязательно к 80/443.
+The `portOwners` configuration contains three independent assignments: `http`, `https`, and `http3`, each set to `caddy` or `direct`. For legacy configurations, missing assignments default to `caddy`. No new SQL migration is required for this. The setting applies to the actual port numbers from `NICEPROXY_HTTP_PORT` and `NICEPROXY_HTTPS_PORT`, not necessarily 80/443.
 
-В обычном интерфейсе отдельного экрана назначения портов нет. При создании или изменении маршрута niceproxy сам выбирает нужный обработчик и обновляет владельцев публичных портов в одной операции. Если порт уже нужен другому включённому маршруту, ошибка показывается на этом маршруте с адресом и портом. Старый API `GET/PATCH /api/port-owners` сохранён для совместимости и аварийного восстановления.
+In the standard UI, there is no separate port-assignment screen. When creating or editing a route, niceproxy automatically selects the appropriate handler and updates public port owners in a single operation. If a port is already required by another enabled route, the error is displayed on that route with the address and port. The legacy `GET/PATCH /api/port-owners` API is kept for compatibility and emergency recovery.
 
-## Конфликты
+## Conflicts
 
-- Порт панели управления всегда зарезервирован.
-- Прямое включённое правило на порту, назначенном Caddy для этого транспорта, возвращает 409.
-- Пересекающиеся включённые прямые слушатели одного транспорта, включая wildcard и эквивалентные IP, возвращают 409.
-- HTTP без TLS требует назначения HTTP Caddy. TLS-маршрут требует хотя бы HTTPS или HTTP/3 у Caddy.
-- При передаче 443/UDP прямому правилу Caddy отключает HTTP/3, сохраняя HTTPS через TCP.
-- При передаче HTTPS/TCP прямому правилу Caddy может обслуживать только HTTP/3 через UDP. HTTP-редирект на TCP HTTPS в таком режиме не создаётся. Это не означает, что обычный браузер сможет автоматически попасть на HTTP/3 без TCP: клиенту нужен способ узнать QUIC endpoint.
-- Для `auto` ACME хотя бы один TCP challenge-порт должен оставаться у Caddy. Генератор отключает HTTP-01/TLS-ALPN-01 для переданных прямым правилам портов. Внешняя доступность challenge зависит также от DNS и роутера.
+- The control panel port is always reserved.
+- An enabled direct rule on a port assigned to Caddy for that transport returns 409.
+- Overlapping enabled direct listeners on the same transport, including wildcards and equivalent IPs, return 409.
+- HTTP without TLS requires HTTP to be assigned to Caddy. A TLS route requires at least HTTPS or HTTP/3 on Caddy.
+- When transferring 443/UDP to a direct rule, Caddy disables HTTP/3 while keeping HTTPS over TCP.
+- When transferring HTTPS/TCP to a direct rule, Caddy can only serve HTTP/3 over UDP. No HTTP redirect to TCP HTTPS is created in this mode. This does not mean a standard browser will automatically reach HTTP/3 without TCP: the client needs a way to discover the QUIC endpoint.
+- For `auto` ACME, at least one TCP challenge port must remain with Caddy. The generator disables HTTP-01/TLS-ALPN-01 for ports transferred to direct rules. External challenge reachability also depends on DNS and the router.
 
-Логический конфликт не записывает новую ревизию. Проверка bind ОС остаётся окончательной: другой процесс может занять свободный ранее порт. В таком случае желаемая конфигурация сохраняется с ошибкой применения, `appliedRevision=-1`, а панель остаётся доступной для исправления.
+A logical conflict does not write a new revision. The OS bind check remains authoritative: another process may occupy a previously free port. In that case, the desired configuration is saved with an apply error, `appliedRevision=-1`, and the panel remains available for recovery.
 
-## Переключение
+## Switching
 
-Конфигурация Caddy проверяется до освобождения работающих прямых слушателей. При отключении/удалении прямого правила слушатель освобождается сразу; уже принятые TCP-соединения продолжают работать с прежним назначением. Их завершение не задерживает применение нового владельца. Подготовленные изменения применяются сериализованно. Это проверяется реальным TCP-потоком во время передачи порта Caddy.
+Caddy configuration is validated before releasing active direct listeners. When disabling or deleting a direct rule, the listener is released immediately; already-accepted TCP connections continue using the previous target. Their completion does not delay applying the new owner. Prepared changes are applied serialized. This is verified with a real TCP stream during port handover to Caddy.
 
-В ОС listener всё равно освобождается и привязывается следующим владельцем; замер времени управляющего запроса не является гарантией отсутствия отказов для всех новых соединений в этот момент. Утверждения о превосходстве nginx или 100k/s требуют отдельной нагрузки.
+At the OS level, the listener is still released and rebound by the next owner; measuring the control request duration does not guarantee zero failures for all new connections at that moment. Claims of outperforming nginx or reaching 100k/s require dedicated load testing.
 
-На один ID правила действует общий лимит соединений через старые и новые поколения. Не более 1024 поколений слушателей могут оставаться в drain; достижение границы сохраняет прежний слушатель и показывает ошибку. Остановка всего приложения завершает оставшиеся потоки по сроку shutdown.
+A shared connection limit across old and new generations applies per rule ID. At most 1024 listener generations may remain in drain; reaching the limit keeps the previous listener and displays an error. Stopping the entire application drains remaining streams up to the shutdown deadline.
 
-## Статистика
+## Statistics
 
-`GET /api/config` добавляет прямым правилам runtime-поле `stats`: `accepted`, `active`, `closed`, `errors`, `rejects`, `startedAt`. В БД оно не записывается. Значения атомарные, но отдельные поля снимка могут относиться к соседним моментам времени.
+`GET /api/config` adds a runtime `stats` field to direct rules: `accepted`, `active`, `closed`, `errors`, `rejects`, `startedAt`. It is not persisted in the DB. Values are atomic, though individual fields in a snapshot may come from adjacent moments in time.
 
-TCP `accepted` считает принятые сокеты, включая затем отклонённые лимитом; `active` включает разрешённые подключения с ожидающим dial; `closed` считает завершённые принятые подключения. UDP считает попытки ассоциаций, включая очередь создания и ожидающие dial; `rejects` фиксирует отказ допуска, без хранения истории отвергнутых клиентов. Idle expiry и административная остановка не считаются сетевой ошибкой. Ошибки считаются на уровне жизненного цикла, без оборачивания TCPConn и без счётчика на каждом передаваемом блоке.
+TCP `accepted` counts accepted sockets, including those subsequently rejected by the limit; `active` includes admitted connections with a pending dial; `closed` counts completed accepted connections. UDP counts association attempts, including the creation queue and pending dials; `rejects` records admission denials without storing history of rejected clients. Idle expiry and administrative stop are not counted as network errors. Errors are counted at the lifecycle level without wrapping TCPConn and without a counter on each transferred chunk.
 
-Счётчики относятся к ID правила и сбрасываются после перезапуска процесса. Таблица неактивных ID ограничена; удалённые правила могут освободить статистику после завершения их потоков. Закрытый порт и трафик, не дошедший через роутер, приложение не видит.
+Counters are scoped to a rule ID and reset on process restart. The inactive ID table is bounded; deleted rules may free their statistics once their streams finish. Closed ports and traffic blocked by the router never reach the application.
 
 ## API
 
@@ -42,9 +42,9 @@ GET /api/port-owners
 
 PATCH /api/port-owners
 { "https": "direct", "http3": "direct" }
-→ обновлённая конфигурация с ревизией
+→ updated configuration with revision
 ```
 
-Все изменения требуют существующей административной сессии и проходят общую очередь мутаций.
+All changes require an existing administrative session and pass through the shared mutation queue.
 
-Проверки: `go test -race ./...`, `go vet ./...`, frontend typecheck/build/tests, прежний `scripts/smoke.py`, новый `scripts/ownership-smoke.py` и `strace -f -e splice` на TCP bulk-тесте. NAS-установка предыдущей версии этой разработкой не изменяется.
+Checks: `go test -race ./...`, `go vet ./...`, frontend typecheck/build/tests, legacy `scripts/smoke.py`, new `scripts/ownership-smoke.py`, and `strace -f -e splice` on the TCP bulk test. The previous-version NAS installation is not modified by this work.

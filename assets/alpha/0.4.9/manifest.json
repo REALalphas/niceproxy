@@ -5,13 +5,13 @@
   "packages": {
     "@alpha/core": {
       "file": "alpha-core-0.4.9.tgz",
-      "integrity": "sha512-lPh+agpdZRMpeZuW/mDXoGfEz1ajjQHLbpKGPEYgorpMfq1cTcxyP96J8U36Z/uvVPWE5VPAhBp6+IrIWIfoYg==",
-      "size": 790728
+      "integrity": "sha512-lCnMUVLZuZRIbcgyPG56tSB8iJOvN3VeuvHuHFwIEf4PoemZtXID62A3HQBa5JZyc71LSzLjot8Ld7miS3nmJA==",
+      "size": 803505
     },
     "@alpha/react": {
       "file": "alpha-react-0.4.9.tgz",
-      "integrity": "sha512-5uVtsv0nzaMkPwYuZu4l60D4MyPhq9ZPgQY51zGAb7q1vSXka+mrzUAZ/Edsl8Zh6Okxmx6gduXPk8bJuUiAVg==",
-      "size": 11442
+      "integrity": "sha512-yWhDAVRI0D6QaLjLKjf9lBtOft0qpG9PFKrW1kLua97imi4GLVSgYig4YdKyfteWQwAwRyWeC8qgHJM5rmQp9Q==",
+      "size": 12209
     },
     "@alpha/qwik": {
       "file": "alpha-qwik-0.4.9.tgz",
@@ -20,8 +20,8 @@
     },
     "@alpha/project-server": {
       "file": "alpha-project-server-0.4.9.tgz",
-      "integrity": "sha512-1cjeQLqm6DKO2a/oxG9aGXlkKkOMvH0yE6sUnpObM9iap8eJYVIkeuBmklAETkGPgwLRp2h+9WDS9ybbjKEMkg==",
-      "size": 5851
+      "integrity": "sha512-/hQ3ovYZEnDoMRT8KFFHuY6IKZSvyWUhbC8OG966Vu8jA+3YOMTmzf7dechO8hShBbdNG0ZHtTPzicdM11RTQg==",
+      "size": 10340
     }
   }
 }

@@ -1,13 +1,13 @@
-# Qwik: контейнеры и q:base
+# Qwik: containers and q:base
 
-`q:base` задаёт базовый URL для разрешения ленивых QRL модулей контейнера. Его определяет приложение, а не отдельные Button, Card или другие компоненты библиотеки. React и Qwik используют одинаковые токены и CSS, но Qwik сохраняет собственные `component$`, `QRL` и обработчики `$`.
+`q:base` sets the base URL for resolving lazy QRL modules of a container. It is defined by the application, not by individual Button, Card, or other library components. React and Qwik share the same tokens and CSS, while Qwik retains its own `component$`, `QRL`, and `$` handlers.
 
-В демо исходного репозитория корневой контейнер получает базу из `new URL('./', import.meta.url)`: после сборки это каталог модулей `assets/`. Если хост уже задал `q:base`, демо сохраняет его. Поэтому контейнер можно разместить в подпапке, не привязывая библиотеку к домену или корню сайта.
+In the source repository demo, the root container obtains its base from `new URL('./', import.meta.url)`: after building, this points to the `assets/` module directory. If the host has already set `q:base`, the demo preserves it. Thus the container can be hosted in a subdirectory without tying the library to a domain or site root.
 
-Для сборки по адресу `/alpha/` задайте `VITE_APP_BASE=/alpha/` в `apps/qwik/.env.local`, затем соберите приложение. Для локального десктопного HTML используется стандартная относительная база `./`. `q:base` не заменяет настройки роутера, пути CSS или ресурсов Vite. В Electron и Tauri проверяйте ещё выбранный протокол загрузки и CSP: нативные сборки в этом репозитории не проверены.
+To build for `/alpha/`, set `VITE_APP_BASE=/alpha/` in `apps/qwik/.env.local`, then build the application. For local desktop HTML, the standard relative base `./` is used. `q:base` does not replace router settings, CSS paths, or Vite asset paths. In Electron and Tauri, also verify the chosen loading protocol and CSP: native builds have not been verified in this repository.
 
-В dev-конфигурации демо `@alpha/qwik` разрешается в генерируемый TSX адаптера: Vite/Qwik должен обработать ленивые задачи и обработчики исходных компонентов. Production использует собранный пакет.
+In the dev configuration of the demo, `@alpha/qwik` resolves to the generated adapter TSX: Vite/Qwik must process lazy tasks and handlers of the source components. Production uses the built package.
 
-При SSR передавайте `base` в `renderToString` или `renderToStream`, указывая реальный каталог выпущенных Qwik модулей. Независимые приложения могут иметь собственные контейнеры и базы; обычным вложенным компонентам новые контейнеры не нужны.
+During SSR, pass `base` to `renderToString` or `renderToStream`, pointing to the actual directory of built Qwik modules. Independent applications may have their own containers and bases; ordinary nested components do not need new containers.
 
-Документация: [Qwik containers](https://qwik.dev/docs/advanced/containers/), [QRL](https://qwik.dev/docs/advanced/qrl/).
+Documentation: [Qwik containers](https://qwik.dev/docs/advanced/containers/), [QRL](https://qwik.dev/docs/advanced/qrl/).

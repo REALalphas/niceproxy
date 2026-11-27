@@ -1,32 +1,32 @@
-# Как собирать интерфейсы из Alpha's UI
+# How to build interfaces with Alpha's UI
 
-Подключение и работа с отсутствующими компонентами описаны в [правилах для приложения](consumer-agent-rules.md), также доступных через `@alpha/core/AGENTS.md`. [Требования к bootstrap с таймаутом 20 секунд](consumer-agent-rules.md#bootstrap-при-запуске) относятся к приложению-потребителю: готовой реализации в Alpha's UI нет, библиотека и установщик её не создают. При установке выпуска правила копируются в `ALPHA_UI_AGENT_RULES.md` подключённого проекта.
+Setup and handling missing components are described in [application agent rules](consumer-agent-rules.md), also available via `@alpha/core/AGENTS.md`. The [20-second timeout bootstrap requirements](consumer-agent-rules.md#startup-bootstrap) apply to the consumer application: Alpha's UI does not include a ready-made implementation, and neither the library nor the installer creates one. During release installation, the rules are copied into `ALPHA_UI_AGENT_RULES.md` in the target project.
 
-Это инженерный workflow; он не изменяет права на модификацию и распространение, предоставленные `LICENSE`, и не вводит дополнительных лицензионных условий.
+This is an engineering workflow; it does not alter the rights to modify and distribute granted by `LICENSE` and does not introduce additional licensing terms.
 
-## Подключение
+## Setup
 
-Подключи один раз в точке входа:
+Import once in the entry point:
 
 ```tsx
 import '@alpha/core/fonts.css';
 import '@alpha/core/styles.css';
 ```
 
-Обычные компоненты помещай в область `.alpha-ui`. `AppShell` создаёт `.as-shell` самостоятельно. Фон страницы и компоновку вне компонентов задаёт приложение через токены Alpha's UI.
+Place regular components inside a `.alpha-ui` scope. `AppShell` creates `.as-shell` on its own. Page background and layout outside components are set by the application via Alpha's UI tokens.
 
-В клиентской точке входа или браузерном lifecycle установи общее поведение один раз:
+In the client entry point or browser lifecycle, install the shared behavior once:
 
 ```tsx
 import { installControlMotion } from '@alpha/core';
 
 const disposeControls = installControlMotion();
-// При уничтожении приложения или области вызови disposeControls().
+// Call disposeControls() when destroying the app or scope.
 ```
 
-Не вызывай этот код при SSR. В приложении с повторным монтированием или HMR связывай установку и очистку с его lifecycle.
+Do not call this code during SSR. In an app with remounting or HMR, tie setup and cleanup to its lifecycle.
 
-## Управляемые компоненты
+## Controlled components
 
 React:
 
@@ -38,8 +38,8 @@ export function Settings() {
   const [name, setName] = useState('');
   const [enabled, setEnabled] = useState(false);
   return <div className="alpha-ui">
-    <TextInput id="name" label="Название" value={name} onValueChange={setName} />
-    <Switch id="notifications" label="Уведомления" checked={enabled} onCheckedChange={setEnabled} />
+    <TextInput id="name" label="Name" value={name} onValueChange={setName} />
+    <Switch id="notifications" label="Notifications" checked={enabled} onCheckedChange={setEnabled} />
   </div>;
 }
 ```
@@ -54,69 +54,69 @@ export const Settings = component$(() => {
   const name = useSignal('');
   const enabled = useSignal(false);
   return <div className="alpha-ui">
-    <TextInput id="name" label="Название" value={name.value}
+    <TextInput id="name" label="Name" value={name.value}
       onValueChange$={value => { name.value = value; }} />
-    <Switch id="notifications" label="Уведомления" checked={enabled.value}
+    <Switch id="notifications" label="Notifications" checked={enabled.value}
       onCheckedChange$={value => { enabled.value = value; }} />
   </div>;
 });
 ```
 
-В Qwik извлечённые обработчики оформляй как QRL через `$`. Не передавай несерилизуемые платформенные объекты через границы ленивых компонентов. Не переопределяй контейнерный `q:base`; production-размещение описано в [руководстве по контейнерам](qwik-containers.md).
+In Qwik, declare extracted handlers as QRLs using `$`. Do not pass non-serializable platform objects across lazy component boundaries. Do not override the container `q:base`; production hosting is described in the [containers guide](qwik-containers.md).
 
-## Выбор и композиция
+## Selection and composition
 
-- Для готовой адаптивной оболочки используй `AppShell`; для собственной — доступные `HeadBar`, `Sidebar`, `BottomNav` и компоненты компоновки. Готовый каркас не обязателен для каждого экрана.
-- Для текста и действий используй `Text`, `Button`, `IconButton`; для ввода и выбора — компоненты установленного каталога. Иконке без видимого текста нужно доступное название.
-- `Badge` — счётчик уведомлений внутри навигации. Передавай значение через `notifications` у `NavButton` или элементов `BottomNav`; не используй Badge как самостоятельный блок или подпись. Его расположение рядом с иконкой задаёт навигационный компонент.
-- Для интервалов и поверхностей используй `Stack`, `Card` и `--as-*` токены. CSS приложения задаёт компоновку внешних контейнеров. Не меняй оформление и состояния компонентов через `className`, `style`, глобальные селекторы, `.as-*`, псевдоэлементы или переопределение токенов: это модификация компонента, даже без изменения исходников Alpha's UI. Отсутствующий вариант описывай в `ui-unspec/<component_name>.md` для универсального расширения библиотеки.
-- Публичные компоненты чата проверяй по установленному API и [контракту чата](chat.md). В текущих исходниках это `ChatMessage`, `ChatButton`, `ChatInput`, `ChatComposer`, `ChatThread`, `ChatSurface`.
-- Проверь состояния нужного сценария: ошибка не заменяет фокус, readOnly не равен disabled, выбранная навигация не равна удержанию кнопки.
+- Use `AppShell` for a ready-made responsive shell; for a custom one, use the available `HeadBar`, `Sidebar`, `BottomNav`, and layout components. The prebuilt shell is not required for every screen.
+- Use `Text`, `Button`, `IconButton` for text and actions; use components from the installed catalog for input and selection. An icon without visible text requires an accessible label.
+- `Badge` is a notification counter inside navigation. Pass the value via `notifications` on `NavButton` or `BottomNav` items; do not use `Badge` as a standalone block or caption. Its placement next to the icon is handled by the navigation component.
+- Use `Stack`, `Card`, and `--as-*` tokens for spacing and surfaces. Application CSS defines outer container layout. Do not alter component styling or states via `className`, `style`, global selectors, `.as-*`, pseudo-elements, or token overrides: that counts as modifying the component, even without editing Alpha's UI sources. Describe a missing variant in `ui-unspec/<component_name>.md` as a universal library extension.
+- Check public chat components against the installed API and the [chat contract](chat.md). In current sources these are `ChatMessage`, `ChatButton`, `ChatInput`, `ChatComposer`, `ChatThread`, `ChatSurface`.
+- Verify the states required for the scenario: error does not replace focus, readOnly does not equal disabled, and selected navigation does not equal button press.
 
-При отсутствующей возможности сразу сообщи пользователю и создай `ui-unspec/<component_name>.md` с универсальным поведением, предлагаемым API, состояниями и критериями проверки. Не создавай замену в приложении. После реализации в Alpha's UI обнови пакет и проверь сценарий.
+When a capability is missing, notify the user immediately and create `ui-unspec/<component_name>.md` with universal behavior, proposed API, states, and verification criteria. Do not build a workaround in the application. After implementing it in Alpha's UI, update the package and verify the scenario.
 
-## Проверка и обновление
+## Verification and updates
 
-В подключённом приложении используй его команды разработки и проверки. Проверь изменённый интерфейс в браузере, клавиатуру и узкую ширину. Если применяются Qwik, SSR или desktop API, проверь соответствующий production-сценарий. Совпадение версии пакетов и успешная сборка не заменяют проверку действий.
+In the target application, use its development and verification commands. Test the modified interface in the browser, with keyboard navigation, and at narrow widths. When Qwik, SSR, or desktop APIs are used, verify the corresponding production scenario. Matching package versions and a passing build do not replace testing interactions.
 
-Для установки и обновления выпусков смотри [инструкцию выпуска и установки](distribution.md). Источник обновления — `latest.json` настроенного сервера, а не закреплённый URL старого архива. Bootstrap приложения должен завершить попытку обновления за 20 секунд и при ошибке или таймауте запускать последнюю рабочую локальную сборку. Без неё нужна ручная установка. Обычный установщик не реализует bootstrap автоматически.
+For release installation and updates, see the [release and installation guide](distribution.md). The update source is `latest.json` on the configured server, not a pinned old archive URL. The application bootstrap must complete the update attempt within 20 seconds and fall back to the last working local build on error or timeout. Without one, manual installation is required. The standard installer does not implement bootstrap automatically.
 
-## Ширина оболочки и подробности списка
+## Shell width and list details
 
-`AppShell width="container"` заполняет родительский контейнер; значение по умолчанию `content` сохраняет предел `--as-size-content-max`.
-`DrawerButton secondaryPlacement="below"` размещает дополнительные пояснения навигации под названием; значение `inline` по умолчанию подходит для коротких счётчиков. Контракты одинаковы для React/Qwik. История операций со статусом и временем требует отдельного элемента записи с самостоятельным действием просмотра; такого публичного компонента пока нет; вариант ActivityItem отклонён пользователем. Не считай DrawerButton готовым компонентом истории.
+`AppShell width="container"` fills the parent container; the default `content` keeps the `--as-size-content-max` limit.
+`DrawerButton secondaryPlacement="below"` places secondary navigation descriptions under the label; the default `inline` suits short counters. Contracts are identical for React/Qwik. An operation history with status and timestamp requires a separate entry item with an independent view action; no such public component exists yet, and the `ActivityItem` variant was rejected by the user. Do not treat `DrawerButton` as a ready-made history item component.
 
-## Пикеры в шапке
+## Pickers in the header
 
-Во вкладке «Пример» используется настоящий HeadBar через AppShell. `serviceOptions`, `serviceValue`, `onServiceChange` / `onServiceChange$` включают управляемый пикер сервиса; логотип, название и стрелка сохраняются. Без `serviceOptions` сохраняется прежнее действие `onServicePress` / `onServicePress$`.
+The "Example" tab uses a real HeadBar through AppShell. `serviceOptions`, `serviceValue`, and `onServiceChange` / `onServiceChange$` enable a controlled service picker; logo, title, and chevron are preserved. Without `serviceOptions`, the existing `onServicePress` / `onServicePress$` action is kept.
 
-Необязательный `context` содержит `label`, `value`, `options`, `placeholder?`, `disabled?`; выбор передаётся через `onContextChange` / `onContextChange$`. Это дополнительный пикер без постоянной рамки, а не замена сервису. Объект не содержит доменной логики серверов. У самостоятельного Picker такие же управляемые `value`, `options`, `onValueChange` / `onValueChange$`; доступны `variant="plain" | "service"`, `disabled`, `placeholder` и доступное имя `label`.
+Optional `context` contains `label`, `value`, `options`, `placeholder?`, `disabled?`; selection is reported via `onContextChange` / `onContextChange$`. This is an auxiliary borderless picker, not a replacement for the service picker. The object contains no server domain logic. A standalone Picker has the same controlled `value`, `options`, `onValueChange` / `onValueChange$`; `variant="plain" | "service"`, `disabled`, `placeholder`, and accessible `label` are available.
 
-В AppShell на широком экране сервис находится над сайдбаром, а дополнительный пикер контекста — справа от сайдбара, над основной областью. Шапка повторяет ширину колонок оболочки; длина названия сервиса не смещает контекст.
+In AppShell on a wide screen, the service sits above the sidebar, and the auxiliary context picker sits to the right of the sidebar, above the main area. The header mirrors the column widths of the shell; the length of the service name does not shift the context.
 
-Picker — компактная композиция существующего Select со штатными обработчиками выбора. Select поддерживает variant="field" (обычное поле с подписью), "plain" (без постоянной рамки, по ширине выбранного текста) и "service" (с логотипом и названием сервиса). У компактных вариантов подпись остаётся доступной для скринридера. Hover, focus, нажатие и отпускание используют общие правила .as-field-control. Select/Picker поддерживают popup="native" | "overlay"; overlay начинает с выбранного текста в положении поля и утолщённого контура нажатия. Сразу анимирует высоту к положению вниз (если помещается целиком) либо вверх, одновременно утончая inset-контур. Центрирование на выбранном — только начальный кадр. Ширина раскрывается до самого длинного пункта в пределах родительского контейнера; компактный пикер сворачивается до ширины выбранного текста со штатными отступами. Выбранный пункт остаётся непрозрачным; остальные плавно появляются от него к дальним пунктам и исчезают обратно при сворачивании. Opacity всего оверлея не используется. Hover строк меняет только цвет текста через transition. Оверлей подключается через общий installControlMotion(), сохраняет native select и его input/change. Клик вне списка и Escape закрывают его, клавиатура и disabled поддерживаются.
+Picker is a compact composition of the existing Select with standard selection handlers. Select supports `variant="field"` (regular field with label), `"plain"` (no permanent border, sized to selected text), and `"service"` (with service logo and title). In compact variants, the label remains accessible to screen readers. Hover, focus, press, and release follow the shared `.as-field-control` rules. Select/Picker support `popup="native" | "overlay"`; overlay starts with the selected text at the field's position and a thickened press outline. It immediately animates height downward (if it fits completely) or upward, while thinning the inset outline. Centering on the selected item is the initial frame only. Width expands up to the longest item within the parent container; a compact picker collapses back to the width of the selected text with standard padding. The selected item stays opaque; the remaining items fade in smoothly outward from it and fade back out on collapse. Opacity on the entire overlay is not used. Row hover changes text color only via transition. The overlay is wired through the shared `installControlMotion()`, preserving the native select and its `input`/`change` events. Clicking outside the list and Escape close it; keyboard navigation and disabled options are supported.
 
-## Полноэкранное приложение и страница
+## Full-screen app and page
 
-`AppShell viewport="full"` включает полноэкранную высоту и canvas документа без
-margin body. По умолчанию `content` сохраняет прежнее поведение встроенной оболочки.
-Это режим владельца документа; используйте одну такую оболочку на документ.
-`serviceMode="static"` показывает название и логотип без кнопки/стрелки выбора.
-`showAccount={false}` исключает профиль; `accountLabel` передаёт доступное название.
-Те же свойства шапки доступны у HeadBar.
+`AppShell viewport="full"` enables full-screen height and a document canvas without
+body margins. By default, `content` preserves the previous embedded-shell behavior.
+This is the document-owner mode; use one such shell per document.
+`serviceMode="static"` displays the title and logo without a picker button/chevron.
+`showAccount={false}` excludes the profile; `accountLabel` passes an accessible name.
+The same header props are available on HeadBar.
 
-`Page` задаёт внешние интервалы содержимого без поверхности и рамки. `width="form"`
-ограничивает ширину токеном formMax; `content` — pageMax/contentMax; `full` заполняет
-родителя. По умолчанию align=start, inset=comfortable (адаптивный), gap=6.
-Доступны align=center, inset=compact/none и gap=1..10. Сам Page не является main:
-он помещается внутрь AppShell, где main уже существует. Для standalone-входа
-можно использовать Page внутри отдельного main. Контракт одинаков для React/Qwik.
+`Page` sets outer content spacing without a surface or border. `width="form"`
+constrains width via the `formMax` token; `content` uses `pageMax`/`contentMax`; `full` fills
+its parent. By default `align=start`, `inset=comfortable` (responsive), `gap=6`.
+`align=center`, `inset=compact/none`, and `gap=1..10` are available. `Page` itself is not `main`:
+it is placed inside AppShell, where `main` already exists. For a standalone entry point,
+`Page` can be used inside a separate `main`. The contract is identical for React/Qwik.
 
-Для standalone-входа `Page viewport="full"` включает ту же полноэкранную высоту
-и canvas документа без margin body. Внутри AppShell оставляйте viewport=content
-по умолчанию, чтобы не складывать высоту страницы с высотой шапки/навигации.
+For a standalone entry point, `Page viewport="full"` enables the same full-screen height
+and document canvas without body margins. Inside AppShell, keep `viewport=content`
+by default so page height is not stacked on top of header/navigation height.
 
-`Stack direction="row" columns="equal" | "wide-start" | "wide-end"` задаёт
-две колонки без переноса: 1:1, 2:1 или 1:2. Дочерние поля сохраняют собственное
-оформление. Подходит для пары связанных значений; на 320px остаются рядом.
-Без columns поведение Stack не меняется. API одинаков для React/Qwik.
+`Stack direction="row" columns="equal" | "wide-start" | "wide-end"` sets
+two columns without wrapping: 1:1, 2:1, or 1:2. Child fields keep their own
+styling. Suitable for a pair of related values; at 320px they remain side by side.
+Without `columns`, `Stack` behavior is unchanged. The API is identical for React/Qwik.

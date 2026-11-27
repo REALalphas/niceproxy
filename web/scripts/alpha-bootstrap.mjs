@@ -193,7 +193,7 @@ export async function recordLocal() {
     const digest = await contentDigest(join(root, "dist"));
     await fs.writeFile(join(root,"dist/.app-build.json"),JSON.stringify({schema:1,digest,version}));
     await stageBuild(join(root, "dist"), { schema: 1, version, digest }, "bundled");
-    log(`зафиксирована локальная сборка ${version}`);
+    log(`local build recorded ${version}`);
   } finally { await release(); }
 }
 async function activate(directory, version, digest, signal) {
@@ -264,7 +264,7 @@ export async function prepare({
   try {
     if (!releaseRoot) {
       log(
-        "NICEPROXY_ALPHA_RELEASE_URL не задан: локальная bundled версия " +
+        "NICEPROXY_ALPHA_RELEASE_URL is not set: local bundled version " +
           (previous?.version ?? "0.4.11"),
       );
     } else {
@@ -283,7 +283,7 @@ export async function prepare({
       if (!versionParts || versionParts[4]?.split(".").some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith("0")))
         throw Error("invalid release version");
       if (v === previous?.version) {
-        log(`версия ${v}: актуально`);
+        log(`version ${v}: up to date`);
       } else {
         const release = new URL(v + "/", base),
           man = JSON.parse(
@@ -362,11 +362,11 @@ export async function prepare({
         await activate(directory, built.version, built.digest, ctl.signal);
         await fs.rm(migration, { force: true });
         selected = { directory, version: built.version, digest: built.digest, path: join(builds, directory, "dist"), manifest: built };
-        log(`версия ${v}: обновлено`);
+        log(`version ${v}: updated`);
       }
     }
   } catch (e) {
-    log(`запуск локальной после ошибки/таймаута: ${e.message}`);
+    log(`starting local build after error/timeout: ${e.message}`);
   } finally {
     clearTimeout(timer);
     ctl.abort();
@@ -374,11 +374,11 @@ export async function prepare({
   }
   if (!selected) {
     throw Error(
-      "Нет готовой локальной сборки. Требуется ручная установка: node /путь/к/выпуску/install.mjs --project . --framework react; затем npm run build",
+      "No ready local build is available. Manual installation is required: node /path/to/release/install.mjs --project . --framework react; then npm run build",
     );
   }
   const path = selected.path || join(builds, selected.directory, "dist");
-  log(`выбрана версия ${selected.version}: ${path}`);
+  log(`selected version ${selected.version}: ${path}`);
   return path;
   } finally { await releaseLock(); }
 }

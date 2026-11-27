@@ -1102,7 +1102,7 @@ func (a *App) direct(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.reserved[item.ListenPort] {
 		mutationFail(w, portConflict(
-			fmt.Sprintf("Порт %d используется панелью управления. Выберите другой входящий порт.", item.ListenPort),
+			fmt.Sprintf("Port %d is used by the management panel. Choose another incoming port.", item.ListenPort),
 			"port is reserved for the management panel",
 		))
 		return

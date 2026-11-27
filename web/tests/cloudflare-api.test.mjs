@@ -80,7 +80,7 @@ test("connect modes and malformed server data fail loudly", async t => {
     return reply({ zones: [{ id: 1 }] });
   });
   assert.equal((await cloudflareApi.connect(true)).url, "https://dash.cloudflare.com/connect");
-  await assert.rejects(cloudflareApi.zones(), /неизвестном формате/);
+  await assert.rejects(cloudflareApi.zones(), /unknown format/);
   assert.equal(calls[0].url, "/api/cloudflare/connect?mode=localhost");
   assert.equal(calls[0].options.method, "POST");
 });
@@ -123,6 +123,6 @@ test("Cloudflare rejects invalid status fields, certificates, records and mutati
     [cloudflareApi.disconnect, { ok: true, warning: [] }],
   ]) {
     payload = body;
-    await assert.rejects(invoke(), /неизвестном формате/);
+    await assert.rejects(invoke(), /unknown format/);
   }
 });

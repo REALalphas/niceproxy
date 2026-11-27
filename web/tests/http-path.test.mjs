@@ -16,7 +16,7 @@ const { validHttpPath } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );
 test("literal route path accepts root/default and rejects server-invalid prefixes", () => {
-  for (const path of ["", "/", "/api", "/api/", "/API/v1", "/данные", "/a\uFEFFb"])
+  for (const path of ["", "/", "/api", "/api/", "/API/v1", "/data", "/a\uFEFFb"])
     assert.equal(validHttpPath(path), true, path);
   for (const path of [
     "api",
@@ -34,7 +34,7 @@ test("literal route path accepts root/default and rejects server-invalid prefixe
     "/a\u0000b",
     "/a\u0085b",
     "/a b",
-    "/" + "я".repeat(1024),
+    "/" + "é".repeat(1024),
   ])
     assert.equal(validHttpPath(path), false, path);
   assert.equal(validHttpPath("/" + "a".repeat(2047)), true);
