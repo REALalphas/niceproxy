@@ -204,15 +204,22 @@ func BuildConfig(options Options, routes []model.HTTPRoute) ([]byte, error) {
 			panelCertificate = object{"certificate": certFile, "key": keyFile, "tags": []string{panelCertTag}}
 		}
 		if panelCertificate == nil {
-			issuer := object{"module": "acme", "challenges": object{
+			publicIssuer := object{"module": "acme", "challenges": object{
 				"http":     object{"disabled": owners.HTTP != "caddy"},
 				"tls-alpn": object{"disabled": owners.HTTPS != "caddy"},
 			}}
+			issuers := []object{publicIssuer}
 			if o.PanelDomainProxied {
 				hasInternal = true
-				issuer = object{"module": "internal"}
+				issuers = []object{{"module": "internal"}}
+			} else if !o.PanelDNSObserved {
+				// The record mode is unknown until Cloudflare discovery completes.
+				// Keep the public issuer first and use a local certificate while DNS
+				// or challenge forwarding is being corrected, so TLS still works.
+				hasInternal = true
+				issuers = append(issuers, object{"module": "internal"})
 			}
-			policies = append(policies, object{"subjects": []string{panelDomain}, "issuers": []object{issuer}})
+			policies = append(policies, object{"subjects": []string{panelDomain}, "issuers": issuers})
 		}
 		if owners.HTTP == "caddy" && owners.HTTPS == "caddy" {
 			// An HTTPS request forwarded over plain HTTP would otherwise loop

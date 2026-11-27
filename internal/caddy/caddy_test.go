@@ -151,6 +151,36 @@ func TestBuildConfigReservesPanelDomain(t *testing.T) {
 	}
 }
 
+func TestBuildConfigPanelDNSUnknownKeepsBootstrapCertificate(t *testing.T) {
+	o := options(t)
+	o.PanelDomain = "panel.example.com"
+	b, err := BuildConfig(o, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	if !strings.Contains(text, `"module":"acme"`) || !strings.Contains(text, `"module":"internal"`) {
+		t.Fatalf("unverified panel policy must retain ACME and local fallback issuers: %s", text)
+	}
+	if !strings.Contains(text, `"pki"`) {
+		t.Fatalf("unverified panel fallback must configure a private CA: %s", text)
+	}
+}
+
+func TestBuildConfigObservedDNSOnlyUsesPublicACME(t *testing.T) {
+	o := options(t)
+	o.PanelDomain = "panel.example.com"
+	o.PanelDNSObserved = true
+	b, err := BuildConfig(o, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	if !strings.Contains(text, `"module":"acme"`) || strings.Contains(text, `"module":"internal"`) || strings.Contains(text, `"pki"`) {
+		t.Fatalf("observed DNS-only panel must use public ACME without a local fallback: %s", text)
+	}
+}
+
 func TestPanelRedirectDoesNotExposeInternalHTTPSPort(t *testing.T) {
 	o := options(t)
 	o.PanelDomain = "panel.example.com"
@@ -168,7 +198,7 @@ func TestPanelRedirectDoesNotExposeInternalHTTPSPort(t *testing.T) {
 	}
 }
 
-func TestPanelBootstrapOnRealOrigin(t *testing.T) {
+func TestPanelBootstrapOnUnverifiedDNSOrigin(t *testing.T) {
 	binary := os.Getenv("NICEPROXY_CADDY_TEST_BINARY")
 	if binary == "" {
 		t.Skip("set NICEPROXY_CADDY_TEST_BINARY for integration")
@@ -178,7 +208,9 @@ func TestPanelBootstrapOnRealOrigin(t *testing.T) {
 	o.HTTPPort, o.HTTPSPort = freePort(t), freePort(t)
 	o.PanelListen = net.JoinHostPort("127.0.0.1", strconv.Itoa(freePort(t)))
 	o.PanelDomain = "localhost"
-	o.PanelDomainProxied = true
+	// DNS mode is intentionally unverified here. Public ACME may be unable to
+	// validate this host, but the local fallback must keep the TLS listener up.
+	o.PanelDomainProxied = false
 	m := New(o)
 	defer m.Close(context.Background())
 	if err := m.Start(context.Background(), nil); err != nil {
