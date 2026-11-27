@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Button, Card, Stack, Text } from "@alpha/react";
+import { t, useI18n } from "./i18n";
 
 const popupKey = "niceproxy:cloudflare-popup";
 const startPage = "/?cloudflare=authorizing#cloudflare";
@@ -11,8 +12,12 @@ export type OAuthPopup = {
   close(): void;
 };
 
-export function openOAuthWindow(onReturn: (result: CloudflareCallback) => void, onTimeout: () => void): OAuthPopup | null {
-  if (typeof BroadcastChannel !== "function" || !globalThis.crypto?.randomUUID) return null;
+export function openOAuthWindow(
+  onReturn: (result: CloudflareCallback) => void,
+  onTimeout: () => void,
+): OAuthPopup | null {
+  if (typeof BroadcastChannel !== "function" || !globalThis.crypto?.randomUUID)
+    return null;
   const popup = window.open("", "_blank", "popup,width=520,height=720");
   if (!popup) return null;
 
@@ -33,7 +38,8 @@ export function openOAuthWindow(onReturn: (result: CloudflareCallback) => void, 
       popup.close();
     };
     channel.onmessage = (event) => {
-      if (event.data === "connected" || event.data === "error") onReturn(event.data);
+      if (event.data === "connected" || event.data === "error")
+        onReturn(event.data);
     };
     return {
       navigate(url: string) {
@@ -49,9 +55,12 @@ export function openOAuthWindow(onReturn: (result: CloudflareCallback) => void, 
   }
 }
 
-export function CloudflareOAuthWindow({ stage }: {
+export function CloudflareOAuthWindow({
+  stage,
+}: {
   stage: CloudflareCallback | "authorizing";
 }) {
+  useI18n();
   useEffect(() => {
     if (stage === "authorizing") return;
     try {
@@ -71,17 +80,27 @@ export function CloudflareOAuthWindow({ stage }: {
     <main className="alpha-ui auth-page">
       <Card>
         <Stack gap={4}>
-          <Text as="h1" size="xl" font="heading">Sign in with Cloudflare</Text>
+          <Text as="h1" size="xl" font="heading">
+            {t("oauth.signIn")}
+          </Text>
           <div role="status">
             <Text>
-              {stage === "authorizing" ? "Opening Cloudflare…"
-                : stage === "connected" ? "Access approved."
-                : "Cloudflare connection failed. Sign in again from the panel."}
+              {stage === "authorizing"
+                ? t("oauth.opening")
+                : stage === "connected"
+                  ? t("oauth.approved")
+                  : t("oauth.failed")}
             </Text>
           </div>
-          {stage === "authorizing"
-            ? <Button variant="simple" onPress={() => window.close()}>Close window</Button>
-            : <Button onPress={() => window.location.replace(panelPage)}>Open panel</Button>}
+          {stage === "authorizing" ? (
+            <Button variant="simple" onPress={() => window.close()}>
+              {t("oauth.close")}
+            </Button>
+          ) : (
+            <Button onPress={() => window.location.replace(panelPage)}>
+              {t("oauth.openPanel")}
+            </Button>
+          )}
         </Stack>
       </Card>
     </main>
