@@ -12,9 +12,10 @@ npm run build
 npm start
 ```
 
-For a dev server accessed via a public hostname, set `NICEPROXY_DOMAIN` or
-a list of hostnames via `VITE_ALLOWED_HOSTS`, e.g. `VITE_ALLOWED_HOSTS=cf.toxl.fun npm run dev -- --host 0.0.0.0`.
-Do not forward public TCP 80 and 443 to Vite while Caddy is obtaining an ACME certificate.
+For a dev server accessed via a public hostname, set `NICEPROXY_DOMAIN` in the
+repository `.env` or set a list of hostnames via `VITE_ALLOWED_HOSTS`, e.g.
+`VITE_ALLOWED_HOSTS=cf.toxl.fun npm run dev -- --host 0.0.0.0`. Vite is for
+development only. Public TCP 80 and 443 must reach Caddy for ACME validation.
 
 `npm start` runs `scripts/alpha-bootstrap.mjs`. When `NICEPROXY_ALPHA_RELEASE_URL` is set, the script verifies `latest.json`, the manifest, and SHA-512 checksums of the core/react/project-server archives, builds in staging within a 20-second total timeout, and activates only a completed build. Without the URL, the local version is used explicitly; errors and timeouts fall back to the last working build. `node scripts/alpha-bootstrap.mjs --prepare` prints the active build path without starting the server.
 
