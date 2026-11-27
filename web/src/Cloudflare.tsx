@@ -28,8 +28,9 @@ import {
   type RecordInput,
   type Zone,
 } from "./cloudflare-api";
+import { t, useI18n } from "./i18n";
 const message = (e: unknown) =>
-  e instanceof Error ? e.message : "Не удалось выполнить действие.";
+  e instanceof Error ? e.message : t("errors.generic");
 function Alert({ children }: { children: string }) {
   return (
     <div role="alert">
@@ -51,6 +52,7 @@ function RecordForm({
   onSaved: (record: DNSRecord) => void;
   onCancel: () => void;
 }) {
+  useI18n();
   const [name, setName] = useState(record?.name ?? "");
   const [type, setType] = useState<RecordInput["type"]>(
     record && supportedRecord(record.type) ? record.type : "A",
@@ -99,24 +101,24 @@ function RecordForm({
     <form onSubmit={submit}>
       <Stack gap={4}>
         <Text as="h3" size="xl" font="heading" weight="bold">
-          {record ? "Изменить DNS-запись" : "Новая DNS-запись"}
+          {record ? t("cloudflare.editRecord") : t("cloudflare.newRecord")}
         </Text>
         <Stack gap={4}>
           <TextInput
             showIcon={false}
             labelPlacement="inside"
             id="cf-record-name"
-            label="Имя DNS-записи"
+            label={t("cloudflare.recordName")}
             value={name}
             onValueChange={setName}
             required
             disabled={busy}
-            hint={`Полное имя в зоне ${zone.name}`}
+            hint={t("cloudflare.zoneHint", { name: zone.name })}
           />
           <Select
             popup="overlay"
             id="cf-record-type"
-            label="Тип"
+            label={t("cloudflare.type")}
             value={type}
             onValueChange={(v) => {
               if (supportedRecord(v)) setType(v);
@@ -133,30 +135,30 @@ function RecordForm({
             id="cf-record-content"
             label={
               type === "CNAME"
-                ? "Целевое доменное имя"
+                ? t("cloudflare.targetDomain")
                 : type === "AAAA"
-                  ? "IPv6-адрес"
-                  : "IPv4-адрес"
+                  ? "IPv6"
+                  : "IPv4"
             }
             value={content}
             onValueChange={setContent}
             required
             disabled={busy}
-            hint="Введите значение вручную, без схемы, пути и порта."
+            hint={t("cloudflare.valueHint")}
           />
         </Stack>
         {suggestions.length > 0 && (
           <Select
             popup="overlay"
             id="cf-route-suggestion"
-            label="Подставить имя из HTTP-маршрута"
+            label={t("cloudflare.routeSuggestion")}
             value=""
             onValueChange={(v) => {
               if (v) setName(v);
             }}
             disabled={busy}
             options={[
-              { value: "", label: "Выберите имя (необязательно)" },
+              { value: "", label: t("cloudflare.selectNameOptional") },
               ...suggestions.map((value) => ({ value, label: value })),
             ]}
           />
@@ -167,18 +169,19 @@ function RecordForm({
           checked={proxied}
           onCheckedChange={setProxied}
           disabled={busy}
-          hint="Выключено: DNS only. Обычный прокси Cloudflare не обслуживает произвольные TCP/UDP-порты."
+          hint={t("cloudflare.proxyHint")}
         />
         <Text tone="secondary">
-          DNS не содержит путей и портов. TTL:{" "}
+          {t("cloudflare.dnsNoPaths")} TTL:{" "}
           {record && record.ttl !== 1
-            ? `${record.ttl} секунд (сохраняется)`
-            : "автоматически"}
+            ? t("cloudflare.ttlSaved", { ttl: record.ttl })
+            : t("cloudflare.auto")}
           .
         </Text>
         <Text font="mono">
-          Предпросмотр: {type} {name.trim() || "имя"} →{" "}
-          {content.trim() || "значение"} ·{" "}
+          {t("cloudflare.preview")}: {type}{" "}
+          {name.trim() || t("cloudflare.name")} →{" "}
+          {content.trim() || t("cloudflare.value")} ·{" "}
           {proxied ? "Cloudflare proxy" : "DNS only"}
         </Text>
         {error && <Alert>{error}</Alert>}
@@ -188,7 +191,7 @@ function RecordForm({
             loading={busy}
             disabled={busy || !name.trim() || !content.trim()}
           >
-            {record ? "Сохранить DNS-запись" : "Создать DNS-запись"}
+            {record ? t("cloudflare.saveRecord") : t("cloudflare.createRecord")}
           </Button>
           <Button
             type="button"
@@ -196,7 +199,7 @@ function RecordForm({
             onPress={onCancel}
             disabled={busy}
           >
-            Отмена
+            {t("nav.cancel")}
           </Button>
         </Stack>
       </Stack>
@@ -211,6 +214,7 @@ export function Cloudflare({
   routes?: HttpRoute[];
   callback?: string;
 }) {
+  useI18n();
   const [status, setStatus] = useState<CloudflareStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -350,7 +354,9 @@ export function Cloudflare({
       applyStatus(await cloudflareApi.complete(callbackURL.trim()));
       setAuthorization("");
       setCallbackURL("");
-      setNotice("Cloudflare подключён. Niceproxy проверяет DNS и HTTPS панели.");
+      setNotice(
+        "Cloudflare подключён. Niceproxy проверяет DNS и HTTPS панели.",
+      );
     });
   }
 
@@ -363,11 +369,12 @@ export function Cloudflare({
       <form onSubmit={saveSettings}>
         <Stack gap={4}>
           <Text as="h2" size="xl" font="heading">
-            Подключение Cloudflare
+            {t("sections.cloudflare")}
           </Text>
           <Text tone="secondary">
             Скопируйте адрес ниже в Redirect (Callback) URLs при регистрации
-            OAuth-приложения Cloudflare. Затем вставьте сюда Client ID и Scope ID.
+            OAuth-приложения Cloudflare. Затем вставьте сюда Client ID и Scope
+            ID.
           </Text>
           <Text>
             <a
@@ -437,14 +444,14 @@ export function Cloudflare({
               loading={busy}
               disabled={!clientId.trim() || !parseScopes(scopes).length}
             >
-              Сохранить подключение
+              {t("cloudflare.saveConnection")}
             </Button>
             <Button
               variant="blank"
               disabled={busy}
               onPress={() => change(() => setSetup(false))}
             >
-              Отмена
+              {t("nav.cancel")}
             </Button>
           </Stack>
         </Stack>
@@ -474,24 +481,19 @@ export function Cloudflare({
       <Stack gap={2}>
         <Text tone="secondary">
           {loading && !status
-            ? "Подключение…"
+            ? t("cloudflare.connecting")
             : !status
               ? "Состояние недоступно"
               : status.connected
-                ? "Аккаунт подключён"
+                ? t("cloudflare.connected")
                 : status.configured
-                  ? "Войдите в аккаунт для управления DNS."
-                  : "Подключите Cloudflare для управления DNS-записями."}
+                  ? t("cloudflare.signInHint")
+                  : t("cloudflare.connectHint")}
         </Text>
       </Stack>
-      {callback === "error" && (
-        <Alert>
-          Не удалось подключить Cloudflare. Повторите вход или проверьте
-          настройки.
-        </Alert>
-      )}
+      {callback === "error" && <Alert>{t("cloudflare.connectError")}</Alert>}
       {callback === "connected" && status?.connected && (
-        <Text>Cloudflare успешно подключён.</Text>
+        <Text>{t("cloudflare.connectedSuccess")}</Text>
       )}
       {status?.error && <Alert>{status.error}</Alert>}
       {error && <Alert>{error}</Alert>}
@@ -505,17 +507,13 @@ export function Cloudflare({
           <Stack gap={3}>
             <Text>
               <a href={authorization} target="_blank" rel="noreferrer">
-                Открыть Cloudflare и разрешить доступ
+                {t("cloudflare.openAndAuthorize")}
               </a>
             </Text>
-            <Text tone="secondary">
-              После подтверждения скопируйте полный адрес localhost из новой
-              вкладки и вставьте его сюда. Это работает и если браузер покажет,
-              что страница localhost недоступна.
-            </Text>
+            <Text tone="secondary">{t("cloudflare.callbackHint")}</Text>
             <TextInput
               id="cf-loopback-response"
-              label="URL из адресной строки localhost"
+              label={t("cloudflare.callbackUrl")}
               showIcon={false}
               labelPlacement="inside"
               value={callbackURL}
@@ -530,7 +528,7 @@ export function Cloudflare({
                 loading={busy}
                 disabled={!callbackURL.trim()}
               >
-                Завершить подключение
+                {t("cloudflare.finishConnection")}
               </Button>
               <Button
                 variant="blank"
@@ -541,7 +539,7 @@ export function Cloudflare({
                   setError("");
                 }}
               >
-                Отмена
+                {t("nav.cancel")}
               </Button>
             </Stack>
           </Stack>
@@ -551,7 +549,7 @@ export function Cloudflare({
         <Stack direction="row" gap={3}>
           {status && !status.configured && (
             <Button onPress={() => change(() => setSetup(true))}>
-              Подключить Cloudflare
+              {t("cloudflare.connect")}
             </Button>
           )}
           {status?.configured && (
@@ -559,7 +557,7 @@ export function Cloudflare({
               loading={busy}
               onPress={() => void action(() => startOAuth(useLoopback))}
             >
-              Войти через Cloudflare
+              {t("cloudflare.signIn")}
             </Button>
           )}
           {status?.configured && useLoopback && direct && (
@@ -568,7 +566,7 @@ export function Cloudflare({
               disabled={busy}
               onPress={() => void action(() => startOAuth(false))}
             >
-              Войти через callback панели
+              {t("cloudflare.signInCallback")}
             </Button>
           )}
           {status?.configured && (
@@ -577,26 +575,28 @@ export function Cloudflare({
               disabled={busy}
               onPress={() => change(() => setSetup(true))}
             >
-              Настройки OAuth
+              {t("cloudflare.oauthSettings")}
             </Button>
           )}
           <Button variant="blank" loading={loading} onPress={() => void load()}>
-            Обновить
+            {t("nav.refresh")}
           </Button>
         </Stack>
       )}
       {status?.connected && (
         <Stack gap={4}>
-          {zonesLoading && !zones.length && <Text>Загрузка зон…</Text>}
+          {zonesLoading && !zones.length && (
+            <Text>{t("cloudflare.loadingZones")}</Text>
+          )}
           {zonesError && <Alert>{zonesError}</Alert>}
           {!zonesLoading && !zonesError && !zones.length && (
-            <Text>Нет доступных зон. Проверьте разрешения подключения.</Text>
+            <Text>{t("cloudflare.noZones")}</Text>
           )}
           {!!zones.length && (
             <Select
               popup="overlay"
               id="cf-zone"
-              label="Доменная зона"
+              label={t("cloudflare.zone")}
               value={zoneId}
               onValueChange={(value) => {
                 ++recordsVersion.current;
@@ -604,7 +604,7 @@ export function Cloudflare({
                 setZoneId(value);
               }}
               options={[
-                { value: "", label: "Выберите зону" },
+                { value: "", label: t("cloudflare.selectZone") },
                 ...zones.map((z) => ({
                   value: z.id,
                   label: `${z.name} · ${z.account.name} · ${z.status}`,
@@ -618,7 +618,7 @@ export function Cloudflare({
                 onPress={() => change(() => setEditor("new"))}
                 disabled={recordsLoading}
               >
-                Добавить DNS-запись
+                {t("cloudflare.addRecord")}
               </Button>
             )}
             <Button
@@ -626,15 +626,15 @@ export function Cloudflare({
               loading={zonesLoading || recordsLoading}
               onPress={() => setRefresh((v) => v + 1)}
             >
-              Обновить
+              {t("nav.refresh")}
             </Button>
           </Stack>
           {recordsLoading && !records.length && (
-            <Text>Загрузка DNS-записей…</Text>
+            <Text>{t("cloudflare.loadingRecords")}</Text>
           )}
           {recordsError && <Alert>{recordsError}</Alert>}
           {zone && !recordsLoading && !recordsError && !records.length && (
-            <Text tone="secondary">DNS-записей пока нет.</Text>
+            <Text tone="secondary">{t("cloudflare.noRecords")}</Text>
           )}
           <Stack gap={4}>
             {records.map((record) => (
@@ -647,7 +647,7 @@ export function Cloudflare({
                   <Text font="mono">{record.content}</Text>
                   <Text tone="secondary">
                     {record.proxied ? "Cloudflare proxy" : "DNS only"} · TTL{" "}
-                    {record.ttl === 1 ? "Auto" : record.ttl}
+                    {record.ttl === 1 ? t("cloudflare.auto") : record.ttl}
                   </Text>
                   {supportedRecord(record.type) ? (
                     <Button
@@ -657,28 +657,23 @@ export function Cloudflare({
                         change(() => setEditor(record));
                       }}
                     >
-                      Изменить DNS-запись
+                      {t("cloudflare.editRecord")}
                     </Button>
                   ) : (
-                    <Text tone="muted">
-                      Этот тип доступен только для просмотра.
-                    </Text>
+                    <Text tone="muted">{t("cloudflare.readOnlyRecord")}</Text>
                   )}
                 </Stack>
               </Card>
             ))}
           </Stack>
-          <Text tone="muted">
-            DNS хранит адреса без путей и портов. Cloudflare proxy не
-            обслуживает произвольные TCP/UDP-порты.
-          </Text>
+          <Text tone="muted">{t("cloudflare.dnsHint")}</Text>
         </Stack>
       )}
       {status?.configured && (
         <Stack gap={1}>
-          <DrawerDivider label="Подключение" />
+          <DrawerDivider label={t("cloudflare.connection")} />
           <DrawerButton
-            label="Настройки OAuth"
+            label={t("cloudflare.oauthSettings")}
             icon="settings"
             onPress={() => change(() => setSetup(true))}
           />
@@ -703,7 +698,7 @@ export function Cloudflare({
                 })
               }
             >
-              Отключить Cloudflare
+              {t("cloudflare.disconnect")}
             </Button>
           )}
           {status.error && (

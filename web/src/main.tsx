@@ -33,6 +33,7 @@ import { formatEndpoint } from "./direct-address";
 import { RouteForm } from "./RouteForm";
 import { Cloudflare } from "./Cloudflare";
 import { cloudflareApi, type CertificateStatus } from "./cloudflare-api";
+import { t, useI18n, setLocale, getLocale, locales } from "./i18n";
 import {
   api,
   type Auth,
@@ -55,7 +56,7 @@ import {
 } from "./api";
 
 const err = (e: unknown) =>
-  e instanceof Error ? e.message : "Не удалось выполнить действие.";
+  e instanceof Error ? e.message : t("errors.generic");
 const trafficStages = {
   pre_filter: "До фильтрации",
   accepted: "Принято",
@@ -576,18 +577,22 @@ export function ProtectionForm({
             />
           </div>
         )}
-        {route && (("host" in route && /^udp:\/\//i.test(route.target)) || (!("host" in route) && route.protocol === "udp")) && (
-          <div className="ddos-form-section">
-            <Text as="h3">UDP</Text>
-            <Switch
-              id={`${formId}-udp-response`}
-              label="Ожидать ответ UDP"
-              checked={policy.expectUDPResponse ?? false}
-              disabled={busy}
-              onCheckedChange={(expectUDPResponse) => setPolicy({ ...policy, expectUDPResponse })}
-            />
-          </div>
-        )}
+        {route &&
+          (("host" in route && /^udp:\/\//i.test(route.target)) ||
+            (!("host" in route) && route.protocol === "udp")) && (
+            <div className="ddos-form-section">
+              <Text as="h3">UDP</Text>
+              <Switch
+                id={`${formId}-udp-response`}
+                label="Ожидать ответ UDP"
+                checked={policy.expectUDPResponse ?? false}
+                disabled={busy}
+                onCheckedChange={(expectUDPResponse) =>
+                  setPolicy({ ...policy, expectUDPResponse })
+                }
+              />
+            </div>
+          )}
         <PolicyRows
           heading="Лимиты"
           rows={limits}
@@ -678,19 +683,29 @@ const detectorReasons: Record<string, string> = {
   corroborated_rule: "Срабатывание правила подтверждено",
   input_and_backend_stable: "Входящий трафик и сервер назначения стабильны",
   stable_windows_required: "Ожидание стабильных окон наблюдения",
-  anomalies_or_resource_pressure: "Аномалии трафика или высокая нагрузка на ресурсы",
-  resource_or_backend_observation_missing: "Отсутствуют данные о ресурсах или сервере назначения",
+  anomalies_or_resource_pressure:
+    "Аномалии трафика или высокая нагрузка на ресурсы",
+  resource_or_backend_observation_missing:
+    "Отсутствуют данные о ресурсах или сервере назначения",
 };
 const translated = (labels: Record<string, string>, key: string) =>
   Object.hasOwn(labels, key) ? labels[key] : key;
-const displayNumber = new Intl.NumberFormat("ru-RU", {
-  maximumFractionDigits: 3,
-});
+const displayNumber = (value: number) =>
+  new Intl.NumberFormat(getLocale(), { maximumFractionDigits: 3 }).format(
+    value,
+  );
 const formatMetric = (value: number | null | undefined) =>
-  value == null ? "нет данных" : displayNumber.format(value);
-const displayTime = (value: string) => new Date(value).toLocaleString("ru-RU");
+  value == null ? t("data.unavailable") : displayNumber(value);
+const displayTime = (value: string) =>
+  new Date(value).toLocaleString(getLocale());
 
-function StatusItem({ label, children }: { label: string; children: ReactNode }) {
+function StatusItem({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
   return (
     <div className="ddos-summary-item">
       <div className="ddos-summary-label">
@@ -703,7 +718,13 @@ function StatusItem({ label, children }: { label: string; children: ReactNode })
   );
 }
 
-function DetailRow({ label, children }: { label: string; children: ReactNode }) {
+function DetailRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
   return (
     <div className="ddos-detail-row">
       <div className="ddos-detail-label">
@@ -763,7 +784,9 @@ function DDoSDashboard({
             </StatusItem>
           </div>
           {error && <ErrorMessage>{error}</ErrorMessage>}
-          {!status && !error && <Text tone="muted">Состояние применения — нет данных</Text>}
+          {!status && !error && (
+            <Text tone="muted">Состояние применения — нет данных</Text>
+          )}
           {status && !hasTargets && (
             <Card>
               <Stack gap={2}>
@@ -795,7 +818,9 @@ function DDoSDashboard({
                 <Stack gap={3}>
                   <Stack gap={1}>
                     <Text as="h3">Сети Cloudflare</Text>
-                    <Text tone="secondary">Доверенные адреса для фильтрации источников</Text>
+                    <Text tone="secondary">
+                      Доверенные адреса для фильтрации источников
+                    </Text>
                   </Stack>
                   <div className="ddos-summary-grid">
                     <StatusItem label="Количество сетей">
@@ -811,14 +836,20 @@ function DDoSDashboard({
                         : "нет данных"}
                     </StatusItem>
                     <StatusItem label="Источник">
-                      {instance.cloudflare.ipv4URL || instance.cloudflare.ipv6URL || "не настроен"}
+                      {instance.cloudflare.ipv4URL ||
+                        instance.cloudflare.ipv6URL ||
+                        "не настроен"}
                     </StatusItem>
                   </div>
-                  {instance.cloudflare.error && <ErrorMessage>{instance.cloudflare.error}</ErrorMessage>}
+                  {instance.cloudflare.error && (
+                    <ErrorMessage>{instance.cloudflare.error}</ErrorMessage>
+                  )}
                 </Stack>
               </Card>
             )}
-            {!instance.targets.length && <Text tone="muted">Цели наблюдения — нет данных</Text>}
+            {!instance.targets.length && (
+              <Text tone="muted">Цели наблюдения — нет данных</Text>
+            )}
             <div className="ddos-target-list">
               {instance.targets.map((target) => (
                 <Card key={target.id}>
@@ -837,18 +868,31 @@ function DDoSDashboard({
                       </div>
                       <div className="ddos-target-summary-item">
                         <Text tone="muted">Причина</Text>
-                        <Text>{target.reason ? translated(detectorReasons, target.reason) : "нет данных"}</Text>
+                        <Text>
+                          {target.reason
+                            ? translated(detectorReasons, target.reason)
+                            : "нет данных"}
+                        </Text>
                       </div>
                       <div className="ddos-target-summary-item">
                         <Text tone="muted">Наблюдаемость</Text>
-                        <Text>{translated(observationLabels, target.observability)}</Text>
+                        <Text>
+                          {translated(observationLabels, target.observability)}
+                        </Text>
                       </div>
                     </div>
                     <Card>
                       <Stack gap={2}>
                         <Text as="h3">Применённая политика</Text>
                         <Text>
-                          Обнаружение {target.policy.detect ? "включено" : "выключено"} · автофильтрация {target.policy.autoFilter ? "включена" : "выключена"} · лимиты {target.policy.enforceLimits ? "включены" : "выключены"}
+                          Обнаружение{" "}
+                          {target.policy.detect ? "включено" : "выключено"} ·
+                          автофильтрация{" "}
+                          {target.policy.autoFilter ? "включена" : "выключена"}{" "}
+                          · лимиты{" "}
+                          {target.policy.enforceLimits
+                            ? "включены"
+                            : "выключены"}
                         </Text>
                       </Stack>
                     </Card>
@@ -856,7 +900,12 @@ function DDoSDashboard({
                       <Stack gap={3}>
                         <Text as="h3">Этапы обработки и метрики</Text>
                         <div className="ddos-metric-list">
-                          {[...new Set([...Object.keys(trafficStages), ...Object.keys(target.metrics)])].map((key) => {
+                          {[
+                            ...new Set([
+                              ...Object.keys(trafficStages),
+                              ...Object.keys(target.metrics),
+                            ]),
+                          ].map((key) => {
                             const metric = target.metrics[key];
                             return (
                               <div className="ddos-metric-row" key={key}>
@@ -864,10 +913,16 @@ function DDoSDashboard({
                                   <Text>{translated(metricLabels, key)}</Text>
                                 </div>
                                 <div className="ddos-metric-value">
-                                  <Text font="mono">{formatMetric(metric?.value)}</Text>
+                                  <Text font="mono">
+                                    {formatMetric(metric?.value)}
+                                  </Text>
                                 </div>
                                 <div className="ddos-metric-source">
-                                  <Text tone="muted">{metric?.source ? `Источник: ${metric.source}` : "Источник не указан"}</Text>
+                                  <Text tone="muted">
+                                    {metric?.source
+                                      ? `Источник: ${metric.source}`
+                                      : "Источник не указан"}
+                                  </Text>
                                 </div>
                               </div>
                             );
@@ -884,7 +939,14 @@ function DDoSDashboard({
                           <div className="ddos-detail-list">
                             {target.policy.limits.map((limit) => (
                               <DetailRow key={limit.id} label={limit.id}>
-                                {translated(metricLabels, limit.metric)} · {formatMetric(limit.value)} {unitLabels[limit.unit]} · {scopeLabels[limit.scope]} · {actionLabels[limit.action]}{limit.windowSeconds !== undefined ? ` · окно ${limit.windowSeconds} с` : ""}
+                                {translated(metricLabels, limit.metric)} ·{" "}
+                                {formatMetric(limit.value)}{" "}
+                                {unitLabels[limit.unit]} ·{" "}
+                                {scopeLabels[limit.scope]} ·{" "}
+                                {actionLabels[limit.action]}
+                                {limit.windowSeconds !== undefined
+                                  ? ` · окно ${limit.windowSeconds} с`
+                                  : ""}
                               </DetailRow>
                             ))}
                           </div>
@@ -896,23 +958,33 @@ function DDoSDashboard({
                     <Card>
                       <Stack gap={3}>
                         <Text as="h3">Активные ограничения</Text>
-                        {!target.restrictions?.length && <Text tone="muted">Ограничений нет</Text>}
+                        {!target.restrictions?.length && (
+                          <Text tone="muted">Ограничений нет</Text>
+                        )}
                         {target.restrictions?.map((restriction, index) => (
                           <Stack key={index} gap={2}>
-                            <DetailRow label={`${actionLabels[restriction.action]} · ${scopeLabels[restriction.scope]}`}>
-                              {restriction.target} · правило {restriction.rule} · до {displayTime(restriction.expiresAt)} · {restriction.automatic ? "автоматическое" : "ручное"}
+                            <DetailRow
+                              label={`${actionLabels[restriction.action]} · ${scopeLabels[restriction.scope]}`}
+                            >
+                              {restriction.target} · правило {restriction.rule}{" "}
+                              · до {displayTime(restriction.expiresAt)} ·{" "}
+                              {restriction.automatic
+                                ? "автоматическое"
+                                : "ручное"}
                             </DetailRow>
                             {restriction.automatic && (
                               <Button
                                 variant="blank"
                                 disabled={busy}
-                                onPress={() => onClear({
-                                  instance: instance.id,
-                                  target: target.id,
-                                  rule: restriction.rule,
-                                  subject: restriction.target,
-                                  ttlSeconds: 60,
-                                })}
+                                onPress={() =>
+                                  onClear({
+                                    instance: instance.id,
+                                    target: target.id,
+                                    rule: restriction.rule,
+                                    subject: restriction.target,
+                                    ttlSeconds: 60,
+                                  })
+                                }
                               >
                                 Снять ограничение на 60 секунд
                               </Button>
@@ -927,8 +999,12 @@ function DDoSDashboard({
                           <Text as="h3">События детектора</Text>
                           <div className="ddos-detail-list">
                             {target.events.map((event, index) => (
-                              <DetailRow key={index} label={displayTime(event.at)}>
-                                {actionLabels[event.action]} · {event.reason} {event.rules?.join(", ")}
+                              <DetailRow
+                                key={index}
+                                label={displayTime(event.at)}
+                              >
+                                {actionLabels[event.action]} · {event.reason}{" "}
+                                {event.rules?.join(", ")}
                               </DetailRow>
                             ))}
                           </div>
@@ -941,8 +1017,13 @@ function DDoSDashboard({
                           <Text as="h3">История нагрузки</Text>
                           <div className="ddos-detail-list">
                             {target.history.map((point, index) => (
-                              <DetailRow key={index} label={displayTime(point.at)}>
-                                {formatMetric(point.load)} · норма {formatMetric(point.normalLow)}–{formatMetric(point.normalHigh)}
+                              <DetailRow
+                                key={index}
+                                label={displayTime(point.at)}
+                              >
+                                {formatMetric(point.load)} · норма{" "}
+                                {formatMetric(point.normalLow)}–
+                                {formatMetric(point.normalHigh)}
                               </DetailRow>
                             ))}
                           </div>
@@ -955,8 +1036,12 @@ function DDoSDashboard({
                           <Text as="h3">Источники трафика</Text>
                           <div className="ddos-detail-list">
                             {target.sources.map((origin, index) => (
-                              <DetailRow key={index} label={`${origin.address} · ${origin.subnet}`}>
-                                {formatMetric(origin.count)}{origin.reason ? ` · ${origin.reason}` : ""}
+                              <DetailRow
+                                key={index}
+                                label={`${origin.address} · ${origin.subnet}`}
+                              >
+                                {formatMetric(origin.count)}
+                                {origin.reason ? ` · ${origin.reason}` : ""}
                               </DetailRow>
                             ))}
                           </div>
@@ -1173,7 +1258,10 @@ function AntiDDoSPage({
                   popup="overlay"
                   options={[
                     { value: "listener", label: "Глобальный слушатель" },
-                    { value: "cloudflare", label: "Доверенные сети Cloudflare" },
+                    {
+                      value: "cloudflare",
+                      label: "Доверенные сети Cloudflare",
+                    },
                     ...routes.map((item) => ({
                       value: `route:${item.id}`,
                       label: `Маршрут · ${source(item)}`,
@@ -1220,6 +1308,22 @@ function ErrorMessage({ children }: { children: string }) {
     </div>
   );
 }
+function LanguageSelect() {
+  const { preference } = useI18n();
+  return (
+    <Select
+      id="language"
+      label={t("lang.label")}
+      value={preference}
+      popup="overlay"
+      options={[
+        { value: "system", label: t("lang.auto") },
+        ...locales.map((item) => ({ value: item.code, label: item.label })),
+      ]}
+      onValueChange={setLocale}
+    />
+  );
+}
 function AuthScreen({
   initial,
   onAuthenticated,
@@ -1227,6 +1331,7 @@ function AuthScreen({
   initial: Auth;
   onAuthenticated: () => void;
 }) {
+  useI18n();
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -1255,18 +1360,18 @@ function AuthScreen({
               <Stack gap={4}>
                 <Text as="h1" font="heading" size="title">
                   {initial.configured
-                    ? "Вход в Niceproxy"
-                    : "Первичная настройка"}
+                    ? t("auth.loginTitle")
+                    : t("auth.setupTitle")}
                 </Text>
                 <Text tone="secondary">
                   {initial.configured
-                    ? "Введите пароль администратора."
-                    : "Создайте пароль администратора: от 12 до 72 байт."}
+                    ? t("auth.loginHint")
+                    : t("auth.setupHint")}
                 </Text>
                 <TextInput
                   showIcon
                   id="password"
-                  label="Пароль"
+                  label={t("auth.password")}
                   labelPlacement="inside"
                   type="password"
                   value={password}
@@ -1279,10 +1384,13 @@ function AuthScreen({
                 />
                 {error && <ErrorMessage>{error}</ErrorMessage>}
                 <Button type="submit" loading={busy}>
-                  {initial.configured ? "Войти" : "Сохранить пароль"}
+                  {initial.configured
+                    ? t("auth.signIn")
+                    : t("auth.savePassword")}
                 </Button>
               </Stack>
             </form>
+            <LanguageSelect />
           </Stack>
         </Card>
       </Page>
@@ -1291,18 +1399,18 @@ function AuthScreen({
 }
 function statusLabel(route: HttpRoute | DirectRule) {
   return !route.enabled
-    ? "Выключен"
+    ? t("routes.status.disabled")
     : route.status === "healthy"
-      ? "Применён"
+      ? t("routes.status.healthy")
       : route.status === "waiting_acme"
-        ? "Ожидание сертификата"
+        ? t("routes.status.waitingAcme")
         : route.status === "waiting_dns"
-          ? "Ожидание DNS"
+          ? t("routes.status.waitingDns")
           : route.status === "invalid_certificate"
-            ? "Недействительный сертификат"
+            ? t("routes.status.invalidCertificate")
             : route.status === "error"
-              ? "Ошибка применения"
-              : "Не подтверждён";
+              ? t("routes.status.error")
+              : t("routes.status.unconfirmed");
 }
 type Mapping = {
   key: string;
@@ -1349,6 +1457,7 @@ function readPage() {
   return "routes";
 }
 function App() {
+  useI18n();
   const [auth, setAuth] = useState<Auth | null>(null);
   const [config, setConfig] = useState<ProxyConfig | null>(null);
   const [health, setHealth] = useState<ServiceHealth | null>(null);
@@ -1546,9 +1655,11 @@ function App() {
               <Text as="h1" size="title" font="heading">
                 Niceproxy
               </Text>
-              <Text>{error || "Подключение к сервису…"}</Text>
+              <Text>{error || t("errors.connecting")}</Text>
               {error && (
-                <Button onPress={() => void initialize()}>Повторить</Button>
+                <Button onPress={() => void initialize()}>
+                  {t("nav.retry")}
+                </Button>
               )}
             </Stack>
           </Card>
@@ -1588,36 +1699,38 @@ function App() {
   const isEditing = routeScreen && mode === "edit" && !systemRoute;
   const newProtocol =
     selectedKey === "direct"
-      ? filter === "udp" ? "udp" : "tcp"
+      ? filter === "udp"
+        ? "udp"
+        : "tcp"
       : selectedKey === "tcp" || selectedKey === "udp"
         ? selectedKey
         : "http";
   const title =
     page === "overview"
-      ? "Сервис"
+      ? t("sections.overview")
       : page === "settings/anti-ddos"
-        ? "Защита от DDoS"
+        ? t("sections.antiDDoS")
         : page === "settings/cloudflare"
-            ? "Cloudflare DNS"
-            : page === "settings/account"
-              ? "Доступ к панели"
-              : page === "settings"
-                ? "Настройки"
-                : isList
-                  ? "Маршруты"
-                  : isCreating
-                    ? page.endsWith("/http")
-                      ? "Новый HTTP/HTTPS маршрут"
-                      : page.endsWith("/direct") ||
-                          page.endsWith("/tcp") ||
-                          page.endsWith("/udp")
-                        ? "Новое TCP/UDP правило"
-                        : "Новый маршрут"
-                    : mode === "edit"
-                      ? "Редактирование маршрута"
-                      : mode === "delete"
-                        ? "Удаление маршрута"
-                        : "Маршрут";
+          ? t("sections.cloudflare")
+          : page === "settings/account"
+            ? t("sections.account")
+            : page === "settings"
+              ? t("sections.settings")
+              : isList
+                ? t("sections.routes")
+                : isCreating
+                  ? page.endsWith("/http")
+                    ? t("routes.newHttp")
+                    : page.endsWith("/direct") ||
+                        page.endsWith("/tcp") ||
+                        page.endsWith("/udp")
+                      ? t("routes.newDirect")
+                      : t("routes.add")
+                  : mode === "edit"
+                    ? t("routes.editTitle")
+                    : mode === "delete"
+                      ? t("routes.deleteTitle")
+                      : t("routes.open");
   const converged =
     !!health &&
     health.appliedRevision === config.revision &&
@@ -1645,23 +1758,17 @@ function App() {
       (current) =>
         current && {
           ...current,
-          httpRoutes:
-            isHttp
-              ? [
-                  ...current.httpRoutes.filter((r) => r.id !== item.id),
-                  item,
-                ]
-              : current.httpRoutes,
-          directRules:
-            isHttp
-              ? current.directRules
-              : [
-                  ...current.directRules.filter((r) => r.id !== item.id),
-                  item,
-                ],
+          httpRoutes: isHttp
+            ? [...current.httpRoutes.filter((r) => r.id !== item.id), item]
+            : current.httpRoutes,
+          directRules: isHttp
+            ? current.directRules
+            : [...current.directRules.filter((r) => r.id !== item.id), item],
         },
     );
-    navigate(`routes/view/${isHttp ? "http" : "direct"}/${encodeURIComponent(item.id)}`);
+    navigate(
+      `routes/view/${isHttp ? "http" : "direct"}/${encodeURIComponent(item.id)}`,
+    );
   };
   return (
     <AppShell
@@ -1670,11 +1777,11 @@ function App() {
       viewport="full"
       serviceMode="static"
       showAccount
-      accountLabel="Аккаунт администратора"
+      accountLabel={t("auth.accountLabel")}
       items={[
-        { id: "routes", label: "Маршруты", icon: "link" },
-        { id: "overview", label: "Сервис", icon: "device" },
-        { id: "settings", label: "Настройки", icon: "settings" },
+        { id: "routes", label: t("sections.routes"), icon: "link" },
+        { id: "overview", label: t("sections.overview"), icon: "device" },
+        { id: "settings", label: t("sections.settings"), icon: "settings" },
       ]}
       selectedId={section}
       onSelect={navigate}
@@ -1697,7 +1804,7 @@ function App() {
                 )
               }
             >
-              Назад
+              {t("nav.back")}
             </Button>
           )}
           <Text as="h1">{title}</Text>
@@ -1710,11 +1817,11 @@ function App() {
                   )
                 }
               >
-                Добавить маршрут
+                {t("routes.add")}
               </Button>
               <IconButton
                 icon="refresh"
-                label="Обновить маршруты"
+                label={t("nav.refresh")}
                 disabled={refreshing}
                 onPress={() => void refresh(true)}
               />
@@ -1728,19 +1835,22 @@ function App() {
               <Select
                 popup="overlay"
                 id="route-filter"
-                label="Протокол"
+                label={t("routes.protocol")}
                 variant="plain"
                 value={filter}
                 onValueChange={setFilter}
                 options={[
-                  { value: "all", label: "Все протоколы" },
+                  { value: "all", label: t("routes.allProtocols") },
                   { value: "http", label: "HTTP/HTTPS" },
                   { value: "tcp", label: "TCP" },
                   { value: "udp", label: "UDP" },
                 ]}
               />
               <Text tone="muted">
-                {visible.length} из {mappings.length}
+                {t("routes.countOf", {
+                  count: visible.length,
+                  total: mappings.length,
+                })}
               </Text>
             </Stack>
             {visible.length ? (
@@ -1761,14 +1871,14 @@ function App() {
                       </Stack>
                       <Text font="mono">{source(route)}</Text>
                       <Stack gap={1}>
-                        <Text tone="muted">Сервис</Text>
+                        <Text tone="muted">{t("routes.service")}</Text>
                         <Text font="mono">{target(route)}</Text>
                       </Stack>
                       <Button
                         variant="simple"
                         onPress={() => navigate(`routes/view/${key}`)}
                       >
-                        Открыть маршрут
+                        {t("routes.open")}
                       </Button>
                     </Stack>
                   </Card>
@@ -1779,13 +1889,13 @@ function App() {
                 <Stack gap={2}>
                   <Text as="h2" size="xl">
                     {mappings.length
-                      ? "Нет маршрутов этого типа"
-                      : "Подключите первый сервис"}
+                      ? t("routes.emptyFiltered")
+                      : t("routes.empty")}
                   </Text>
                   <Text tone="secondary">
                     {mappings.length
-                      ? "Выберите другой протокол или добавьте маршрут."
-                      : "HTTP/HTTPS — по домену и пути. TCP/UDP — по порту."}
+                      ? t("routes.emptyHint")
+                      : t("routes.emptyFirstHint")}
                   </Text>
                 </Stack>
               </Card>
@@ -1804,8 +1914,10 @@ function App() {
         {routeScreen && !mapping && (
           <Card>
             <Stack gap={3}>
-              <Text>Маршрут не найден.</Text>
-              <Button onPress={() => navigate("routes")}>К маршрутам</Button>
+              <Text>{t("routes.notFound")}</Text>
+              <Button onPress={() => navigate("routes")}>
+                {t("sections.routes")}
+              </Button>
             </Stack>
           </Card>
         )}
@@ -1823,9 +1935,7 @@ function App() {
             {mode === "delete" && !systemRoute ? (
               <Stack gap={4}>
                 <Text font="mono">{source(mapping.route)}</Text>
-                <Text>
-                  Удалить маршрут? Новые подключения перестанут обслуживаться.
-                </Text>
+                <Text>{t("routes.deleteConfirm")}</Text>
                 <Stack direction="row" gap={3}>
                   <Button
                     loading={pending}
@@ -1836,28 +1946,28 @@ function App() {
                       )
                     }
                   >
-                    Удалить маршрут
+                    {t("nav.delete")}
                   </Button>
                   <Button
                     variant="blank"
                     disabled={pending}
                     onPress={() => navigate(`routes/view/${mapping.key}`)}
                   >
-                    Отмена
+                    {t("nav.cancel")}
                   </Button>
                 </Stack>
               </Stack>
             ) : (
               <Stack gap={5}>
                 <Stack gap={1}>
-                  <Text tone="secondary">Входящий адрес</Text>
+                  <Text tone="secondary">{t("route.incoming")}</Text>
                   <Text font="mono" size="lg">
                     {source(mapping.route)}
                   </Text>
                 </Stack>
                 {publicPortLines(mapping.route, owners).length > 0 && (
                   <Stack gap={1}>
-                    <Text tone="secondary">Публичные порты</Text>
+                    <Text tone="secondary">{t("route.publicPorts")}</Text>
                     {publicPortLines(mapping.route, owners).map((line) => (
                       <Text key={line} font="mono">
                         {line}
@@ -1866,7 +1976,7 @@ function App() {
                   </Stack>
                 )}
                 <Stack gap={1}>
-                  <Text tone="secondary">Сервис</Text>
+                  <Text tone="secondary">{t("routes.service")}</Text>
                   <Text font="mono" size="lg">
                     {target(mapping.route)}
                   </Text>
@@ -1908,7 +2018,7 @@ function App() {
                 {!systemRoute && (
                   <Switch
                     id="route-enabled"
-                    label="Маршрут включён"
+                    label={t("routes.enabled")}
                     checked={mapping.route.enabled}
                     disabled={pending}
                     onCheckedChange={(enabled) =>
@@ -1930,7 +2040,7 @@ function App() {
                       variant="simple"
                       onPress={() => navigate(`routes/edit/${mapping.key}`)}
                     >
-                      Изменить
+                      {t("nav.edit")}
                     </Button>
                   )}
                   <Button
@@ -1938,14 +2048,14 @@ function App() {
                     onPress={() => void refresh(true)}
                     loading={refreshing}
                   >
-                    Обновить
+                    {t("nav.refresh")}
                   </Button>
                   {!systemRoute && (
                     <Button
                       variant="blank"
                       onPress={() => navigate(`routes/delete/${mapping.key}`)}
                     >
-                      Удалить
+                      {t("nav.delete")}
                     </Button>
                   )}
                 </Stack>
@@ -1959,38 +2069,38 @@ function App() {
               <Stack gap={2}>
                 <Text as="h2" size="xl" font="heading">
                   {!health
-                    ? "Состояние недоступно"
+                    ? t("overview.unavailable")
                     : health.state === "invalid_certificate" && converged
-                      ? "Недействительный сертификат панели"
+                      ? t("overview.invalidCertificate")
                       : health.state === "waiting_acme" && converged
-                        ? "Ожидание публичного сертификата"
+                        ? t("overview.waitingCertificate")
                         : applied
-                          ? "Конфигурация применена"
+                          ? t("overview.applied")
                           : health.status === "error"
-                            ? "Ошибка применения"
-                            : "Конфигурация применена частично"}
+                            ? t("overview.applyError")
+                            : t("overview.partial")}
                 </Text>
                 <Text tone="secondary">
-                  Сохранено:{" "}
+                  {t("overview.saved")}{" "}
                   <Text as="span" font="mono">
                     {config.revision}
                   </Text>{" "}
-                  · применено:{" "}
+                  · {t("overview.appliedRevision")}{" "}
                   <Text as="span" font="mono">
                     {health
                       ? health.appliedRevision < 0
-                        ? "частично"
+                        ? t("overview.partialShort")
                         : health.appliedRevision
-                      : "неизвестно"}
+                      : t("overview.unknown")}
                   </Text>
                 </Text>
               </Stack>
               <Text>
                 {health?.caddy === true || health?.caddy === "healthy"
-                  ? "Веб-сервер доступен"
+                  ? t("overview.webAvailable")
                   : health?.caddy === false || health?.caddy === "error"
-                    ? "Веб-сервер недоступен"
-                    : "Состояние веб-сервера неизвестно"}
+                    ? t("overview.webUnavailable")
+                    : t("overview.webUnknown")}
               </Text>
               {health?.error && <ErrorMessage>{health.error}</ErrorMessage>}
               {certificate?.configured && (
@@ -2029,7 +2139,9 @@ function App() {
               {panelAutomation?.dnsMode && (
                 <Text>
                   Cloudflare:{" "}
-                  {panelAutomation.dnsMode === "proxied" ? "Proxied" : "DNS Only"}
+                  {panelAutomation.dnsMode === "proxied"
+                    ? "Proxied"
+                    : "DNS Only"}
                   {panelAutomation.sslSelection === "automatic" &&
                     " · Automatic SSL/TLS"}
                   {cloudflareSSLLabel && ` · режим зоны: ${cloudflareSSLLabel}`}
@@ -2038,16 +2150,19 @@ function App() {
               {panelAutomation?.detail && (
                 <Text tone="secondary">{panelAutomation.detail}</Text>
               )}
-              {!panelAutomation?.dnsMode && panelDomainSettings?.proxyWarning && (
-                <ErrorMessage>{panelDomainSettings.proxyWarning}</ErrorMessage>
-              )}
+              {!panelAutomation?.dnsMode &&
+                panelDomainSettings?.proxyWarning && (
+                  <ErrorMessage>
+                    {panelDomainSettings.proxyWarning}
+                  </ErrorMessage>
+                )}
               <Stack direction="row" gap={3}>
                 {!converged && health && (
                   <Button
                     loading={pending}
                     onPress={() => void mutate(() => api.reconcile())}
                   >
-                    Применить повторно
+                    {t("overview.reapplyState")}
                   </Button>
                 )}
                 <Button
@@ -2055,18 +2170,18 @@ function App() {
                   loading={refreshing}
                   onPress={() => void refresh(true)}
                 >
-                  Обновить состояние
+                  {t("overview.refreshState")}
                 </Button>
               </Stack>
               <Text as="h2" size="xl">
-                Маршрутизация
+                {t("overview.routing")}
               </Text>
               <Text>
                 HTTP/HTTPS: {config.httpRoutes.length} · TCP/UDP:{" "}
                 {config.directRules.length}
               </Text>
               <Text tone="secondary">
-                Сохранение изменений не означает их успешного применения.
+                {t("overview.saveWarning")}
               </Text>
             </Stack>
           </Card>
@@ -2074,23 +2189,24 @@ function App() {
         {page === "settings" && (
           <Card>
             <Stack gap={1}>
+              <LanguageSelect />
               <DrawerButton
-                label="Защита от DDoS"
-                secondaryText="Политики защиты и состояние фильтрации"
+                label={t("sections.antiDDoS")}
+                secondaryText={t("settings.antiDDoSSub")}
                 secondaryPlacement="below"
                 icon="shield"
                 onPress={() => navigate("settings/anti-ddos")}
               />
               <DrawerButton
-                label="Cloudflare DNS"
-                secondaryText="Подключение аккаунта и записи доменов"
+                label={t("sections.cloudflare")}
+                secondaryText={t("settings.cloudflareSub")}
                 secondaryPlacement="below"
                 icon="link"
                 onPress={() => navigate("settings/cloudflare")}
               />
               <DrawerButton
-                label="Доступ к панели"
-                secondaryText="Сессия администратора"
+                label={t("sections.account")}
+                secondaryText={t("settings.accountSub")}
                 secondaryPlacement="below"
                 icon="shield"
                 onPress={() => navigate("settings/account")}
@@ -2120,13 +2236,13 @@ function App() {
         {page === "settings/account" && (
           <Card>
             <Stack gap={4}>
-              <Text>Вы вошли как администратор.</Text>
+              <Text>{t("auth.signedIn")}</Text>
               <Button
                 variant="simple"
                 loading={pending}
                 onPress={() => void logout()}
               >
-                Выйти
+                {t("auth.signOut")}
               </Button>
             </Stack>
           </Card>
