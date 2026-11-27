@@ -1,16 +1,16 @@
-# Выпуски и единый сервер запуска
+# Releases and unified launcher server
 
-Пути `scripts/`, `examples/` и команды выпуска ниже относятся к корню исходного репозитория. Установленный npm-пакет содержит runtime и документацию; скрипты разработки и соседний Hub в него не входят.
+The `scripts/`, `examples/` paths and release commands below refer to the root of the source repository. The installed npm package contains the runtime and documentation; development scripts and the sibling Hub are not included.
 
-## Выпустить библиотеку
+## Releasing the library
 
-Нужен Node.js 22.23.4+ (минимум Astro для сборки сайта документации). Выполни `npm ci`, затем `npm run release -- X.Y.Z`, заменив `X.Y.Z` новой, ещё не занятой версией. Команда проверяет генерацию, сборку, типы, тесты и содержимое пакетов, создаёт **неизменяемый** каталог `releases/X.Y.Z` и переключает `releases/latest.json`. Существующую версию использовать повторно нельзя. Исходные package.json не требуется массово редактировать: версии архивов, каталога компонентов и внутренних зависимостей выставляет сборщик выпуска. Публикация в npm или GitHub не выполняется.
+Requires Node.js 22.23.4+ (Astro minimum for building the documentation site). Run `npm ci`, then `npm run release -- X.Y.Z`, replacing `X.Y.Z` with a new, unused version. The command checks generation, build, types, tests, and package contents, creates an **immutable** `releases/X.Y.Z` directory, and switches `releases/latest.json`. An existing version cannot be reused. Source `package.json` files do not need bulk editing: archive versions, the component catalog, and internal dependencies are set by the release builder. Publishing to npm or GitHub is not performed.
 
-В новых выпусках: `@alpha/core`, `@alpha/react`, `@alpha/qwik`, `@alpha/project-server`, архив соответствующих исходников `alpha-ui-source-X.Y.Z.tar.gz`, manifest с SHA-512, инструкция для агентов, установщик, LICENSE, THIRD_PARTY_NOTICES.md и тексты сторонних лицензий. Лицензионные файлы также включены в каждый npm-архив. Alpha's Hub находится в отдельном проекте; для совместной локальной разработки используется `../alpha-hub` и больше не включается в выпуск библиотеки. Старые выпуски с архивом hub сохраняются неизменными. Каталог выпуска можно копировать целиком на другую машину.
+New releases contain: `@alpha/core`, `@alpha/react`, `@alpha/qwik`, `@alpha/project-server`, the corresponding source archive `alpha-ui-source-X.Y.Z.tar.gz`, manifest with SHA-512, agent instructions, installer, LICENSE, THIRD_PARTY_NOTICES.md, and third-party license texts. License files are also included in every npm archive. Alpha's Hub lives in a separate project; `../alpha-hub` is used for joint local development and is no longer included in the library release. Old releases containing the hub archive remain unchanged. A release directory can be copied as a whole to another machine.
 
-## Подготовка и публикация в npm
+## Preparing and publishing to npm
 
-Публикуются четыре отдельных пакета из проверенного каталога выпуска. Корневой workspace приватный. В пакетах задан `publishConfig` для публичного доступа в `https://registry.npmjs.org/`; README, лицензии, runtime и типы включены в архивы. Команду `npm publish` из корня репозитория не используй.
+Four separate packages are published from the verified release directory. The root workspace is private. The packages set `publishConfig` for public access at `https://registry.npmjs.org/`; README, licenses, runtime, and types are included in the archives. Do not run `npm publish` from the repository root.
 
 ```sh
 npm ci
@@ -19,15 +19,15 @@ node scripts/check-release.mjs releases/X.Y.Z
 npm run check:npm -- releases/X.Y.Z
 ```
 
-Последняя команда сверяет SHA-512 и размер каждого пакета с manifest, проверяет имена, версии и наличие README/лицензий, затем выполняет `npm publish --dry-run --ignore-scripts` для каждого готового архива. Она ничего не публикует и не подтверждает права аккаунта или доступность версии в реестре. Для предварительной версии используется tag `next`, для обычной — `latest`.
+The last command compares the SHA-512 and size of each package against the manifest, checks names, versions, and the presence of README/licenses, then runs `npm publish --dry-run --ignore-scripts` for each prepared archive. It publishes nothing and does not verify account permissions or version availability in the registry. Pre-releases use the `next` tag; regular releases use `latest`.
 
-Перед реальной публикацией войди через `npm login --registry=https://registry.npmjs.org/`, проверь `npm whoami` и право записи в организацию `@alpha`. Ответ 404 на `npm view` не резервирует scope и не даёт прав на него. Если нужен другой scope, сначала согласованно измени имена, внутренние зависимости, импорты, генераторы, установщик и документацию, затем создай новый выпуск.
+Before an actual publish, log in via `npm login --registry=https://registry.npmjs.org/`, verify `npm whoami`, and confirm write access to the `@alpha` organization. A 404 response from `npm view` does not reserve a scope or grant permissions on it. If another scope is needed, first update names, internal dependencies, imports, generators, the installer, and documentation consistently, then cut a new release.
 
-Проверь, что выбранная версия ещё не опубликована у всех четырёх пакетов: `npm view @alpha/core@X.Y.Z version` и аналогично для react, qwik, project-server. Ошибку сети или авторизации нельзя считать подтверждением свободной версии. npm не позволяет повторно использовать опубликованную версию.
+Verify that the chosen version is not yet published for all four packages: `npm view @alpha/core@X.Y.Z version` and similarly for react, qwik, and project-server. A network or authentication error must not be treated as confirmation that a version is free. npm does not allow reusing a published version.
 
-До публикации размести архив соответствующих исходников точной версии и сообщи получателям рабочую ссылку согласно §4 LICENSE. README на npm сам по себе не предоставляет исходники. Открытые решения владельца по контактам правообладателя и получению Hub перечислены в `PUBLIC_RELEASE_AUDIT.md` исходного репозитория. Адреса и реквизиты автоматически не подставляются.
+Before publishing, host the source archive for the exact version and provide recipients with a working link in accordance with §4 of `LICENSE`. The README on npm alone does not provide the source code. Open owner decisions regarding rightsholder contacts and Hub distribution are listed in `PUBLIC_RELEASE_AUDIT.md` in the source repository. Addresses and details are not substituted automatically.
 
-Публикуй **те же архивы**, которые проверены выше, сначала core, затем адаптеры и сервер:
+Publish **the exact archives** verified above—core first, then adapters and the server:
 
 ```sh
 npm publish ./releases/X.Y.Z/alpha-core-X.Y.Z.tgz --ignore-scripts --access public --registry=https://registry.npmjs.org/ --tag latest
@@ -36,39 +36,39 @@ npm publish ./releases/X.Y.Z/alpha-qwik-X.Y.Z.tgz --ignore-scripts --access publ
 npm publish ./releases/X.Y.Z/alpha-project-server-X.Y.Z.tgz --ignore-scripts --access public --registry=https://registry.npmjs.org/ --tag latest
 ```
 
-Для версии с суффиксом замени `latest` на `next`. npm может запросить второй фактор. Публикация нескольких пакетов не атомарна: при частичном успехе выясни состояние каждого пакета и продолжай только с ещё не опубликованными архивами. После публикации сверь `npm view @alpha/core@X.Y.Z dist.integrity` с manifest и повтори для остальных пакетов. Установка из npm: `npm install @alpha/core@X.Y.Z @alpha/react@X.Y.Z` (либо `@alpha/qwik@X.Y.Z`); сервер проекта устанавливается отдельно по необходимости. Правила `@alpha/core/AGENTS.md` нужно прочитать и подключить к инструкции проекта вручную: обычный `npm install` не выполняет установщик выпуска.
+For a version with a suffix, replace `latest` with `next`. npm may prompt for two-factor authentication. Publishing multiple packages is not atomic: on partial success, inspect the state of each package and proceed only with the archives not yet published. After publishing, compare `npm view @alpha/core@X.Y.Z dist.integrity` against the manifest and repeat for the remaining packages. Installing from npm: `npm install @alpha/core@X.Y.Z @alpha/react@X.Y.Z` (or `@alpha/qwik@X.Y.Z`); the project server is installed separately if needed. The rules in `@alpha/core/AGENTS.md` must be read and linked in the project's instructions manually: a plain `npm install` does not run the release installer.
 
-Компоненты и типы уже скомпилированы; потребителю не нужны исходники библиотеки или генератор. npm устанавливает зависимости пакетов; для полностью автономной установки заранее подготовь npm-кэш зависимостей. Полный независимый перенос проверяется командой `node scripts/check-release.mjs releases/X.Y.Z`.
+Components and types are already compiled; the consumer does not need the library source or generator. npm installs package dependencies; for a fully offline installation, prepare an npm dependency cache in advance. Complete standalone portability is verified by `node scripts/check-release.mjs releases/X.Y.Z`.
 
-## Установить в проект
+## Installing into a project
 
-Из любого проекта: `node /путь/к/releases/X.Y.Z/install.mjs --project . --framework react`. Для Qwik: `--framework qwik`. Обновление выполняется той же командой из нового выпуска. Устанавливаются core, выбранный адаптер и сервер проекта; версии компонентов совпадают. React/Qwik и сборщик остаются зависимостями проекта. Установщик также создаёт `ALPHA_UI_AGENT_RULES.md`; добавь в корневой AGENTS.md: «Обязательно прочитай и соблюдай ALPHA_UI_AGENT_RULES.md».
+From any project: `node /path/to/releases/X.Y.Z/install.mjs --project . --framework react`. For Qwik: `--framework qwik`. Updating uses the same command from the new release. It installs core, the chosen adapter, and the project server; component versions match. React/Qwik and the bundler remain project dependencies. The installer also creates `ALPHA_UI_AGENT_RULES.md`; add to the root `AGENTS.md`: "Always read and follow ALPHA_UI_AGENT_RULES.md".
 
-Подключи `@alpha/core/fonts.css`, `@alpha/core/styles.css` и импортируй компоненты из адаптера. В пакете core доступны `AGENTS.md`, каталог через `@alpha/core/catalog.json`, токены и документация в `dist/`. Руководства по [подключению](agent-guide.md), [чату](chat.md) и [правилам для приложения](consumer-agent-rules.md) включены в пакет. Архивы создаются стандартным [npm pack](https://docs.npmjs.com/cli/v11/commands/npm-pack/).
+Import `@alpha/core/fonts.css`, `@alpha/core/styles.css`, and import components from the adapter. In the core package, `AGENTS.md`, the catalog via `@alpha/core/catalog.json`, tokens, and documentation are available in `dist/`. Guides for [setup](agent-guide.md), [chat](chat.md), and [application agent rules](consumer-agent-rules.md) are included in the package. Archives are built using standard [npm pack](https://docs.npmjs.com/cli/v11/commands/npm-pack/).
 
-В `catalog.json` поле `schema` обозначает формат каталога, а `version` — версию библиотеки. В исходном workspace версии пакетов могут отличаться от последнего подготовленного выпуска: staging задаёт выбранную версию отдельно.
+In `catalog.json`, the `schema` field denotes the catalog format, and `version` denotes the library version. In the source workspace, package versions may differ from the latest prepared release: staging sets the chosen version separately.
 
-Условия использования задаёт AHCL-1.0. При распространении библиотеки соблюдай §4 `LICENSE`: передай получателям соответствующие исходники или укажи доступное скачивание точной версии на предусмотренный лицензией срок. Для новых выпусков архив уже создаётся рядом с пакетами. Публичный сервер или репозиторий команда `release` не создаёт; доступность исходников получателям обеспечивает распространяющий. Условия для сторонних ресурсов описаны в `THIRD_PARTY_NOTICES.md` в корне репозитория и каждого пакета; открытые вопросы публикации — в `PUBLIC_RELEASE_AUDIT.md` исходного репозитория.
+Usage terms are governed by AHCL-1.0. When distributing the library, comply with §4 of `LICENSE`: provide recipients with the corresponding source code or a working download for the exact version for the duration specified by the license. For new releases, the archive is already created alongside the packages. The `release` command does not create a public server or repository; the distributor is responsible for making the source available to recipients. Terms for third-party assets are described in `THIRD_PARTY_NOTICES.md` at the repository root and in each package; open publishing questions are in `PUBLIC_RELEASE_AUDIT.md` in the source repository.
 
-Требования §4 относятся и к форкам и зеркалам: сохраняй AHCL-1.0 и применимые уведомления, обозначай изменения и не выдавай изменённую версию за официальный выпуск. Переименование, замена файла LICENSE, минификация или компиляция сами по себе не дают права перелицензировать чужой код. Это пояснение существующего условия; отдельные разрешения правообладателя и лицензии сторонних материалов учитываются по `LICENSE`.
+§4 requirements also apply to forks and mirrors: preserve AHCL-1.0 and applicable notices, mark modifications, and do not present a modified version as an official release. Renaming, replacing the LICENSE file, minification, or compilation alone does not grant the right to relicense someone else's code. This clarifies the existing condition; separate rightsholder permissions and third-party asset licenses are governed by `LICENSE`.
 
-## Исходники выпуска и проверка соответствия
+## Release source and conformance verification
 
-В `manifest.json` поле `source` содержит `file`, `integrity` (SHA-512) и `size` архива `alpha-ui-source-X.Y.Z.tar.gz`. README выпуска ссылается на этот архив. Дополнительное поле совместимо с установщиком и сервером проекта: они продолжают читать `packages`.
+In `manifest.json`, the `source` field contains `file`, `integrity` (SHA-512), and `size` of the `alpha-ui-source-X.Y.Z.tar.gz` archive. The release README links to this archive. The extra field is compatible with the installer and project server: they continue reading `packages`.
 
-Архив содержит канонический `source/`, ручные runtime-модули и ресурсы core, сгенерированные адаптеры и демо, конфигурацию workspace, `package-lock.json`, сборочные скрипты, тесты, примеры, документацию и лицензии. Список корневых файлов и каталогов задан в `scripts/lib/release-source.mjs`. Git, зависимости, сборки, старые выпуски, локальные аватары, env, ключи, логи и конфликтные копии исключаются; символьная ссылка в исходниках прерывает создание архива.
+The archive contains canonical `source/`, manual runtime modules and core assets, generated adapters and demos, workspace configuration, `package-lock.json`, build scripts, tests, examples, documentation, and licenses. The list of root files and directories is defined in `scripts/lib/release-source.mjs`. Git, dependencies, build artifacts, old releases, local avatars, env files, keys, logs, and conflict copies are excluded; a symlink in the source aborts archive creation.
 
-Распакуй архив и в каталоге `alpha-ui-source-X.Y.Z` выполни `npm ci`, затем `npm run verify`. Node.js и npm-зависимости должны быть доступны; соседний Hub и локальные аватары для сборки не нужны. `RELEASE_SOURCE.json` фиксирует версию выпуска и исходную версию workspace. Исходные package.json и lock-файл сохраняются без замены версий: при создании пакетов `stagePackage` выставляет версию выпуска, включая каталог core и внутренние зависимости. Повторить создание пакетов можно командой `npm run release -- X.Y.Z` в распакованной копии, где этой версии ещё нет.
+Unpack the archive and inside `alpha-ui-source-X.Y.Z` run `npm ci`, then `npm run verify`. Node.js and npm dependencies must be available; the sibling Hub and local avatars are not needed for the build. `RELEASE_SOURCE.json` records the release version and source workspace version. The original `package.json` and lockfile are kept without version substitution: when creating packages, `stagePackage` sets the release version, including the core catalog and internal dependencies. You can reproduce package creation by running `npm run release -- X.Y.Z` in an unpacked copy where that version does not yet exist.
 
-`npm run check:packages` создаёт временный архив этим же кодом, проверяет SHA-512, состав и побайтовое совпадение с исходниками. `node scripts/check-release.mjs releases/X.Y.Z` дополнительно распаковывает исходники в отдельный временный каталог, выполняет `npm ci` и `npm run verify`, пересобирает четыре пакета с версией выпуска и сравнивает список файлов и их содержимое с распространяемыми архивами. Затем проверяет установку и независимую сборку приложений React/Qwik. Запускай эту команду для доверенного локального выпуска: она выполняет его сборочные скрипты. Для исторических выпусков без `manifest.source` проверяется только перенос пакетов; скрипт явно сообщает, что исходники не проверены. Старые архивы не дополняются задним числом.
+`npm run check:packages` creates a temporary archive using the same code and verifies SHA-512, contents, and byte-for-byte equality with the source. `node scripts/check-release.mjs releases/X.Y.Z` additionally unpacks the source into a separate temporary directory, runs `npm ci` and `npm run verify`, rebuilds the four packages with the release version, and compares the file list and contents against the distributed archives. It then verifies installation and standalone builds of the React/Qwik apps. Run this command only for a trusted local release: it executes its build scripts. For historical releases without `manifest.source`, only package portability is verified; the script explicitly reports that the source was not checked. Old archives are not backfilled retroactively.
 
-## Один раз подключить проект к центру
+## Connecting a project to the Hub once
 
-В проекте добавь `alpha.project.json`:
+In the project, add `alpha.project.json`:
 
 ```json
 {
-  "name": "Мой проект",
+  "name": "My Project",
   "framework": "react",
   "hub": "http://127.0.0.1:5180",
   "port": 5191,
@@ -77,15 +77,15 @@ npm publish ./releases/X.Y.Z/alpha-project-server-X.Y.Z.tgz --ignore-scripts --a
 }
 ```
 
-Добавь npm script `alpha:serve`: `alpha-project alpha.project.json`. Запусти `npm run alpha:serve`. Это сервер сборки и выдачи интерфейса проекта. Исходники остаются в проекте; команды сборки выбирает его локальная конфигурация. HTTP-запрос не может подставить команду.
+Add the npm script `alpha:serve`: `alpha-project alpha.project.json`. Run `npm run alpha:serve`. This is the project's build and UI serving server. Sources stay in the project; build commands are determined by its local configuration. An HTTP request cannot inject a command.
 
-Нынешний готовый адаптер обслуживает **статическую клиентскую сборку** React или Qwik. Для Vite выставь `base: './'`, чтобы версия приложения работала в `/runs/<id>/`. Qwik CSR требует загрузчик событий; рабочий пример находится в `examples/consumers/qwik`. Qwik SSR/Qwik City, Next.js и серверные приложения требуют собственного адаптера по протоколу ниже, который собирает и запускает новый экземпляр сервера. Нативные бинарники Tauri/Electron этим веб-сервером не переустанавливаются: их shell нужно выпустить отдельно; веб-интерфейс собирается с теми же пакетами.
+The current prebuilt adapter serves a **static client-side build** for React or Qwik. For Vite, set `base: './'` so the app version works under `/runs/<id>/`. Qwik CSR requires an event loader; a working example is in `examples/consumers/qwik`. Qwik SSR/Qwik City, Next.js, and server applications require a custom adapter following the protocol below that builds and starts a new server instance. Native Tauri/Electron binaries are not reinstalled by this web server: their shell must be released separately; the web UI is built with the same packages.
 
-## Запустить центр
+## Running the Hub
 
-Публичный адрес получения Alpha's Hub пока не указан. Этот репозиторий содержит адаптер и протокол, но не сам Hub. Команды ниже предполагают, что отдельный проект уже предоставлен владельцем. Для режима использования с обязательной интеграцией нужны доступ к Hub и рабочее подключение по §3 `LICENSE`; описание протокола само по себе их не обеспечивает.
+No public download address for Alpha's Hub is specified yet. This repository contains the adapter and protocol, not the Hub itself. The commands below assume the separate project has already been provided by the owner. For usage modes requiring mandatory integration, Hub access and a working connection per §3 of `LICENSE` are required; the protocol specification alone does not provide them.
 
-В отдельном проекте `../alpha-hub`: `npm ci`, `npm run build`, `npm start`. Конфигурация — его `alpha.hub.json`; каталог выпусков по умолчанию `../alphas-base/releases`. Для своих проектов замени массив `projects` ссылками на их серверы:
+In the separate `../alpha-hub` project: `npm ci`, `npm run build`, `npm start`. Configuration is its `alpha.hub.json`; the default releases directory is `../alphas-base/releases`. For your own projects, replace the `projects` array with links to their servers:
 
 ```json
 {
@@ -93,38 +93,38 @@ npm publish ./releases/X.Y.Z/alpha-project-server-X.Y.Z.tgz --ignore-scripts --a
   "publicUrl": "http://127.0.0.1:5180",
   "releases": "../alphas-base/releases",
   "autoUpdate": true,
-  "projects": [{"id":"my-app","name":"Мой проект","url":"http://127.0.0.1:5191"}]
+  "projects": [{"id":"my-app","name":"My Project","url":"http://127.0.0.1:5191"}]
 }
 ```
 
-Отдельная машина: перенеси проект Alpha's Hub, подключи зависимости Alpha's UI из выбранного выпуска вместо локальных путей, скопируй каталог выпусков и укажи его в конфигурации. Затем установи зависимости, собери Hub и запусти `npm start`. Документация и конфигурация клиентской оболочки принадлежат отдельному проекту Hub; в этот репозиторий они не входят.
+Separate machine: transfer the Alpha's Hub project, wire Alpha's UI dependencies from the chosen release instead of local paths, copy the releases directory, and specify it in the configuration. Then install dependencies, build Hub, and run `npm start`. Documentation and configuration of the client shell belong to the separate Hub project; they are not included in this repository.
 
-Центр читает текущий выпуск, обращается к ссылкам проектов, принудительно заменяет старые закреплённые UI-зависимости в **отдельной копии проекта**, собирает и показывает текущую версию. При новом latest автоматически повторяет запуск. Повторный запрос на тот же manifest не пересобирает готовый проект. При несовместимом API, ошибке установки или сборки новая версия не объявляется запущенной; предыдущий адрес продолжает работать. Старые вкладки и ленивые Qwik модули используют старый `/runs/<id>/`, новый запуск получает новый адрес. Сборочные копии сохраняются в `.alpha-builds`; исходный package.json и lock не меняются.
+The Hub reads the current release, queries project URLs, forcibly replaces old pinned UI dependencies in a **separate copy of the project**, builds it, and serves the current version. When a new `latest` appears, it automatically re-runs. A repeated request for the same manifest does not rebuild the already built project. On an incompatible API, installation failure, or build failure, the new version is not marked as running; the previous URL continues working. Old tabs and lazy Qwik modules continue using the old `/runs/<id>/`, while a new launch receives a new address. Build copies are stored in `.alpha-builds`; the original `package.json` and lockfile are untouched.
 
-Серверы по умолчанию слушают только 127.0.0.1. Для сетевого размещения используй свой защищённый reverse proxy и одинаковый `token` в конфигурации сервера проекта и записи проекта в hub. Токен передаётся между серверами, не отдаётся в панели. `publicUrl` центра должен быть доступен проектам. Это локальная интеграция, без пользовательских аккаунтов и публичной многопользовательской авторизации. SHA-512 подтверждает соответствие архивов manifest, но не заменяет доверенный источник или подпись. Не выставляй dev-серверы и незащищённый endpoint обновления в публичную сеть.
+By default, servers listen only on 127.0.0.1. For network deployment, use your own protected reverse proxy and the same `token` in both the project server configuration and the project entry in the hub. The token is passed between servers and is not exposed to the panel. The Hub's `publicUrl` must be reachable by the projects. This is a local integration without user accounts or public multi-user authentication. SHA-512 confirms archive compliance with the manifest, but does not replace a trusted source or signature. Do not expose dev servers or an unprotected update endpoint to the public network.
 
-## Контракт для существующего сервера
+## Contract for an existing server
 
-`GET /.well-known/alpha-ui.json` возвращает `{schema:1,framework:"react"|"qwik",version:"X.Y.Z"|null,active:"/runs/id/"|null,update:"/_alpha/update"}`.
+`GET /.well-known/alpha-ui.json` returns `{schema:1,framework:"react"|"qwik",version:"X.Y.Z"|null,active:"/runs/id/"|null,update:"/_alpha/update"}`.
 
-`POST /_alpha/update` принимает `{manifestUrl:"http://hub/releases/X.Y.Z/manifest.json"}`. Сервер проверяет доверенный hub, SHA-512 архивов, устанавливает core и адаптер из выпуска, пересобирает исходники и проверяет доступность. Возвращает тот же manifest проекта с фактической новой version и active. При ошибке возвращает HTTP 500 и сохраняет предыдущий экземпляр. Hub не подменяет код уже собранного чужого сайта: простая ссылка без этого контракта получает понятную ошибку подключения.
+`POST /_alpha/update` accepts `{manifestUrl:"http://hub/releases/X.Y.Z/manifest.json"}`. The server validates the trusted hub, archive SHA-512 checksums, installs core and the adapter from the release, rebuilds the sources, and verifies availability. It returns the same project manifest with the actual new `version` and `active`. On error, it returns HTTP 500 and preserves the previous instance. Hub does not patch an already built third-party site: a plain URL without this contract receives a clear connection error.
 
-## Границы реализации
+## Implementation boundaries
 
-В соседнем Hub приложения сейчас открываются через iframe. Bootstrap приложения с общим сроком обновления 20 секунд описан как требование в [правилах для приложения](consumer-agent-rules.md), но не реализуется установщиком или этим сервером автоматически и пока отсутствует в Hub. Файл bootstrap должен быть написан в самом приложении-потребителе; не ищи его в этом репозитории и не объявляй готовой функцией.
+In the sibling Hub, applications are currently opened via an iframe. The application bootstrap with a 20-second total update timeout is described as a requirement in [application agent rules](consumer-agent-rules.md), but is not implemented automatically by the installer or this server and is not currently present in Hub. The bootstrap file must be written in the consumer application itself; do not look for it in this repository and do not claim it is an existing feature.
 
-## Демо и проверка
+## Demos and verification
 
-`npm run demo:projects` запускает два независимых проекта из `examples/consumers` на 5191/5192. Их исходники запрашивают старую версию 0.1.0. Центр запускает их с текущим выпуском. Открой `http://127.0.0.1:5180` и нажми «Обновить и запустить всё» либо дождись автоматического запуска. Новые выпуски появятся без перезапуска центра.
+`npm run demo:projects` starts two independent projects from `examples/consumers` on 5191/5192. Their sources request the old 0.1.0 version. Hub launches them with the current release. Open `http://127.0.0.1:5180` and click "Update and start all" or wait for automatic startup. New releases appear without restarting the Hub.
 
-`npm test` в Alpha's Hub проверяет контракт, закреплённую старую версию, замену выпуска, ошибки и сохранение предыдущей сборки. Реальные независимые проекты React/Qwik отдельно проверяются через центр в браузере.
+`npm test` in Alpha's Hub checks the contract, pinned old version, release replacement, errors, and preservation of the previous build. Real independent React/Qwik projects are separately verified through the Hub in the browser.
 
-Сервер проекта также сравнивает содержимое исходников: кнопка «Обновить» пересобирает изменившееся приложение, даже если выпуск UI не изменился. Если и исходники, и выпуск прежние, готовая сборка используется повторно.
+The project server also compares source contents: the "Update" button rebuilds a changed application even if the UI release has not changed. If both sources and the release are unchanged, the ready build is reused.
 
-## Очистка сборочных копий
+## Build copy cleanup
 
-Сервер автоматически удаляет старые каталоги `.alpha-builds` при запуске и после успешного обновления (также при повторном запросе без пересборки). По умолчанию сохраняются активная сборка и две самые новые предыдущие. Можно задать `"retainBuilds": 1` в `alpha.project.json`, чтобы оставить только активную, либо другое целое число от 1 до 100. Активная сборка сохраняется независимо от даты файлов.
+The server automatically deletes old `.alpha-builds` directories on startup and after a successful update (including on a repeated request without rebuilding). By default, the active build and the two newest previous ones are kept. You can set `"retainBuilds": 1` in `alpha.project.json` to keep only the active build, or another integer from 1 to 100. The active build is preserved regardless of file timestamps.
 
-Неудачная сборочная копия удаляется сразу при ошибке; незавершённые копии без выходного index.html — при следующем запуске. Очистка затрагивает только каталоги с идентификаторами формата версии и UUID, созданные сервером; посторонние файлы и символьные ссылки не удаляются. При ошибке удаления рабочая сборка остаётся активной, а причина доступна в `cleanupError` протокола проекта.
+A failed build copy is deleted immediately on error; incomplete copies without an output `index.html` are removed on the next startup. Cleanup only touches directories with version-and-UUID formatted IDs created by the server; unrelated files and symlinks are not deleted. On a deletion error, the working build remains active and the reason is exposed in `cleanupError` of the project protocol.
 
-Старые `/runs/<id>/` работают лишь пока сборка входит в сохраняемый запас. Вкладки более старых сборок, включая ленивые модули Qwik, после очистки нужно перезагрузить. Выпуски в `releases` и исходники проекта не очищаются.
+Old `/runs/<id>/` URLs work only while the build remains in the retained pool. Tabs from older builds, including lazy Qwik modules, must be reloaded after cleanup. Releases in `releases` and project sources are not cleaned up.

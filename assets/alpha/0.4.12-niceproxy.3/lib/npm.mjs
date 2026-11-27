@@ -17,7 +17,7 @@ export function npmCli() {
     candidates.push(...paths.map((p) => realpathSync(p)).filter((p) => p.endsWith('npm-cli.js')));
   } catch {}
   const found = candidates.find(existsSync);
-  if (!found) throw new Error('Запусти через npm run или укажи npm_execpath до npm-cli.js.');
+  if (!found) throw new Error('Run via npm run or set npm_execpath to npm-cli.js.');
   return found;
 }
 export function runNpm(args, options = {}) {
@@ -41,7 +41,7 @@ export function runNpm(args, options = {}) {
     child.once('exit', (code) =>
       code === 0
         ? resolve(output)
-        : reject(new Error(`npm ${args[0]} завершился с кодом ${code}\n${output.slice(-8000)}`)),
+        : reject(new Error(`npm ${args[0]} exited with code ${code}\n${output.slice(-8000)}`)),
     );
   });
 }

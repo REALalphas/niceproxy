@@ -1,27 +1,27 @@
 # Stack
 
-## Задача
+## Problem
 
-Парные поля адреса и порта должны оставаться в одной строке, с более широким
-первым полем. Ранее Stack row только переносил элементы, без управления долями.
+Paired address and port fields must stay on a single row, with a wider
+first field. Previously, Stack row only wrapped items without controlling proportions.
 
-## Универсальное поведение и API
+## Universal Behavior and API
 
-`direction="row" columns="equal" | "wide-start" | "wide-end"` задаёт два
-столбца в пропорциях 1:1, 2:1 или 1:2. Без columns прежнее поведение сохраняется.
-React и Qwik имеют одинаковый контракт. Порядок DOM/Tab остаётся прежним.
+`direction="row" columns="equal" | "wide-start" | "wide-end"` sets two
+columns in 1:1, 2:1, or 1:2 proportions. Without columns, previous behavior is preserved.
+React and Qwik share the same contract. DOM/Tab order remains unchanged.
 
-## Композиция и оформление
+## Composition and Styling
 
-Только библиотечная внешняя компоновка; вид и состояния дочерних полей не меняются.
-Gap — штатная шкала Stack, минимальная ширина колонок 0. Ошибки переносятся внутри
-своей колонки; поля остаются в одной строке и на 320px.
+Library-only outer layout; appearance and states of child fields are unchanged.
+Gap uses the standard Stack scale, with column minimum width 0. Errors wrap inside
+their own column; fields remain on one row even at 320px.
 
-## Проверка
+## Verification
 
-Границы парных input имеют одинаковый y; первый шире второго, нет переполнения
-на 1440/320px. Все значения, обработчики и схема проброса сохраняются.
+Paired input bounds share the same y coordinate; the first is wider than the second, with no overflow
+at 1440/320px. All values, handlers, and the forwarding diagram are preserved.
 
-## Статус
+## Status
 
-Доступно и проверено в локальном выпуске 0.4.12-niceproxy.4. Полный verify библиотеки (56 тестов), typecheck/build приложения и браузерная проверка на 1440/320px прошли.
+Available and verified in local release 0.4.12-niceproxy.4. Full library verify (56 tests), application typecheck/build, and browser check at 1440/320px passed.

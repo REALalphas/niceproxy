@@ -1,31 +1,31 @@
 # Button
 
-## Ширина и подпись
+## Width and label
 
-Loading сохраняет подпись и размеры кнопки, блокирует действие и задаёт aria-busy. Вместо отдельного спиннера пунктирная SVG-обводка движется по периметру кнопки той же анимацией, что у Loading Profile. Контур обновляется при переносе текста и изменении ширины через installControlMotion(); скругления не растягиваются вместе с широкой кнопкой. При reduced motion обводка остаётся неподвижной. Общая длительность задана токеном motion.loadingDashes. Disabled использует тот же SVG-контур и пунктир, но без анимации; браузерный dashed border у Button не применяется.
+Loading preserves the button's label and dimensions, blocks the action, and sets aria-busy. Instead of a separate spinner, a dashed SVG outline travels along the button perimeter using the same animation as Loading Profile. The outline updates on text wrapping and width changes via installControlMotion(); corner radii do not stretch on wide buttons. Under reduced motion, the outline remains static. Total duration is defined by the motion.loadingDashes token. Disabled uses the same SVG outline and dashes, without animation; the browser's dashed border is not used on Button.
 
-`width="content"` (по умолчанию) сохраняет ширину содержимого даже в растягивающем Stack. `width="container"` занимает доступную ширину контейнера. Оба режима ограничены шириной контейнера.
+`width="content"` (default) keeps the content width even inside a stretching Stack. `width="container"` fills the available container width. Both modes are constrained by the container width.
 
-`labelWrap="wrap"` (по умолчанию) переносит длинную подпись, включая непрерывные слова; высота кнопки растёт с содержимым. `labelWrap="single-line"` оставляет одну строку с многоточием при нехватке места; полное содержимое остаётся доступным скринридеру. Для длинных действий предпочтителен wrap.
+`labelWrap="wrap"` (default) wraps long labels, including unbroken words; the button height grows with its content. `labelWrap="single-line"` keeps a single line with an ellipsis when space is tight; the full content remains accessible to screen readers. `wrap` is preferred for long actions.
 
 ```tsx
 <Button width="container" labelWrap="wrap" onPress={chooseAction}>
-  Продолжить путешествие и исследовать неизвестную дорогу
+  Continue the journey and explore the unknown road
 </Button>
 ```
 
-В Qwik используется `onPress$`. Эти свойства работают с размерами sm/md и существующими вариантами; loading и disabled сохраняют штатное поведение. CSS приложения для переключения этих режимов не нужен. Ширина контейнера и перенос — расширение Alpha's UI, а не извлечённый вариант Figma.
+In Qwik, `onPress$` is used. These props work with sm/md sizes and existing variants; loading and disabled preserve standard behavior. No application CSS is needed to switch these modes. Container width and wrapping are Alpha's UI extensions, not an extracted Figma variant.
 
-Figma: набор 52:340. Имена: Default (52:332), Simple (52:407), Blank (52:411), Pressed (52:349), Focused (52:347), Disabled (52:341). В коде variant использует те же имена в нижнем регистре. Native :active / :focus-visible / :disabled включают соответствующие состояния. Disabled не выполняет действие.
+Figma: set 52:340. Names: Default (52:332), Simple (52:407), Blank (52:411), Pressed (52:349), Focused (52:347), Disabled (52:341). In code, variant uses the same names in lowercase. Native :active / :focus-visible / :disabled trigger the corresponding states. Disabled does not execute the action.
 
-Default: полученный контекст Figma, фон #994f4f, высота 38/16rem, радиус 12/16rem, рамка 1.5/16rem. Текущий текст кнопок — Manrope 400, минимум 1rem; он заменяет Noto Sans Medium из старого макета. Focused: белая рамка, Pressed: утолщённая внутренняя рамка через box-shadow #ddd6, как уточнил пользователь. Simple прозрачный с рамкой #9994; Blank прозрачный без рамки. Disabled: заливка #222222 с прозрачностью 33%; текст приглушённый, контур — статичный SVG-пунктир, нажатие заблокировано. Остальные состояния сверены в браузере, а не через свойства Figma.
+Default: extracted Figma context, background #994f4f, height 38/16rem, radius 12/16rem, border 1.5/16rem. Current button text is Manrope 400, minimum 1rem; it replaces Noto Sans Medium from the old mockup. Focused: white border; Pressed: thickened inner border via box-shadow #ddd6, as specified by the user. Simple is transparent with border #9994; Blank is transparent without a border. Disabled: #222222 fill at 33% opacity; muted text, static dashed SVG outline, press blocked. Remaining states were verified in the browser rather than through Figma properties.
 
-Все длины CSS — rem от базовых 16px. Контейнеры используют проценты, min/max и svh; изображения сохраняют aspect-ratio. --as-base-size меняет масштаб всей системы. Числовые width/height в HTML задают исходные пропорции ресурсов, отображение задаёт CSS.
+All CSS lengths are in rem from a 16px base. Containers use percentages, min/max, and svh; images preserve aspect-ratio. --as-base-size scales the entire system. Numeric width/height in HTML set intrinsic asset proportions; CSS controls rendering size.
 
-Focused и hover различны: Focused — белая рамка. Hover по указанию пользователя переключает рамку с #9994 на #ddd6 без изменения толщины и заливки; Blank сохраняет отсутствие рамки. Параметры hover сохранены: задержка 0.033s, длительность 0.166s.
+Focused and hover are distinct: Focused is a white border. Per user specification, hover switches the border from #9994 to #ddd6 without changing thickness or fill; Blank keeps no border. Hover parameters preserved: delay 0.033s, duration 0.166s.
 
-Цвет рамки #9994 задан пользователем; он заменяет белый с прозрачностью 10%.
+Border color #9994 was specified by the user; it replaces 10% opacity white.
 
-Текст: основной #fff, вторичный #ddd (Simple/Blank), отключённый #666.
+Text: primary #fff, secondary #ddd (Simple/Blank), disabled #666.
 
-Пунктир Disabled и Loading Button: общий SVG-контур толщиной borderWidth.loading, риски 3 толщины и промежутки 2 толщины. Disabled статичен. Оба состояния используют одинаковое скругление и масштабирование.
+Disabled and Loading Button dashes: shared SVG outline with thickness borderWidth.loading, dash length 3x thickness, and gap 2x thickness. Disabled is static. Both states use identical corner rounding and scaling.

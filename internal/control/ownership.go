@@ -86,14 +86,14 @@ func (a *App) setupDirectPorts(c *model.Config, previous, next model.DirectRule)
 	if next.Protocol == "tcp" && next.ListenPort == a.httpsPort && a.config.PortOwners.HTTPS != "direct" {
 		if c.PanelDomain != "" {
 			return portConflict(
-				fmt.Sprintf("Порт TCP %d используется панелью управления (%s). Выберите другой входящий порт.", a.httpsPort, c.PanelDomain),
+				fmt.Sprintf("TCP port %d is used by the management panel (%s). Choose another incoming port.", a.httpsPort, c.PanelDomain),
 				"TCP port %d is used for the public management panel", a.httpsPort,
 			)
 		}
 		for _, route := range c.HTTPRoutes {
 			if route.Enabled && route.TLS != "off" {
 				return portConflict(
-					fmt.Sprintf("Порт TCP %d нужен для HTTPS-маршрута %s. Выберите другой входящий порт.", a.httpsPort, route.Host),
+					fmt.Sprintf("TCP port %d is required by the HTTPS route %s. Choose another incoming port.", a.httpsPort, route.Host),
 					"TCP port %d is used by the HTTPS route for %s", a.httpsPort, route.Host,
 				)
 			}
@@ -127,7 +127,7 @@ func (a *App) ownershipConflict(c model.Config) error {
 	o := c.PortOwners.Defaults()
 	if c.PanelDomain != "" && o.HTTPS == "direct" && o.HTTP3 == "direct" {
 		return portConflict(
-			fmt.Sprintf("Для доступа к панели по домену %s освободите порт %d для TCP или UDP.", c.PanelDomain, a.httpsPort),
+			fmt.Sprintf("To access the panel at %s, free port %d for TCP or UDP.", c.PanelDomain, a.httpsPort),
 			"public management panel needs HTTPS TCP or HTTP3 UDP port %d", a.httpsPort,
 		)
 	}
@@ -138,19 +138,19 @@ func (a *App) ownershipConflict(c model.Config) error {
 		address := r.Host + strings.TrimSuffix(r.Path, "/")
 		if r.TLS == "off" && o.HTTP != "caddy" {
 			return portConflict(
-				fmt.Sprintf("Маршруту %s нужен порт TCP %d для HTTP. Выберите другой порт для проброса или выключите один из маршрутов.", address, a.httpPort),
+				fmt.Sprintf("Route %s requires TCP port %d for HTTP. Choose another forwarding port or disable one of the routes.", address, a.httpPort),
 				"HTTP route %s requires HTTP owner caddy; disable it first", r.ID,
 			)
 		}
 		if r.TLS != "off" && o.HTTPS != "caddy" && o.HTTP3 != "caddy" {
 			return portConflict(
-				fmt.Sprintf("Для HTTPS-маршрута %s освободите порт %d для TCP или UDP.", address, a.httpsPort),
+				fmt.Sprintf("For HTTPS route %s, free port %d for TCP or UDP.", address, a.httpsPort),
 				"HTTP route %s requires HTTPS or HTTP3 owner caddy; disable it first", r.ID,
 			)
 		}
 		if (r.TLS == "auto" || r.TLS == "") && o.HTTP != "caddy" && o.HTTPS != "caddy" {
 			return portConflict(
-				fmt.Sprintf("Для автоматического сертификата маршрута %s нужен свободный порт TCP %d или TCP %d.", address, a.httpPort, a.httpsPort),
+				fmt.Sprintf("Route %s needs a free TCP port %d or TCP %d for automatic certificates.", address, a.httpPort, a.httpsPort),
 				"HTTP route %s requires a Caddy TCP ACME challenge port; disable it first", r.ID,
 			)
 		}
@@ -164,7 +164,7 @@ func (a *App) ownershipConflict(c model.Config) error {
 		}
 		if owner := a.publicPortOwner(&c, r.Protocol, r.ListenPort); owner != nil && *owner != "direct" {
 			return portConflict(
-				fmt.Sprintf("Порт %s %d уже используется веб-доступом. Выберите другой входящий порт или выключите веб-маршрут.", strings.ToUpper(r.Protocol), r.ListenPort),
+				fmt.Sprintf("Port %s %d is already used for web access. Choose another incoming port or disable the web route.", strings.ToUpper(r.Protocol), r.ListenPort),
 				"direct rule %s conflicts with Caddy ownership of %s port %d; disable it first", r.ID, r.Protocol, r.ListenPort,
 			)
 		}
@@ -176,7 +176,7 @@ func (a *App) ownershipConflict(c model.Config) error {
 			if x != nil && y != nil && (x.Equal(y) || (x.IsUnspecified() && (x.To4() == nil || y.To4() != nil)) || (y.IsUnspecified() && (y.To4() == nil || x.To4() != nil))) {
 				listen := net.JoinHostPort(other.ListenHost, fmt.Sprint(other.ListenPort))
 				return portConflict(
-					fmt.Sprintf("На %s уже включён проброс %s. Выберите другой входящий порт или выключите существующий маршрут.", listen, strings.ToUpper(r.Protocol)),
+					fmt.Sprintf("Forwarding %s is already enabled on %s. Choose another incoming port or disable the existing route.", strings.ToUpper(r.Protocol), listen),
 					"direct rule %s conflicts with enabled direct rule %s", r.ID, other.ID,
 				)
 			}

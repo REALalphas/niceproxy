@@ -1,92 +1,92 @@
 # AppShell
 
-## Задача
+## Problem
 
-В приложении с одним сервисом и входом по паролю шапка не должна предлагать
-неработающий выбор сервиса или пустую кнопку профиля. Niceproxy использует
-Alpha UI 0.4.11: AppShell всегда рендерит HeadBar с service picker и Profile.
-Публичные свойства позволяют передать обработчики, состояние и изображение,
-но не позволяют исключить эти необязательные действия. В Niceproxy профиль теперь ведёт к разделу доступа, название сервиса возвращает к маршрутам. Для приложений без таких действий всё ещё требуется публичный статический режим. CSS-скрытие и вмешательство во внутреннюю разметку
-не применяются.
+In a single-service application with password login, the header must not offer
+a non-functional service picker or an empty profile button. Niceproxy uses
+Alpha UI 0.4.11: AppShell always renders HeadBar with a service picker and Profile.
+Public props allow passing handlers, state, and an image,
+but do not allow excluding these optional actions. In Niceproxy, Profile now navigates to the access section, and the service name returns to routes. For applications without such actions, a public static mode is still required. CSS hiding and tampering with internal markup
+are not used.
 
-## Универсальное поведение
+## Universal Behavior
 
-- Когда список сервисов отсутствует и выбор сервиса не предоставлен, показывать
-  статическое название без стрелки, роли кнопки и остановки Tab.
-- Дать возможность явно отключить профиль для приложений без аккаунтного меню.
-- В режиме профиля без изображения показывать осмысленное штатное представление
-  с доступным названием. Не показывать пустую интерактивную область без действия.
-- Существующие многосервисные и аккаунтные сценарии должны сохранять своё
-  поведение, клавиатурное управление и видимый фокус.
-- Одинаковое поведение React и Qwik.
+- When there is no service list and no service selection is provided, show a
+  static title without a chevron, button role, or Tab stop.
+- Allow explicitly disabling the profile for applications without an account menu.
+- In profile mode without an image, show a meaningful standard representation
+  with an accessible name. Do not show an empty interactive area without an action.
+- Existing multi-service and account scenarios must preserve their
+  behavior, keyboard navigation, and visible focus.
+- Identical behavior in React and Qwik.
 
-## Предлагаемый API
+## Proposed API
 
-Дополнить AppShell и HeadBar:
+Extend AppShell and HeadBar:
 
 ```ts
-serviceMode?: 'picker' | 'static'; // По умолчанию picker для совместимости.
-showAccount?: boolean; // По умолчанию true для совместимости.
-accountLabel?: string; // Передавать из AppShell в HeadBar и Profile.
+serviceMode?: 'picker' | 'static'; // Defaults to picker for compatibility.
+showAccount?: boolean; // Defaults to true for compatibility.
+accountLabel?: string; // Pass from AppShell to HeadBar and Profile.
 ```
 
-Обработчики `onServiceChange`, `onServicePress`, `onAccountPress` сохраняются.
-В Qwik их имена имеют суффикс `$`. В статическом режиме `onServicePress`
-не создаёт интерактивный элемент. При `showAccount=false` профиль отсутствует
-в DOM и порядке фокуса.
+The `onServiceChange`, `onServicePress`, and `onAccountPress` handlers are preserved.
+In Qwik, their names have the `$` suffix. In static mode, `onServicePress`
+does not create an interactive element. When `showAccount=false`, Profile is absent
+from the DOM and focus order.
 
-## Композиция и оформление
+## Composition and Styling
 
-Изменение реализуется в исходниках Alpha UI, а затем поставляется единым
-выпуском core/react/qwik. Используются существующие HeadBar, Profile, Logo,
-Text и токены библиотеки. Шапка адаптируется к отсутствию профиля без пустой
-колонки; статическое название сохраняет стиль и обработку длинных названий.
-Локальные CSS-переопределения приложения не нужны.
+The change is implemented in Alpha UI sources and then shipped as a unified
+core/react/qwik release. Existing HeadBar, Profile, Logo,
+Text, and library tokens are used. The header adapts to the absence of Profile without an empty
+column; the static title preserves styling and long-title handling.
+Local application CSS overrides are not needed.
 
-## Проверка
+## Verification
 
-- `serviceMode="static" showAccount={false}`: одно название сервиса, без
-  стрелки, неработающих кнопок и пустого места профиля.
-- Picker с несколькими сервисами работает мышью и клавиатурой.
-- Профиль с обработчиком имеет доступное имя и вызывает ровно одно действие.
-- Режимы проверены на 320px и широкой ширине, с длинным названием и reduced motion.
-- Typecheck/build React и Qwik и проверка потребляющего приложения.
+- `serviceMode="static" showAccount={false}`: single service title, without
+  a chevron, non-functional buttons, or empty profile space.
+- Picker with multiple services works by mouse and keyboard.
+- Profile with a handler has an accessible name and triggers exactly one action.
+- Modes verified at 320px and wide viewports, with long titles and reduced motion.
+- React and Qwik typecheck/build and verification in the consuming application.
 
-## Статус
+## Status
 
-Доступно и проверено в локальном выпуске Alpha UI 0.4.12-niceproxy.3:
-AppShell viewport=full, serviceMode=static, showAccount=false и accountLabel.
-Приложение не скрывает и не переоформляет шапку CSS.
-
-
-## Размещение на странице без CSS приложения
-
-Для установки с запретом на CSS приложения нужны публичные настройки полноэкранной
-оболочки и внешних интервалов области содержимого. В 0.4.11 AppShell использует
-минимальную высоту 80svh на desktop / 37.5rem на mobile, но не сбрасывает margin
-body и не предлагает padding области содержимого. Stack управляет gap и направлением,
-но не внешними отступами; Card задаёт собственную поверхность, а не нейтральный inset.
-
-Предлагаемые универсальные свойства: `viewport="full" | "content"`,
-`contentInset` из шкалы интервалов библиотеки; отдельная документированная корневая
-область для canvas и сброса margin, без локального CSS потребителя. Область не должна
-менять внутренние размеры вложенных контролов. React/Qwik имеют одинаковый контракт.
-Проверка: заполнение viewport на 320px/1440px, корректный scroll и sticky-навигация,
-canvas за пределами карточек, единые внешние интервалы и отсутствие горизонтального
-переполнения. Статус: реализовано и проверено через AppShell viewport=full и Page
-в локальном выпуске 0.4.12-niceproxy.3.
+Available and verified in local release Alpha UI 0.4.12-niceproxy.3:
+AppShell viewport=full, serviceMode=static, showAccount=false, and accountLabel.
+The application does not hide or restyle the header via CSS.
 
 
-## Проверено в приложении
+## Page Layout Without Application CSS
 
-Доступно в локальном выпуске **0.4.12-niceproxy.3**. Архивы и соответствующие
-исходники находятся в `assets/alpha/0.4.12-niceproxy.3/`. Это локальное расширение
-из исходников 0.4.11, а не официальный внешний выпуск. Установленные пакеты
-не редактировались. Полная проверка библиотеки: 55 тестов, React/Qwik build и
-typecheck, документы и состав пакетов. Page проверен в production React/Qwik
-на 1440/320px. В Niceproxy проверены 1880/1440/320px, высота оболочки не меньше
-viewport, margin документа 0, ширина формы не больше 44rem, отсутствие профиля
-и переполнения, реальные CRUD/порты и клавиатура.
+An installation prohibiting application CSS requires public settings for a full-screen
+shell and outer content-area spacing. In 0.4.11, AppShell uses
+a minimum height of 80svh on desktop / 37.5rem on mobile, but does not reset body
+margin or offer content-area padding. Stack controls gap and direction,
+not outer margins; Card defines its own surface rather than a neutral inset.
 
-В текущем приложении `showAccount` включён по явному требованию пользователя.
-Свойство отключения остаётся частью API, но Niceproxy его больше не использует.
+Proposed universal props: `viewport="full" | "content"`,
+`contentInset` from the library spacing scale; a separate documented root
+region for the canvas and margin reset, without consumer local CSS. The region must not
+alter internal sizes of nested controls. React/Qwik share the same contract.
+Verification: viewport fill at 320px/1440px, proper scroll and sticky navigation,
+canvas outside cards, consistent outer spacing, and no horizontal
+overflow. Status: implemented and verified via AppShell viewport=full and Page
+in local release 0.4.12-niceproxy.3.
+
+
+## Verified in Application
+
+Available in local release **0.4.12-niceproxy.3**. Archives and corresponding
+sources are in `assets/alpha/0.4.12-niceproxy.3/`. This is a local extension
+from 0.4.11 sources, not an official external release. Installed packages
+were not edited. Full library verification: 55 tests, React/Qwik build and
+typecheck, docs, and package contents. Page verified in production React/Qwik
+at 1440/320px. In Niceproxy, 1880/1440/320px, shell height >= viewport,
+document margin 0, form width <= 44rem, absence of profile
+and overflow, real CRUD/ports, and keyboard navigation were verified.
+
+In the current application, `showAccount` is enabled per explicit user request.
+The disable prop remains part of the API, though Niceproxy no longer uses it.

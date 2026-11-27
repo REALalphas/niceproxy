@@ -8,7 +8,7 @@ const args = process.argv.slice(2);
 const option = (name) => args[args.indexOf(name) + 1];
 const project = resolve(args.includes('--project') ? option('--project') : '.');
 const framework = args.includes('--framework') ? option('--framework') : 'react';
-if (!['react', 'qwik'].includes(framework)) throw new Error('--framework react или qwik');
+if (!['react', 'qwik'].includes(framework)) throw new Error('--framework must be react or qwik');
 const source = args.includes('--from') ? option('--from') : import.meta.dirname;
 const remote = /^https?:/.test(source);
 const base = remote ? new URL(source.endsWith('/') ? source : source + '/') : null;
@@ -23,12 +23,12 @@ const files = [];
 for (const name of ['@alpha/core', `@alpha/${framework}`, '@alpha/project-server']) {
   const item = manifest.packages[name];
   if (!item || !/^[a-zA-Z0-9._-]+\.tgz$/.test(item.file))
-    throw new Error(`Нет корректного архива ${name}`);
+    throw new Error(`No valid archive for ${name}`);
   const bytes = remote
     ? Buffer.from(await (await fetch(new URL(item.file, base))).arrayBuffer())
     : await readFile(join(resolve(source), item.file));
   if (`sha512-${createHash('sha512').update(bytes).digest('base64')}` !== item.integrity)
-    throw new Error(`Неверная контрольная сумма ${name}`);
+    throw new Error(`Invalid checksum for ${name}`);
   const path = join(cache, item.file);
   await writeFile(path, bytes);
   files.push(path);
@@ -47,9 +47,9 @@ try {
   agents = await readFile(agentFile, 'utf8');
 } catch {}
 const agentRule =
-  'Обязательно прочитай и соблюдай ALPHA_UI_AGENT_RULES.md. При нехватке компонента сообщи пользователю и создай или обнови ui-unspec/<component_name>.md с требованиями к универсальному компоненту.';
+  'Always read and follow ALPHA_UI_AGENT_RULES.md. If a component is missing, notify the user and create or update ui-unspec/<component_name>.md with requirements for a universal component.';
 const legacyRule =
-  'Обязательно прочитай и соблюдай ALPHA_UI_AGENT_RULES.md. При нехватке компонента сообщи пользователю и обнови ALPHA_UI_GAPS.md.';
+  '\u041e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u044c\u043d\u043e \u043f\u0440\u043e\u0447\u0438\u0442\u0430\u0439 \u0438 \u0441\u043e\u0431\u043b\u044e\u0434\u0430\u0439 ALPHA_UI_AGENT_RULES.md. \u041f\u0440\u0438 \u043d\u0435\u0445\u0432\u0430\u0442\u043a\u0435 \u043a\u043e\u043c\u043f\u043e\u043d\u0435\u043d\u0442\u0430 \u0441\u043e\u043e\u0431\u0449\u0438 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044e \u0438 \u043e\u0431\u043d\u043e\u0432\u0438 ALPHA_UI_GAPS.md.';
 const nextAgents = agents.includes(legacyRule)
   ? agents.replace(legacyRule, agentRule)
   : agents.includes('ALPHA_UI_AGENT_RULES.md')
@@ -57,5 +57,5 @@ const nextAgents = agents.includes(legacyRule)
     : agents + '\n' + agentRule + '\n';
 if (nextAgents !== agents) await writeFile(agentFile, nextAgents);
 console.log(
-  `Установлена Alpha's UI ${manifest.version}. Инструкция для агентов подключена в AGENTS.md.`,
+  `Installed Alpha's UI ${manifest.version}. Agent instructions linked in AGENTS.md.`,
 );

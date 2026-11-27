@@ -1,8 +1,8 @@
 # Niceproxy web
 
-Веб-панель Niceproxy на React + TypeScript и Alpha UI 0.4.12-niceproxy.4 (локальное расширение из исходников 0.4.11). Интерфейс на русском: первичная настройка и вход по паролю, CRUD HTTP/HTTPS маршрутов и TCP/UDP правил, состояние сохранённой и применённой ревизий.
+Niceproxy web panel built with React + TypeScript and Alpha UI 0.4.12-niceproxy.4 (a local extension from 0.4.11 sources). English UI: initial setup and password sign-in, CRUD for HTTP/HTTPS routes and TCP/UDP rules, and saved vs. applied revision status.
 
-Структура экранов и иерархия акцентов: [дизайн интерфейса](../docs/ui-design.md).
+Screen structure and emphasis hierarchy: [UI design](../docs/ui-design.md).
 
 ```sh
 cd web
@@ -12,10 +12,10 @@ npm run build
 npm start
 ```
 
-Для dev-сервера, открытого через публичное имя, задайте `NICEPROXY_DOMAIN` или
-список имён через `VITE_ALLOWED_HOSTS`, например `VITE_ALLOWED_HOSTS=cf.toxl.fun npm run dev -- --host 0.0.0.0`.
-Не направляйте публичные TCP 80 и 443 на Vite, пока Caddy получает ACME-сертификат.
+For a dev server accessed via a public hostname, set `NICEPROXY_DOMAIN` or
+a list of hostnames via `VITE_ALLOWED_HOSTS`, e.g. `VITE_ALLOWED_HOSTS=cf.toxl.fun npm run dev -- --host 0.0.0.0`.
+Do not forward public TCP 80 and 443 to Vite while Caddy is obtaining an ACME certificate.
 
-`npm start` запускает `scripts/alpha-bootstrap.mjs`. При `NICEPROXY_ALPHA_RELEASE_URL` скрипт проверяет `latest.json`, manifest и SHA-512 архивов core/react/project-server, собирает staging в пределах общего таймаута 20 секунд и активирует только готовую сборку. Без URL явно используется локальная версия; ошибки и таймауты откатываются к последней рабочей сборке. `node scripts/alpha-bootstrap.mjs --prepare` печатает путь активной сборки без запуска сервера.
+`npm start` runs `scripts/alpha-bootstrap.mjs`. When `NICEPROXY_ALPHA_RELEASE_URL` is set, the script verifies `latest.json`, the manifest, and SHA-512 checksums of the core/react/project-server archives, builds in staging within a 20-second total timeout, and activates only a completed build. Without the URL, the local version is used explicitly; errors and timeouts fall back to the last working build. `node scripts/alpha-bootstrap.mjs --prepare` prints the active build path without starting the server.
 
-API: `GET /api/auth`; `POST /api/setup` и `/api/login` `{password}`; `POST /api/logout`; `GET /api/config` `{revision,panelDomain,httpRoutes,directRules}`; `GET/PATCH /api/panel-domain`; CRUD `/api/http-routes/:id` и `/api/direct-rules/:id`; `GET /api/health` `{status,state,caddy,revision,appliedRevision,panelDomain,certificate,error?}`. Non-2xx ответы содержат JSON `error`, а 401 возвращает экран входа. UI builds are selected from `/data/ui` only after atomic marker, version and digest validation.
+API: `GET /api/auth`; `POST /api/setup` and `/api/login` `{password}`; `POST /api/logout`; `GET /api/config` `{revision,panelDomain,httpRoutes,directRules}`; `GET/PATCH /api/panel-domain`; CRUD `/api/http-routes/:id` and `/api/direct-rules/:id`; `GET /api/health` `{status,state,caddy,revision,appliedRevision,panelDomain,certificate,error?}`. Non-2xx responses contain JSON `error`, and 401 returns the sign-in screen. UI builds are selected from `/data/ui` only after atomic marker, version and digest validation.

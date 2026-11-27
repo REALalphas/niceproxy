@@ -1,10 +1,10 @@
-# Проверки niceproxy
+# Testing niceproxy
 
-Все стенды создают отдельные процессы, данные и высокие порты. Они не используют
-рабочую конфигурацию niceproxy или NAS. Запускать команды из корня репозитория.
-Парк использует loopback-IP Linux; это не VM и не моделирование WAN/CGNAT.
+All test harnesses create separate processes, data directories, and high ports. They do not use
+the production niceproxy or NAS configuration. Run commands from the repository root.
+The park uses Linux loopback IPs; this is not a VM and does not model WAN/CGNAT.
 
-## Подготовка
+## Preparation
 
 ```sh
 go build -o bin/niceproxy ./cmd/niceproxy
@@ -14,10 +14,10 @@ npm --prefix web run typecheck
 npm --prefix web run build
 ```
 
-Нужен проверенный Caddy 2.10.2. Путь передаётся явно во всех командах. Его скачивание
-и проверка checksum выполняются отдельно; стенд не устанавливает доверенные CA в ОС.
+A verified Caddy 2.10.2 binary is required. Its path is passed explicitly in all commands. Downloading it
+and verifying its checksum are performed separately; the harness does not install trusted CAs in the OS.
 
-## Регрессии и парк
+## Regressions and Park
 
 ```sh
 NICEPROXY_CADDY_TEST_BINARY=/path/to/caddy go test -race -count=1 ./...
@@ -28,124 +28,124 @@ python3 scripts/ownership-smoke.py --caddy /path/to/caddy
 python3 scripts/virtual-park.py --caddy /path/to/caddy --instances 6 --clients 128 --cycles 50 --output test-results/park/fleet.json
 ```
 
-Парк держит все 768 TCP-клиентов открытыми одновременно на шести экземплярах.
-Проверяются nonce/payload и разделение бэкендов, HTTP и TLS, чужие Host, смены
-назначений, лимиты, обрывы процессов и backend, сохранение сессии и правил,
-завершение TCP/UDP-ассоциаций, FD/RSS/threads. Подробности и ограничения —
+The park keeps all 768 TCP clients open simultaneously across six instances.
+It verifies nonce/payload and backend isolation, HTTP and TLS, foreign Host headers, target
+changes, limits, process and backend crashes, session and rule persistence,
+termination of TCP/UDP associations, and FD/RSS/threads. Details and limitations —
 [virtual-park.md](virtual-park.md).
 
-Наблюдение новых подключений при смене владельца включает несколько отдельных
-API-операций отключения, назначения и включения. Между ними порт может быть закрыт;
-эти отказы записываются, а не исключаются из измерения. Удерживаемый принятый TCP-поток
-проверяется отдельно. Это разные свойства, поэтому успех теста сохранения потока
-не означает нулевой отказ новых подключений.
+Observing new connections during owner handover involves several separate
+API operations: disable, assign, and enable. Between them, the port may be closed;
+these failures are recorded rather than excluded from the measurement. A held accepted TCP stream
+is verified separately. These are distinct properties, so passing the stream-preservation test
+does not imply zero failures for new connections.
 
-Быстрый запуск только маршрутизации и конкурентных клиентов:
+Quick run for routing and concurrent clients only:
 
 ```sh
 python3 scripts/virtual-park.py --caddy /path/to/caddy --instances 6 --clients 128 --functional-only
 ```
 
-Реальный HTTP/3 (нужен curl с HTTP3):
+Real HTTP/3 (requires curl with HTTP3 support):
 
 ```sh
 python3 scripts/http3-smoke.py --caddy /path/to/caddy
 ```
 
-Он проверяет QUIC с доверенным CA, когда TCP того же порта занят прямым пробросом;
-затем — HTTPS по TCP при прямом UDP, плюс чужой Host в HTTP/3 с проверенным SNI.
+It tests QUIC with a trusted CA when TCP on the same port is occupied by direct forwarding;
+then HTTPS over TCP with direct UDP, plus a foreign Host in HTTP/3 with verified SNI.
 
-Для Linux splice:
+For Linux splice:
 
 ```sh
 go test -c -o /tmp/niceproxy-proxy.test ./internal/proxy
 strace -f -e trace=splice -o test-results/splice-bulk.trace /tmp/niceproxy-proxy.test -test.run '^TestTCPBulkSplice$' -test.count=1
 ```
 
-## Локальная нагрузка
+## Local Load Testing
 
 ```sh
 python3 scripts/benchmark-park.py --caddy /path/to/caddy --seconds 3 --repeats 2 --concurrency 1,16,64 --output test-results/park/benchmark.json
 ```
 
-Бюджеты Go задаются отдельно: `--backend-gomaxprocs 4`, `--client-gomaxprocs 4`,
-`--app-gomaxprocs 4` (niceproxy и унаследованный им Caddy). По умолчанию везде 4,
-как в исходной методике. Они меняют окружение только временных дочерних процессов;
-стенд не меняет production environment, affinity или настройки ОС. В JSON сохраняются
-точные бюджеты, фактические CPU affinity и для каждого прогона CPU seconds,
-measurement wall seconds и mean cores: дельты `/proc/PID/stat` niceproxy/backend/Caddy,
-для клиента — собственные user+system CPU через `wait4`. Для постоянных процессов
-интервал определяется серединами чтений `/proc`, для клиента включает его запуск
-и завершение. Это приблизительные показатели, особенно для коротких прогонов:
-они не совпадают с внутренним интервалом RPS генератора. Mean cores — CPU seconds /
-wall seconds, не процент CPU. JSON также содержит разрешение CPU ticks, CPU quota,
-cpuset и throttling всех доступных предков cgroup v2 до/после прогона, унаследованные
-GOGC/GOMEMLIMIT/GODEBUG/GOEXPERIMENT и SHA-256 трёх исполняемых файлов.
+Go budgets are configured separately: `--backend-gomaxprocs 4`, `--client-gomaxprocs 4`,
+`--app-gomaxprocs 4` (niceproxy and its inherited Caddy). All default to 4,
+as in the baseline methodology. They change the environment only for temporary child processes;
+the harness does not modify the production environment, affinity, or OS settings. The JSON stores
+exact budgets, actual CPU affinity, and for each run CPU seconds,
+measurement wall seconds, and mean cores: deltas of `/proc/PID/stat` for niceproxy/backend/Caddy,
+and for the client, its own user+system CPU via `wait4`. For persistent processes,
+the interval is determined by the midpoints of `/proc/PID/stat` reads; for the client, it includes its startup
+and exit. These are approximate metrics, especially for short runs:
+they do not match the generator's internal RPS interval. Mean cores is CPU seconds /
+wall seconds, not CPU percentage. The JSON also records CPU tick resolution, CPU quota,
+cpuset, and throttling across all accessible cgroup v2 ancestors before/after the run, inherited
+GOGC/GOMEMLIMIT/GODEBUG/GOEXPERIMENT, and SHA-256 hashes of the three binaries.
 
-`--proxy-only` исключает прямые варианты. Явные цели RPS можно проверить так:
+`--proxy-only` excludes direct baselines. Explicit RPS targets can be checked as follows:
 
 ```sh
 python3 scripts/benchmark-park.py --caddy /path/to/caddy --cases http_keepalive,tcp_256_reused,https_keepalive --seconds 15 --repeats 3 --concurrency 64 --proxy-only --backend-gomaxprocs 4 --client-gomaxprocs 4 --app-gomaxprocs 8 --targets 'tcp_256_reused=70000,http_keepalive=80000,https_keepalive=40000'
 ```
 
-`passed` означает функциональный успех; `targetPassed` — отдельный результат целей
-(`null`, если цели не заданы). Для каждой цели нужен хотя бы один уровень concurrency,
-где **все** ожидаемые повторы proxy завершились без ошибок и каждый достиг цели;
-среднее и максимум не заменяют эту проверку. `targetAssessment` содержит результат
-каждого уровня. Пропущенный case, неполные или повторённые номера повторов не проходят.
-Прямые варианты не учитываются. Недостигнутая явная цель даёт ненулевой exit code,
-даже если функциональная проверка прошла. HTTP/HTTPS требуют полный ожидаемый prefix
-`bench-backend /` и точное число received bytes = succeeded × длина полного тела;
-HTTPS сохраняет проверку CA. Проверки валидатора: `python3 -m unittest discover -s scripts/tests`.
+`passed` indicates functional success; `targetPassed` is the separate target outcome
+(`null` if no targets were specified). Each target requires at least one concurrency level
+where **all** expected proxy repeats completed with zero errors and each reached the target;
+the average and maximum do not replace this check. `targetAssessment` contains the result
+for each level. A missing case, or incomplete or repeated repeat numbers, fails the check.
+Direct variants are not counted. An unmet explicit target produces a non-zero exit code,
+even if the functional check passed. HTTP/HTTPS require the full expected
+`bench-backend /` prefix and exact received bytes = succeeded × full body length;
+HTTPS retains CA verification. Validator checks: `python3 -m unittest discover -s scripts/tests`.
 
-Для проверки TCP на порту, назначенном публичным HTTP, есть отдельный режим:
+To test TCP on a port assigned to public HTTP, there is a separate mode:
 
 ```sh
 python3 scripts/benchmark-park.py --caddy /path/to/caddy --cases tcp_256_reused --tcp-on-http-port --seconds 15 --repeats 3 --concurrency 64 --proxy-only --app-gomaxprocs 8 --targets tcp_256_reused=70000
 ```
 
-Он явно назначает владельца HTTP-порта `direct` перед созданием TCP-правила; HTTP
-на этом сокете отсутствует. Для непривилегированного локального стенда используется
-случайный высокий порт из диапазона 20000–29999, переданный как `--http-port`.
-Это проверка того же выбора владельца, что для публичного 80, а не буквальный bind
-на :80 или измерение маршрутизатора. Точный порт и владелец записываются в `listeners`.
-Обычный TCP-проброс и этот режим используют один путь `internal/proxy`, без детектора.
+It explicitly sets the HTTP port owner to `direct` before creating the TCP rule; HTTP
+is absent on that socket. For the unprivileged local harness, a random high port
+from the range 20000–29999 is passed as `--http-port`.
+This tests the same owner selection as public 80, rather than literally binding
+to :80 or benchmarking a router. The exact port and owner are recorded in `listeners`.
+Regular TCP forwarding and this mode use the same `internal/proxy` path, without a protocol detector.
 
-Очередь создания UDP проверяется отдельными регрессиями: 64/128 клиентов с одним первым пакетом, задержанный DNS, пределы 32 обработчика/128 заявок/1 МиБ, отмена и смена поколения.
+The UDP creation queue is tested by separate regressions: 64/128 clients with a single first packet, delayed DNS, limits of 32 workers/128 requests/1 MiB, cancellation, and generation changes.
 
-Генератор проверяет содержимое ответов, не повторяет потерянные UDP-пакеты и выдаёт
-неуспех при любой ошибке. Измеряются HTTP/1.1 и проверенный HTTPS, новые TCP-соединения,
-TCP/UDP request-reply с повторным использованием соединения, TCP payload 64 KiB.
-Новые TCP-соединения по умолчанию измеряются короткими окнами в 1 секунду (`--new-connection-seconds`, максимум 1), чтобы ограничивать нагрузку на общую таблицу conntrack. Для прочих режимов действует `--seconds`. Перед прогонами стенд читает conntrack и оставляет запас под новые соединения; при высокой занятости ждёт естественного истечения записей. Он не меняет sysctl и не очищает чужие записи. Предварительная проверка не защищает от независимой нагрузки других программ.
+The generator validates response contents, does not retry lost UDP packets, and reports
+failure on any error. It measures HTTP/1.1 and verified HTTPS, new TCP connections,
+TCP/UDP request-reply with connection reuse, and 64 KiB TCP payload.
+By default, new TCP connections are measured in short 1-second windows (`--new-connection-seconds`, max 1) to limit load on the shared conntrack table. Other modes use `--seconds`. Before runs, the harness reads conntrack and reserves headroom for new connections; under high usage, it waits for entries to expire naturally. It does not modify sysctl or flush unrelated entries. The pre-check does not protect against independent load from other programs.
 
-Для каждого режима сохраняются реальные время, успехи/ошибки, payload bytes,
-RPS и приближённые p50/p95/p99. Бэкенд без прокси измеряется отдельно там, где
-протокол одинаков; для HTTPS нет ложной прямой базы HTTP. Подробности генератора —
+For each mode, actual duration, successes/errors, payload bytes,
+RPS, and approximate p50/p95/p99 are recorded. The unproxied backend is measured separately where
+the protocol is identical; HTTPS has no spurious direct HTTP baseline. Generator details —
 [parkload.md](parkload.md).
 
-Параметр `--cases udp_256_reused` позволяет проверить отдельный режим без повтора
-всей матрицы. Пример холодных UDP-стартов:
+The `--cases udp_256_reused` parameter lets you run a single mode without repeating
+the entire matrix. Example of cold UDP starts:
 
 ```sh
 python3 scripts/benchmark-park.py --caddy /path/to/caddy --cases udp_256_reused --seconds 1 --repeats 5 --concurrency 64 --output test-results/park/udp-cold.json
 ```
 
-niceproxy, Caddy, backend и генератор делят одну машину. Нагрузка замкнутая
-(closed-loop): следующий запрос клиента идёт после ответа, а не по независимому
-расписанию. Поэтому такой RPS не доказывает выдерживание заданной внешней интенсивности
-или WAN-пропускную способность. Для TCP с указанным исходным IP генератор использует Linux IP_BIND_ADDRESS_NO_PORT; без него bind-before-connect искажает общий пул локальных портов. Сравнение с nginx не проводится. SQLite DB/WAL
-сравниваются до/после чистого трафика, без административных мутаций в интервале.
+niceproxy, Caddy, the backend, and the generator share the same machine. The load is
+closed-loop: a client's next request is sent after receiving a response rather than on an independent
+schedule. Therefore, this RPS does not prove sustaining a given external arrival rate
+or WAN throughput. For TCP with a specified source IP, the generator uses Linux IP_BIND_ADDRESS_NO_PORT; without it, bind-before-connect distorts the shared local port pool. No comparison with nginx is performed. SQLite DB/WAL
+are compared before and after pure traffic without administrative mutations during the interval.
 
-## Rootless-контейнер
+## Rootless Container
 
-Штатная сборка:
+Standard build:
 
 ```sh
 podman build -t localhost/niceproxy:test .
 ```
 
-Если registry недоступен, есть отдельный диагностический образ из локальных
-статических Go/Caddy, готового UI и системного CA bundle:
+If the registry is unreachable, there is a separate diagnostic image built from local
+static Go/Caddy, prebuilt UI, and the system CA bundle:
 
 ```sh
 python3 scripts/park-container.py --build --caddy /path/to/caddy
@@ -153,11 +153,11 @@ python3 scripts/smoke.py --binary scripts/park-container.py --caddy /path/to/cad
 python3 scripts/ownership-smoke.py --binary scripts/park-container.py --caddy /path/to/caddy
 ```
 
-Контейнер rootless, с host network, `cap_drop ALL`, `no-new-privileges`, лимитами
-PID/памяти/FD и монтированием только временного корня конкретного теста. Ни Docker
-socket, ни privileged, ни NET_ADMIN не нужны. Он проверяет работу Go/Caddy в контейнере,
-но **не** проверяет Node/bootstrap и стадии сборки штатного Dockerfile. Это отдельный
-результат, который нельзя выдавать за успешную штатную сборку.
+The container is rootless, with host networking, `cap_drop ALL`, `no-new-privileges`, PID/memory/FD
+limits, and mounts only the temporary root of the specific test. Neither the Docker
+socket, `privileged`, nor `NET_ADMIN` is required. It verifies Go/Caddy in the container,
+but does **not** verify Node/bootstrap or the build stages of the standard Dockerfile. This is a separate
+result that must not be presented as a passing standard build.
 
-Результаты и журналы сохраняются в `test-results/`. Неуспешные прогоны сохраняйте
-отдельно от повторных после исправления — особенно при потерях UDP или отказах bind.
+Results and logs are saved in `test-results/`. Keep failed runs
+separate from re-runs after fixes — especially on UDP losses or bind failures.

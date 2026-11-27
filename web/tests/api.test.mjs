@@ -32,7 +32,7 @@ test("normalizes legacy owner absence and preserves explicit ownership", async (
   globalThis.fetch = async () => reply({ ...snapshot, portOwners: owners });
   assert.deepEqual((await api.config()).portOwners, owners);
   globalThis.fetch = async () => reply({ ...snapshot, portOwners: { ...owners, http: "other" } });
-  await assert.rejects(api.config(), /неизвестном формате/);
+  await assert.rejects(api.config(), /unknown format/);
 });
 
 test("distinguishes missing statistics from real zero and rejects malformed counters", async (t) => {
@@ -48,7 +48,7 @@ test("distinguishes missing statistics from real zero and rejects malformed coun
   }
   for (const badStats of malformed) {
     globalThis.fetch = async () => reply({ ...snapshot, directRules: [{ ...rule, stats: badStats }] });
-    await assert.rejects(api.config(), /неизвестном формате/);
+    await assert.rejects(api.config(), /unknown format/);
   }
 });
 
@@ -61,13 +61,13 @@ test("route conflicts show the user message and the mutation queue recovers", as
     calls.push({ url, options });
     if (options.method === "PATCH") {
       await blocked;
-      return reply({ error: "ownership conflict", message: "Выберите другой входящий порт" }, 409);
+      return reply({ error: "ownership conflict", message: "Choose another incoming port" }, 409);
     }
     return reply({ ok: true });
   });
   window.addEventListener("niceproxy:changed", () => { changed++; });
   const save = api.toggle("direct-rules", "one", true);
-  const rejection = assert.rejects(save, /Выберите другой входящий порт/);
+  const rejection = assert.rejects(save, /Choose another incoming port/);
   const remove = api.remove("direct-rules", "one");
   await Promise.resolve();
   assert.equal(calls.length, 1);
@@ -118,8 +118,8 @@ test("late unauthorized responses from the old session cannot end a new login", 
     throw new Error(`Unexpected ${url}`);
   });
   window.addEventListener("niceproxy:unauthorized", () => expired++);
-  const oldConfig = assert.rejects(api.config(), /Сессия/);
-  const oldHealth = assert.rejects(api.health(), /Сессия/);
+  const oldConfig = assert.rejects(api.config(), /Session/);
+  const oldHealth = assert.rejects(api.health(), /Session/);
   configResponse.resolve(reply({ error: "expired" }, 401));
   await oldConfig;
   assert.equal(expired, 1);
@@ -146,10 +146,10 @@ test("expired-session mutations cannot publish stale state or send queued writes
     return reply({ error: "expired" }, 401);
   });
   window.addEventListener("niceproxy:changed", () => changed++);
-  const saving = assert.rejects(api.toggle("direct-rules", "one", true), /Сессия/);
+  const saving = assert.rejects(api.toggle("direct-rules", "one", true), /Session/);
   await saveStarted.promise;
-  const queued = assert.rejects(api.remove("direct-rules", "one"), /Сессия/);
-  await assert.rejects(api.health(), /Сессия/);
+  const queued = assert.rejects(api.remove("direct-rules", "one"), /Session/);
+  await assert.rejects(api.health(), /Session/);
   saveResponse.resolve(reply({ ...snapshot, portOwners: owners }));
   await Promise.all([saving, queued]);
   assert.equal(writes, 1, "a queued mutation must not run in a different session");
@@ -162,7 +162,7 @@ test("reports transport, HTTP and malformed JSON failures through the shared cli
   globalThis.fetch = async () => new Response("Bad gateway", { status: 502 });
   await assert.rejects(api.health(), /HTTP 502/);
   globalThis.fetch = async () => new Response("invalid JSON");
-  await assert.rejects(api.auth(), /неизвестном формате/);
+  await assert.rejects(api.auth(), /unknown format/);
   let expired = 0;
   window.addEventListener("niceproxy:unauthorized", () => expired++);
   globalThis.fetch = async () => reply({ error: "invalid credentials" }, 401);

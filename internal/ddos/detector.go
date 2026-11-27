@@ -344,12 +344,12 @@ func (t *target) tick(b *Binding, now time.Time, sample linuxstats.Sample, queue
 	}
 	out[PreFilter] = Metric{valueOf(float64(counts[0])), b.PreFilter}
 	if b.PreFilter == "" {
-		out[PreFilter] = Metric{nil, "нет наблюдения до фильтра"}
+		out[PreFilter] = Metric{nil, "no observation before filter"}
 	}
 	if b.Kind == Listener {
-		out[Routed] = Metric{nil, "счётчик сопоставленного endpoint"}
-		out[Forwarded] = Metric{nil, "счётчик отправок endpoint"}
-		out[BackendRejected] = Metric{nil, "счётчик backend endpoint"}
+		out[Routed] = Metric{nil, "matched endpoint counter"}
+		out[Forwarded] = Metric{nil, "endpoint forwarding counter"}
+		out[BackendRejected] = Metric{nil, "backend endpoint counter"}
 	}
 	for _, name := range [...]string{"bytes_in", "bytes_out", "new_connections", "requests", "packets"} {
 		i := phaseIndex[name]

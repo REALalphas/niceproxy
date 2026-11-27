@@ -1,47 +1,47 @@
 # Page
 
-## Задача
+## Problem
 
-Форма назначения портов растягивается на всю ширину экрана. В Alpha UI 0.4.11
-нет нейтрального контейнера страницы с адаптивными внешними отступами и шириной
-формы. Приложение не должно добавлять для этого CSS.
+The port-assignment form stretches across the entire screen width. Alpha UI 0.4.11
+lacks a neutral page container with responsive outer padding and form
+width. The application must not add CSS for this.
 
-## Универсальное поведение
+## Universal Behavior
 
-Ограничивать читаемую ширину формы и внешние интервалы страницы; оставаться
-нейтральным контейнером без поверхности и рамки, не добавлять второй main.
-Сохранять перенос длинных значений, ширину 320px и нормальный порядок фокуса.
+Constrain readable form width and page outer spacing; remain a
+neutral container without a surface or border, and do not add a second main.
+Preserve wrapping of long values, 320px width, and normal focus order.
 
-## Предлагаемый API
+## Proposed API
 
 `width?: 'form' | 'content' | 'full'`, `align?: 'start' | 'center'`,
 `inset?: 'none' | 'compact' | 'comfortable'`, `gap?: 1..10`.
-Одинаковый контракт в React/Qwik, содержимое — children/Slot.
+Identical contract in React/Qwik, content via children/Slot.
 
-## Композиция и оформление
+## Composition and Styling
 
-Ширины formMax/pageMax и интервалы — токены библиотеки. Page располагается
-внутри main оболочки, Card добавляется только для самостоятельной поверхности.
-Comfortable адаптирует внешний интервал под узкие экраны.
+formMax/pageMax widths and spacing use library tokens. Page sits
+inside the shell main; Card is added only for a standalone surface.
+Comfortable adapts outer spacing for narrow screens.
 
-## Проверка
+## Verification
 
-Форма ограничена по ширине на desktop и помещается на 320px, main не дублируется;
-React/Qwik имеют одинаковые свойства; исходники пакета и приложение проходят
-сборку/типы, браузер подтверждает размеры, клавиатуру и отсутствие переполнения.
+The form is width-constrained on desktop and fits at 320px, main is not duplicated;
+React/Qwik share the same props; package sources and application pass
+build/types; browser checks confirm dimensions, keyboard navigation, and zero overflow.
 
-## Статус
+## Status
 
-Доступен и проверен в локальном выпуске Alpha UI 0.4.12-niceproxy.3.
+Available and verified in local release Alpha UI 0.4.12-niceproxy.3.
 
 
-## Проверено в приложении
+## Verified in Application
 
-Доступно в локальном выпуске **0.4.12-niceproxy.3**. Архивы и соответствующие
-исходники находятся в `assets/alpha/0.4.12-niceproxy.3/`. Это локальное расширение
-из исходников 0.4.11, а не официальный внешний выпуск. Установленные пакеты
-не редактировались. Полная проверка библиотеки: 55 тестов, React/Qwik build и
-typecheck, документы и состав пакетов. Page проверен в production React/Qwik
-на 1440/320px. В Niceproxy проверены 1880/1440/320px, высота оболочки не меньше
-viewport, margin документа 0, ширина формы не больше 44rem, отсутствие профиля
-и переполнения, реальные CRUD/порты и клавиатура.
+Available in local release **0.4.12-niceproxy.3**. Archives and corresponding
+sources are in `assets/alpha/0.4.12-niceproxy.3/`. This is a local extension
+from 0.4.11 sources, not an official external release. Installed packages
+were not edited. Full library verification: 55 tests, React/Qwik build and
+typecheck, docs, and package contents. Page verified in production React/Qwik
+at 1440/320px. In Niceproxy, 1880/1440/320px, shell height >= viewport,
+document margin 0, form width <= 44rem, absence of profile
+and overflow, real CRUD/ports, and keyboard navigation were verified.

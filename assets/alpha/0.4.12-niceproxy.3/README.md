@@ -1,13 +1,13 @@
 # Alpha's UI
 
-Архивы пакетов и их контрольные суммы перечислены в `manifest.json`.
-Соответствующие [исходники этого выпуска](alpha-ui-source-0.4.12-niceproxy.3.tar.gz), их размер и SHA-512 указаны в `manifest.source`.
-В архиве сохранены канонические компоненты, runtime, сборочные скрипты, package-lock.json и лицензии.
-После распаковки выполни `npm ci`, затем `npm run verify`; версия выпуска записана в `RELEASE_SOURCE.json`.
-Установка из этого каталога: `node install.mjs --project /путь/к/приложению --framework react`.
-Для Qwik укажи `--framework qwik`.
+Package archives and their checksums are listed in `manifest.json`.
+The corresponding [source code for this release](alpha-ui-source-0.4.12-niceproxy.3.tar.gz), its size, and its SHA-512 are specified in `manifest.source`.
+The archive contains canonical components, runtime, build scripts, package-lock.json, and licenses.
+After unpacking, run `npm ci`, then `npm run verify`; the release version is recorded in `RELEASE_SOURCE.json`.
+Install from this directory: `node install.mjs --project /path/to/app --framework react`.
+For Qwik, pass `--framework qwik`.
 
-- [Выпуски, установка и подключение к Hub](docs/distribution.md)
-- [Руководство по компонентам](docs/agent-guide.md)
-- [Правила для приложения](AGENTS.md)
-- [Лицензия](LICENSE) и [сторонние материалы](THIRD_PARTY_NOTICES.md)
+- [Releases, installation, and Hub integration](docs/distribution.md)
+- [Component guide](docs/agent-guide.md)
+- [Application agent rules](AGENTS.md)
+- [License](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md)
