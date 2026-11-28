@@ -88,13 +88,9 @@ jobs:
           fi
 
   web-test:
-    name: Frontend ${{ matrix.task }}
+    name: Frontend checks
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        task: [typecheck, test]
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -111,8 +107,23 @@ jobs:
       - name: Install dependencies
         run: npm --prefix web ci
 
-      - name: Run frontend check
-        run: npm --prefix web run ${{ matrix.task }}
+      - name: Run frontend checks
+        run: |
+          set +e
+          npm --prefix web run typecheck &
+          typecheck_pid=$!
+          npm --prefix web test &
+          test_pid=$!
+
+          typecheck_status=0
+          test_status=0
+          wait "$typecheck_pid" || typecheck_status=$?
+          wait "$test_pid" || test_status=$?
+
+          if (( typecheck_status != 0 || test_status != 0 )); then
+            echo "Frontend checks failed: typecheck=$typecheck_status test=$test_status" >&2
+            exit 1
+          fi
 
   integration:
     name: Build and integration smoke tests
